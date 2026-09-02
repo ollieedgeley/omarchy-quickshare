@@ -57,6 +57,7 @@ async function main() {
         CODEGRAPH: join(nodeBin, "codegraph"),
         NODE_BIN: nodeBin,
         PATH: `${nodeBin}:${process.env.PATH}`,
+        TEST_ENV_CACHE: join(ROOT, ".cache", "test-env"),
       };
       run("make", ["verify"], { cwd: worktree, env });
       run("make", ["build"], { cwd: worktree, env });

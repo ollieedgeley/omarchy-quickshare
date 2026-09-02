@@ -16,7 +16,10 @@ import { run } from "./lib/process.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const MANIFEST = join(ROOT, "upstream", "sources.toml");
-const CACHE = join(ROOT, ".cache", "test-env", "sources");
+const CACHE = resolve(
+  process.env.TEST_ENV_CACHE ?? join(ROOT, ".cache", "test-env"),
+  "sources",
+);
 const REQUIRED_KEYS = ["id", "url", "revision", "sha256", "license", "purpose"];
 
 function stringValue(line, lineNumber) {

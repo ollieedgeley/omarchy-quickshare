@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "image": "omarchy-quickshare/oracle-toolchain:2026-09-02",
+  "base": "debian@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171",
+  "debianSnapshot": "20260901T000000Z",
+  "bazel": {
+    "version": "9.0.1",
+    "url": "https://releases.bazel.build/9.0.1/release/bazel-9.0.1-linux-x86_64",
+    "sha256": "b4746d3ee7e698b08ebc6a91bd6b4062a25d1b4214a5964f866986f59fc159fb"
+  },
+  "packages": [
+    "build-essential",
+    "ca-certificates",
+    "clang",
+    "curl",
+    "git",
+    "libdbus-1-dev",
+    "libssl-dev",
+    "libsystemd-dev",
+    "patch",
+    "pkg-config",
+    "python3",
+    "unzip",
+    "zip"
+  ]
+}

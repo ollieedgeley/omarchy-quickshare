@@ -75,6 +75,8 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make lint-docs` checks Markdown policy; `make lint-structure` checks file, directory, dependency, and configuration contracts.
 - `make lint-sources` validates immutable test-source pins; `make test-source-cache` hash-checks their prepared archives.
 - `make sources-fetch` provisions the pinned source cache; provisioning is not part of a child test's 60-second execution budget.
+- `make lint-oracle` checks the pinned oracle definition; `make oracle-provision` builds it outside the test budget.
+- `make oracle-up` and `make oracle-down` measure lifecycle time; `make test-oracle-toolchain` tests the warm environment.
 - `make test-rust` runs workspace Rust tests; `make test-tooling` runs quality-gate and hook contract tests.
 - `make pre-commit` checks the staged snapshot and its affected tests; `make pre-push` verifies and builds each pushed commit.
 - `make verify` runs the complete local quality suite; `make build` performs the locked workspace build after verification.

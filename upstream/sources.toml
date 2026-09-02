@@ -89,6 +89,38 @@ license = "ISC AND OpenSSL AND BSD-3-Clause"
 purpose = "Pinned standalone UKEY2 build dependency"
 
 [[source]]
+id = "nlohmann-json"
+url = "https://github.com/nlohmann/json/archive/4f8fba14066156b73f1189a2b8bd568bde5284c5.tar.gz"
+revision = "4f8fba14066156b73f1189a2b8bd568bde5284c5"
+sha256 = "4a8265a62a356698a37b5b1aa4fce3a0146e317bc70ef954ca0d179276cb9cdb"
+license = "MIT"
+purpose = "Pinned Nearby JSON build dependency"
+
+[[source]]
+id = "sdbus-cpp"
+url = "https://github.com/Kistler-Group/sdbus-cpp/archive/2f3a10a73ca70dc87a3ac87cf68ebbcc175ef6d1.tar.gz"
+revision = "2f3a10a73ca70dc87a3ac87cf68ebbcc175ef6d1"
+sha256 = "0f4155ec2a63ad6d792c87577c351ba3af48a267b7b4fbe5701d7987040a2a95"
+license = "LGPL-2.1-or-later"
+purpose = "Pinned Linux Nearby D-Bus build dependency"
+
+[[source]]
+id = "gloop"
+url = "https://github.com/abseil/gloop/archive/87b6913daba4e398f7ed6f11777002e4916c33a7.tar.gz"
+revision = "87b6913daba4e398f7ed6f11777002e4916c33a7"
+sha256 = "33fd306ad06d3dbc49a668f420b162929ec73f95152495861de66b260854e67d"
+license = "Apache-2.0"
+purpose = "Pinned Linux Nearby coroutine build dependency"
+
+[[source]]
+id = "beto-core"
+url = "https://beto-core.googlesource.com/beto-core/+archive/479289ef072b0880c0347d36937265e44f00f4ee.tar.gz"
+revision = "479289ef072b0880c0347d36937265e44f00f4ee"
+sha256 = "ad85938340783f87b3511c9899d034f38728acf6a2db1506d29290e953dc5e64"
+license = "Apache-2.0"
+purpose = "Pinned Nearby Rust rule input"
+
+[[source]]
 id = "bluez"
 url = "https://github.com/bluez/bluez/archive/3a2d543c4c21d9c1dab246d46d76a11996a69bf2.tar.gz"
 revision = "3a2d543c4c21d9c1dab246d46d76a11996a69bf2"

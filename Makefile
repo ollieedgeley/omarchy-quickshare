@@ -10,9 +10,9 @@ CODEGRAPH ?= $(NODE_BIN)/codegraph
 PRETTIER ?= $(NODE_BIN)/prettier
 MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 
-.PHONY: help setup hooks-install sources-fetch format format-check check
-.PHONY: lint-rust lint-ast lint-docs lint-structure lint-sources
-.PHONY: test test-rust test-tooling test-ast-rules test-source-cache verify build commit-msg
+.PHONY: help setup hooks-install sources-fetch oracle-provision oracle-up oracle-down
+.PHONY: format format-check check lint-rust lint-ast lint-docs lint-structure lint-sources lint-oracle
+.PHONY: test test-rust test-tooling test-ast-rules test-source-cache test-oracle-toolchain verify build commit-msg
 .PHONY: pre-commit pre-commit-prepare pre-commit-structure pre-commit-format pre-commit-ast
 .PHONY: pre-commit-rust pre-commit-test pre-push
 
@@ -23,6 +23,8 @@ setup: ## Install pinned development tools and activate repository hooks.
 	@npm ci
 	@rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy --component rust-analyzer
 	@$(MAKE) hooks-install
+	@$(MAKE) sources-fetch
+	@$(MAKE) oracle-provision
 
 hooks-install: ## Activate Husky and initialize the reusable staged CodeGraph mirror.
 	@$(NODE_BIN)/husky
@@ -30,6 +32,15 @@ hooks-install: ## Activate Husky and initialize the reusable staged CodeGraph mi
 
 sources-fetch: ## Download, hash-check, and extract every pinned test source.
 	@node tools/gates/sources.mjs fetch
+
+oracle-provision: ## Build the pinned oracle toolchain image; one-time provisioning may exceed 60 seconds.
+	@node tests/environments/oracle/environment.mjs provision
+
+oracle-up: ## Start and readiness-check the prepared oracle environment within 60 seconds.
+	@node tests/environments/oracle/environment.mjs up
+
+oracle-down: ## Stop the prepared oracle environment within 60 seconds.
+	@node tests/environments/oracle/environment.mjs down
 
 format: ## Deliberately rewrite supported files with pinned formatters.
 	@cargo fmt --all
@@ -58,6 +69,9 @@ lint-structure: ## Check line, directory, dependency, and configuration contract
 lint-sources: ## Validate immutable source revisions, hashes, licenses, and purposes.
 	@$(TIMEOUT) node tools/gates/sources.mjs check
 
+lint-oracle: ## Validate pinned oracle image inputs without starting Docker.
+	@$(TIMEOUT) node tests/environments/oracle/environment.mjs validate
+
 test-rust: ## Run complete workspace Rust tests and doc tests.
 	@$(TIMEOUT) cargo test --workspace --all-targets --all-features --locked
 	@$(TIMEOUT) cargo test --workspace --doc --all-features --locked
@@ -71,9 +85,14 @@ test-ast-rules: ## Run ast-grep rule fixtures and committed snapshots.
 test-source-cache: ## Hash-check the prepared reference and simulator source archives.
 	@$(TIMEOUT) node tools/gates/sources.mjs verify-cache
 
+test-oracle-toolchain: ## Warm-start, test, and stop the prepared oracle toolchain.
+	@trap 'node tests/environments/oracle/environment.mjs down' EXIT; \
+		node tests/environments/oracle/environment.mjs up; \
+		$(TIMEOUT) node tests/environments/oracle/environment.mjs self-test
+
 test: test-rust test-tooling test-ast-rules ## Run all local tests.
 
-verify: format-check lint-docs lint-structure lint-sources check lint-rust lint-ast test test-source-cache ## Run the complete local quality suite.
+verify: format-check lint-docs lint-structure lint-sources lint-oracle check lint-rust lint-ast test test-source-cache test-oracle-toolchain ## Run the complete local quality suite.
 
 build: ## Build the complete locked workspace after verification.
 	@$(TIMEOUT) cargo build --workspace --all-targets --all-features --locked

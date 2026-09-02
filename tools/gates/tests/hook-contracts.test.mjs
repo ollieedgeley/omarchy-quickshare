@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { packageSelection, parseAffectedJson } from "../../hooks/affected.mjs";
 import { validateCommitMessage } from "../../hooks/commit-msg.mjs";
 import { parseNameStatus } from "../../hooks/prepare-staged.mjs";
 import { pushedCommits } from "../../hooks/pre-push.mjs";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 test("Conventional Commit validation accepts the project types", () => {
   assert.equal(
@@ -101,4 +106,13 @@ test("pre-push selects unique non-deletion tips", () => {
   ].join("\n");
   assert.deepEqual(pushedCommits(input, "2".repeat(40)), [sha]);
   assert.deepEqual(pushedCommits("", sha), [sha]);
+});
+
+test("pre-push shares only the prepared test environment with exact worktrees", () => {
+  const source = readFileSync(
+    join(ROOT, "tools", "hooks", "pre-push.mjs"),
+    "utf8",
+  );
+  assert.match(source, /TEST_ENV_CACHE: join\(ROOT, "\.cache", "test-env"\)/);
+  assert.doesNotMatch(source, /TEST_ENV_CACHE: join\(ROOT, "\.cache"\)/);
 });
