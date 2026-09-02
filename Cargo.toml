@@ -1,6 +1,18 @@
 [workspace]
-members = ["tests/suites/contracts", "tests/support", "tools/gates"]
-default-members = ["tests/suites/contracts", "tests/support", "tools/gates"]
+members = [
+  "crates/app",
+  "crates/core/control",
+  "tests/suites/contracts",
+  "tests/support",
+  "tools/gates",
+]
+default-members = [
+  "crates/app",
+  "crates/core/control",
+  "tests/suites/contracts",
+  "tests/support",
+  "tools/gates",
+]
 resolver = "3"
 
 [workspace.dependencies]

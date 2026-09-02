@@ -8,6 +8,7 @@ rust-version.workspace = true
 publish = false
 
 [dev-dependencies]
+omarchy-quickshare = { path = "../../../crates/app" }
 quickshare-test-support = { path = "../../support" }
 serde_json.workspace = true
 

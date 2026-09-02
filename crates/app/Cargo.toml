@@ -1,0 +1,14 @@
+[package]
+name = "omarchy-quickshare"
+version = "0.0.0"
+description = "Account-free Quick Share endpoint for Omarchy"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+quickshare-control = { path = "../core/control" }
+
+[lints]
+workspace = true
