@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "pairs": [
+    { "id": "ble-to-bluetooth", "initial": "ble", "upgrade": "bluetooth" },
+    { "id": "ble-to-wifi-lan", "initial": "ble", "upgrade": "wifi_lan" },
+    {
+      "id": "ble-to-wifi-hotspot",
+      "initial": "ble",
+      "upgrade": "wifi_hotspot"
+    },
+    {
+      "id": "bluetooth-to-wifi-lan",
+      "initial": "bluetooth",
+      "upgrade": "wifi_lan"
+    },
+    {
+      "id": "bluetooth-to-wifi-hotspot",
+      "initial": "bluetooth",
+      "upgrade": "wifi_hotspot"
+    }
+  ],
+  "outcomes": [
+    { "id": "success", "proposer": "peer-a", "terminal": "completed" },
+    { "id": "rejection", "proposer": "peer-b", "terminal": "recovered" },
+    {
+      "id": "candidate-disappears",
+      "proposer": "peer-a",
+      "terminal": "recovered"
+    },
+    {
+      "id": "new-channel-loss",
+      "proposer": "peer-b",
+      "terminal": "recovered"
+    },
+    {
+      "id": "simultaneous-proposals",
+      "proposer": "both",
+      "terminal": "completed"
+    },
+    {
+      "id": "old-channel-fallback",
+      "proposer": "peer-a",
+      "terminal": "recovered"
+    },
+    {
+      "id": "cancellation",
+      "proposer": "peer-b",
+      "terminal": "cancelled"
+    }
+  ]
+}

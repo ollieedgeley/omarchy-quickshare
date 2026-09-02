@@ -24,8 +24,8 @@ import {
   prepareContext,
   treeFingerprint,
 } from "./context.mjs";
-import { runSharingSelfTest } from "./sharing-self-test.mjs";
-import { runSharingActionsSelfTest } from "./sharing-actions-self-test.mjs";
+import { runSharingActionsSelfTest } from "./sharing/actions.mjs";
+import { runSharingSelfTest } from "./sharing/transfer.mjs";
 
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(DIRECTORY, "../../..");
@@ -158,6 +158,11 @@ function validateText({ compose, dockerfile, manifest, patch }) {
   if (!patch.includes("QS_EVENT")) {
     throw new Error("Nearby Linux CLI patch lacks machine-readable evidence");
   }
+  run("git", ["apply", "--numstat", "-"], {
+    capture: true,
+    input: patch,
+    quiet: true,
+  });
 }
 
 export function validateEnvironment(configuration) {
@@ -177,14 +182,22 @@ function inputs() {
   const contextSource = readFileSync(CONTEXT_PATH, "utf8");
   const patch = readFileSync(CLI_ACTIONS_PATCH, "utf8");
   const dockerfile = readFileSync(DOCKERFILE_PATH, "utf8");
+  const connectionsPeer = treeFingerprint(
+    join(ROOT, "tools", "oracle", "connections-peer"),
+  );
+  const fixtureGenerator = treeFingerprint(
+    join(ROOT, "tools", "oracle", "sharing-fixtures"),
+  );
   const manifestSource = readFileSync(MANIFEST_PATH, "utf8");
   const overlays = treeFingerprint(OVERLAY_ROOT);
   const sources = readFileSync(SOURCE_MANIFEST_PATH, "utf8");
   const input = {
     assets,
     compose,
+    connectionsPeer,
     contextSource,
     dockerfile,
+    fixtureGenerator,
     manifestSource,
     overlays,
     patch,
@@ -303,8 +316,10 @@ function provision() {
   const context = prepareContext({
     bazel: BAZEL_BINARY,
     cacheRoot: CACHE_ROOT,
+    connectionsPeer: join(ROOT, "tools", "oracle", "connections-peer"),
     environment: DIRECTORY,
     fingerprint,
+    fixtureGenerator: join(ROOT, "tools", "oracle", "sharing-fixtures"),
     llvmKey: LLVM_KEY,
     overlayRoot: OVERLAY_ROOT,
     sourceRoot: SOURCE_ROOT,

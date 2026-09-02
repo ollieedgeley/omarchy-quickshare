@@ -31,6 +31,13 @@ const SIMPLE_OVERLAYS = new Map([
   ["smhasher", "smhasher.BUILD.bazel"],
 ]);
 const CLI_ACTIONS_PATCH = "cli-actions.patch";
+export const CONNECTIONS_PEER_FILES = [
+  "BUILD.bazel",
+  "connections_peer.cc",
+  "connections_peer.h",
+  "connections_peer_main.cc",
+  "connections_peer_options.cc",
+];
 const SDBUS_BUILD = `load("@rules_foreign_cc//foreign_cc:defs.bzl", "cmake")
 
 filegroup(
@@ -175,6 +182,57 @@ function prepareNearby(sourceRoot, context) {
   applyCliActions(nearby);
 }
 
+function prepareConnectionsPeer(source, context) {
+  const destination = join(
+    context,
+    "nearby",
+    "tools",
+    "quickshare_connections_peer",
+  );
+  mkdirSync(destination, { recursive: true });
+  for (const name of CONNECTIONS_PEER_FILES) {
+    copyRequired(join(source, name), join(destination, name));
+  }
+}
+
+function prepareFixtureGenerator(source, sourceRoot, context) {
+  const destination = join(
+    context,
+    "nearby",
+    "tools",
+    "quickshare_fixture_generator",
+  );
+  cpSync(source, destination, {
+    preserveTimestamps: true,
+    recursive: true,
+  });
+  const fakeDestination = join(destination, "external", "sharing");
+  mkdirSync(fakeDestination, { recursive: true });
+  for (const name of [
+    "fake_nearby_connections_manager.cc",
+    "fake_nearby_connections_manager.h",
+  ]) {
+    copyRequired(
+      join(sourcePath(sourceRoot, NEARBY), "sharing", name),
+      join(fakeDestination, name),
+    );
+  }
+  const fakeSource = join(
+    fakeDestination,
+    "fake_nearby_connections_manager.cc",
+  );
+  const original = readFileSync(fakeSource, "utf8");
+  const include = '#include "sharing/fake_nearby_connections_manager.h"';
+  const rewritten = original.replace(
+    include,
+    '#include "fake_nearby_connections_manager.h"',
+  );
+  if (rewritten === original || rewritten.replace(include, "") !== rewritten) {
+    throw new Error("Nearby fake-manager include transform drifted");
+  }
+  writeFileSync(fakeSource, rewritten);
+}
+
 function copyAssets(environment, context) {
   cpSync(join(environment, "assets"), join(context, "assets"), {
     preserveTimestamps: true,
@@ -187,8 +245,10 @@ export function contextFingerprint(inputs) {
   const values = [
     inputs.assets,
     inputs.compose,
+    inputs.connectionsPeer,
     inputs.contextSource,
     inputs.dockerfile,
+    inputs.fixtureGenerator,
     inputs.manifestSource,
     inputs.overlays,
     inputs.patch,
@@ -238,6 +298,12 @@ export function prepareContext(options) {
   mkdirSync(temporary, { recursive: true });
   try {
     prepareNearby(options.sourceRoot, temporary);
+    prepareConnectionsPeer(options.connectionsPeer, temporary);
+    prepareFixtureGenerator(
+      options.fixtureGenerator,
+      options.sourceRoot,
+      temporary,
+    );
     prepareOverrides(options.sourceRoot, temporary, options.overlayRoot);
     prepareCache(temporary, options.bazel, options.llvmKey);
     copyAssets(options.environment, temporary);

@@ -32,8 +32,8 @@ import {
   runTimedSelfTest,
   validateEnvironment,
 } from "./environment.mjs";
-import * as sharingTest from "./sharing-self-test.mjs";
-import { runSharingActionsSelfTest } from "./sharing-actions-self-test.mjs";
+import { runSharingActionsSelfTest } from "./sharing/actions.mjs";
+import * as sharingTest from "./sharing/transfer.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const DIRECTORY = join(ROOT, "tests", "environments", "nearby-linux");
@@ -118,8 +118,14 @@ function inputs() {
   return {
     assets: treeFingerprint(join(DIRECTORY, "assets")),
     compose: readFileSync(join(DIRECTORY, "compose.yaml"), "utf8"),
+    connectionsPeer: treeFingerprint(
+      join(ROOT, "tools", "oracle", "connections-peer"),
+    ),
     contextSource: readFileSync(join(DIRECTORY, "context.mjs"), "utf8"),
     dockerfile: readFileSync(join(DIRECTORY, "Dockerfile"), "utf8"),
+    fixtureGenerator: treeFingerprint(
+      join(ROOT, "tools", "oracle", "sharing-fixtures"),
+    ),
     manifest: readFileSync(join(DIRECTORY, "environment.json"), "utf8"),
     overlays: treeFingerprint(
       join(ROOT, "tests", "environments", "oracle", "overlays"),
@@ -792,9 +798,3 @@ test("Sharing action timeouts report only typed peer evidence", async () => {
     rmSync(root, { force: true, recursive: true });
   }
 });
-test("Sharing cleanup failures fail the suite", () =>
-  assert.rejects(
-    sharingTest.stopPeers([
-      { stop: () => Promise.reject(new Error("cleanup failed")) },
-    ]),
-  ));

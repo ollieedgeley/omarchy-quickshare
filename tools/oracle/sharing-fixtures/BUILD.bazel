@@ -1,0 +1,64 @@
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+cc_binary(
+    name = "sharing_fixture_generator",
+    srcs = ["sharing_fixture_generator.cc"],
+    testonly = True,
+    deps = [
+        "//sharing:attachments",
+        "//sharing:nearby_connection_impl",
+        "//sharing:share_session",
+        ":noop_analytics_recorder",
+        ":fake_nearby_connections_manager",
+        ":sharing_fixture_trace",
+        "//sharing:transfer_metadata",
+        "//internal/base:file_path",
+        "//internal/base:files",
+        "//internal/platform/implementation/linux:linux",
+        "//internal/test",
+        "//sharing/proto:wire_format_cc_proto",
+        "@com_google_absl//absl/strings:string_view",
+    ],
+)
+
+cc_library(
+    name = "sharing_fixture_trace",
+    testonly = True,
+    srcs = ["sharing_fixture_trace.cc"],
+    hdrs = ["sharing_fixture_trace.h"],
+    deps = ["//sharing/proto:wire_format_cc_proto"],
+)
+
+cc_library(
+    name = "noop_analytics_recorder",
+    testonly = True,
+    hdrs = ["noop_analytics_recorder.h"],
+    deps = ["//sharing/analytics:analytics"],
+)
+
+cc_library(
+    name = "fake_nearby_connections_manager",
+    testonly = True,
+    srcs = ["external/sharing/fake_nearby_connections_manager.cc"],
+    hdrs = ["external/sharing/fake_nearby_connections_manager.h"],
+    include_prefix = "quickshare_fixture_generator",
+    strip_include_prefix = "external/sharing",
+    deps = [
+        "//sharing:connection_types",
+        "//sharing:types",
+        "//internal/base",
+        "//internal/base:file_path",
+        "//internal/platform:types",
+        "//sharing/common:enum",
+        "//sharing/internal/public:logging",
+        "//sharing/proto:enums_cc_proto",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/time",
+    ],
+)

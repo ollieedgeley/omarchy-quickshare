@@ -1,0 +1,71 @@
+name: omarchy-quickshare-diverse-lan
+
+x-google-peer: &google-peer
+  image: ${NEARBY_LINUX_IMAGE:?set NEARBY_LINUX_IMAGE}
+  cap_drop: [ALL]
+  cap_add:
+    [CHOWN, DAC_OVERRIDE, NET_ADMIN, NET_BIND_SERVICE, NET_RAW, SETGID, SETUID]
+  read_only: true
+  security_opt: [no-new-privileges:true]
+  tmpfs:
+    - /run:rw,nosuid,nodev,size=16m
+    - /tmp:rw,nosuid,nodev,size=64m
+  healthcheck:
+    test:
+      - CMD-SHELL
+      - >-
+        dbus-send --system --print-reply --dest=org.bluez /org/bluez/hci0
+        org.freedesktop.DBus.Properties.Get string:org.bluez.Adapter1
+        string:Powered && dbus-send --system --print-reply
+        --dest=org.freedesktop.NetworkManager /org/freedesktop/NetworkManager
+        org.freedesktop.DBus.Peer.Ping && nmcli --get-values STATE general
+        | grep --fixed-strings --quiet connected && avahi-daemon --check
+    interval: 1s
+    timeout: 1s
+    retries: 20
+    start_period: 1s
+
+services:
+  google:
+    <<: *google-peer
+    hostname: Google-B
+    volumes:
+      - type: bind
+        source: ${GOOGLE_CASE_DIR:?set Google case directory}
+        target: /cases
+    networks:
+      diverse_lan:
+        ipv4_address: 172.30.45.11
+
+  nearshare:
+    image: ${NEARSHARE_IMAGE:?set NEARSHARE_IMAGE}
+    hostname: NearShare-A
+    command: [sleep, infinity]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /work:rw,nosuid,nodev,size=128m
+      - /tmp:rw,nosuid,nodev,size=64m
+    volumes:
+      - type: bind
+        source: ${NEARSHARE_SOURCE:?set NearShare source directory}
+        target: /source
+        read_only: true
+      - type: bind
+        source: ${NEARSHARE_DRIVER:?set NearShare driver path}
+        target: /driver/nearshare_driver.py
+        read_only: true
+      - type: bind
+        source: ${NEARSHARE_CASE_DIR:?set NearShare case directory}
+        target: /cases
+    networks:
+      diverse_lan:
+        ipv4_address: 172.30.45.10
+
+networks:
+  diverse_lan:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.45.0/24

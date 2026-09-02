@@ -1,8 +1,9 @@
 --- a/sharing/linux/nearby_sharing_cli.cc
 +++ b/sharing/linux/nearby_sharing_cli.cc
-@@ -27,6 +27,7 @@
+@@ -27,6 +27,8 @@
  #include <mutex>
  #include <optional>
++#include <sstream>
  #include <string>
 +#include <string_view>
  #include <system_error>
@@ -35,7 +36,7 @@
    std::string file_path;
    std::string device_name = GetHostname();
    int timeout_seconds = 120;
-@@ -118,18 +125,96 @@
+@@ -118,18 +125,118 @@
        if (options.timeout_seconds < 0) {
          return std::nullopt;
        }
@@ -89,6 +90,25 @@
 +  return "unknown";
 +}
 +
++std::string TokenFingerprint(std::string_view token) {
++  const char* salt = std::getenv("QUICKSHARE_PIN_SALT");
++  if (salt == nullptr || *salt == '\0') {
++    return "";
++  }
++  uint64_t hash = 14695981039346656037ULL;
++  for (unsigned char value : std::string_view(salt)) {
++    hash ^= value;
++    hash *= 1099511628211ULL;
++  }
++  for (unsigned char value : token) {
++    hash ^= value;
++    hash *= 1099511628211ULL;
++  }
++  std::ostringstream output;
++  output << std::hex << hash;
++  return output.str();
++}
++
 +void PrintEvent(std::string_view event, int64_t target_id) {
 +  std::cout << "QS_EVENT event=" << event << " target_id=" << target_id
 +            << std::endl;
@@ -104,7 +124,10 @@
 +            << " transferred_bytes=" << metadata.transferred_bytes()
 +            << " total_bytes=" << attachments.GetTotalAttachmentsSize();
 +  if (metadata.token().has_value()) {
-+    std::cout << " token=" << *metadata.token();
++    std::string fingerprint = TokenFingerprint(*metadata.token());
++    if (!fingerprint.empty()) {
++      std::cout << " token_fingerprint=" << fingerprint;
++    }
 +  }
 +  std::cout << std::endl;
 +}
@@ -151,6 +174,13 @@
 -
 +
  void PrintTransferUpdate(const ShareTarget& share_target,
+@@ -176,4 +264,5 @@ void PrintTransferUpdate(
+   if (metadata.token().has_value()) {
+-    std::cout << "confirmation token: " << *metadata.token() << std::endl;
++    std::cout << "confirmation token fingerprint: "
++              << TokenFingerprint(*metadata.token()) << std::endl;
+   }
+ }
 @@ -182,20 +270,43 @@
 -
 +
@@ -311,3 +341,52 @@
          if (status != NearbySharingService::StatusCodes::kOk) {
            return 1;
          }
+
+--- a/sharing/share_session.cc
++++ b/sharing/share_session.cc
+@@ -19,6 +19,9 @@
+ #include <functional>
++#include <iostream>
+ #include <memory>
+ #include <optional>
++#include <sstream>
+ #include <string>
++#include <string_view>
+ #include <utility>
+ #include <vector>
+@@ -69,4 +71,23 @@ std::string TokenToFourDigitString(const std::vector<uint8_t>& bytes) {
+  return absl::StrFormat("%04d", std::abs(hash));
+ }
+
++std::string TokenFingerprint(std::string_view token) {
++  const char* salt = std::getenv("QUICKSHARE_PIN_SALT");
++  if (salt == nullptr || *salt == '\0') {
++    return "";
++  }
++  uint64_t hash = 14695981039346656037ULL;
++  for (unsigned char value : std::string_view(salt)) {
++    hash ^= value;
++    hash *= 1099511628211ULL;
++  }
++  for (unsigned char value : token) {
++    hash ^= value;
++    hash *= 1099511628211ULL;
++  }
++  std::ostringstream output;
++  output << std::hex << hash;
++  return output.str();
++}
++
+ }  // namespace
+@@ -197,6 +209,11 @@ void ShareSession::RunPairedKeyVerification(
+     return;
+   }
+   token_ = TokenToFourDigitString(*token);
++  std::string fingerprint = TokenFingerprint(token_);
++  if (!fingerprint.empty()) {
++    std::cout << "QS_EVENT event=paired-key-token token_fingerprint="
++              << fingerprint << std::endl;
++  }
+
+ key_verification_runner_ = std::make_shared<PairedKeyVerificationRunner>(
+       &clock_, os_type, IsIncoming(), visibility_history, *token,

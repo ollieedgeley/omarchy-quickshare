@@ -35,6 +35,8 @@ ignore = [
   "suspicious-subprocess-import",
 ]
 "tests/environments/bluez/radio-bumble-gatt-peer.py" = ["deprecated-import"]
+"tests/environments/diverse-lan/*.py" = ["implicit-namespace-package"]
+"tests/environments/live-bwu-kvm/*.py" = ["implicit-namespace-package"]
 
 [lint.mccabe]
 max-complexity = 10

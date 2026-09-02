@@ -11,7 +11,7 @@ The application direction does not fix the network role. Each direction must als
 
 ## Decision
 
-Add four test-only layers before transfer application code starts:
+Use four test-only layers:
 
 1. Generate language-neutral outbound and inbound session fixtures from pinned Google C++ tests.
 2. Run live two-process tests against a pinned Linux build of Google's Nearby code, with a project-owned test control wrapper.
@@ -20,7 +20,17 @@ Add four test-only layers before transfer application code starts:
 
 Add `tc netem` for IP packet faults and `wmediumd` for 802.11 faults. Keep Toxiproxy for precise TCP stream faults. These tools cover different layers.
 
-Every item above is a development dependency. None is linked into, packaged with, or installed by the Omarchy plugin. Plugin users need the Rust binary and the normal Linux services selected by the runtime design, not Android SDK tools, Python, Mobly, a C++ reference implementation, an emulator, or a test radio.
+The fixture generator, semantic oracle, fast adapters, and underlying transport
+self-tests are development prerequisites. Live Linux reference peers and
+admitted Android routes are release evidence. They may reveal adapter defects,
+but an incomplete reference peer does not block application behavior already
+covered by independent fixtures and contracts.
+
+Every item above is a development-only dependency. None is linked into,
+packaged with, or installed by the Omarchy plugin. Plugin users need the Rust
+binary and the normal Linux services selected by the runtime design, not
+Android SDK tools, Python, Mobly, a C++ reference implementation, an emulator,
+or a test radio.
 
 ## What the available peers actually prove
 
@@ -58,6 +68,23 @@ Use two live oracles in addition:
 - NearShare commit `66eea15c5799ea317b195bedba465fb89ff5da7b` provides implementation diversity for same-LAN transfer. Its UI-free core implements mDNS/TCP discovery, both UKEY2 roles, introduction, accept or decline, and encrypted payloads. Its loopback test transfers two files through the full handshake, compares the PIN, and compares file SHA-256; separate routing tests inject malformed, duplicate, interleaved, and cancelled payloads. [Architecture](https://github.com/Dhiva-Labs/NearShare/blob/66eea15c5799ea317b195bedba465fb89ff5da7b/README.md#L25-L48), [loopback test](https://github.com/Dhiva-Labs/NearShare/blob/66eea15c5799ea317b195bedba465fb89ff5da7b/tests/test_loopback.py#L1-L115), [payload routing tests](https://github.com/Dhiva-Labs/NearShare/blob/66eea15c5799ea317b195bedba465fb89ff5da7b/tests/test_payload_routing.py)
 
 NearShare is not an authority for every medium or trust mode. Its transfer path is same-LAN TCP, outbound discovery requires the phone's Quick Share receive screen or share sheet to be open, and it implements neither contact visibility nor Google-account trust. [Documented limits](https://github.com/Dhiva-Labs/NearShare/blob/66eea15c5799ea317b195bedba465fb89ff5da7b/README.md#L356-L379)
+
+`make test-diverse-lan` puts the prepared NearShare and Google-derived
+Sharing peers on their own internal Docker bridge, not either peer's normal
+test network. It performs Google-to-NearShare, NearShare-to-Google, and a
+clean Google-to-NearShare repeat. It requires mDNS discovery, matching
+per-run salted confirmation-token fingerprints, terminal completion, exact byte
+count and SHA-256, then removes both containers and case directories. This is
+simulated/reference LAN interoperability, not evidence of a Rust endpoint,
+physical Wi-Fi, contact trust, or another transport medium.
+
+The pinned NearShare sender leaves the Sharing `FileMetadata.id` field unset.
+Google's receiver then creates a replacement attachment ID that cannot match the
+payload map, even though the file payload itself arrives. The gate applies one
+fail-closed compatibility transform to its disposable NearShare copy, assigning
+the positive payload ID to that required attachment field. The immutable source
+cache remains unchanged, and a contract test fails if the pinned construction
+site drifts.
 
 QNearbyShare is a possible extra diversity peer, but not a required gate. Its last source change is older, its automated protocol coverage is small, and it documents that newer Android Quick Share receivers cannot be triggered. Requiring it would add maintenance without closing a distinct proven gap. [Source](https://github.com/vicr123/QNearbyShare/tree/e0917fdf80c866cb61a979a964900b3b3983eb76)
 
@@ -134,11 +161,21 @@ Every full Sharing peer must support these deterministic commands or fixtures:
 
 After every terminal result, assert that advertisements, GATT applications, Bluetooth profiles, sockets, temporary files, network profiles, hotspot or Direct groups, namespaces, child processes, and test credentials are gone. Run the next clean transfer in the same environment to catch leaked state.
 
-## Pre-application verification gate
+## Development and release verification
 
-The environment is ready for application TDD only when all applicable rows below are green from a clean machine. These become child gates under the root `Makefile` when setup is authorized. Each directly runnable test phase must complete in less than 60 seconds; split by medium or virtual environment when necessary. Prepared-environment startup and teardown follow the separate lifecycle budget in the programmatic connection-testing policy.
+Application TDD may start when the oracle fixtures, shared contracts, and the
+Bluetooth, Wi-Fi, and fault-injector transport self-tests are green. These
+prove the state and payload inputs consumed by application behavior and the
+operating-system mechanisms used by its adapters.
 
-| Gate                  | Self-test before Rust exists                                                           | Required evidence                                                 |
+The remaining rows become release evidence as working adapters make them
+applicable. A row joins the root verification gate only after its own reference
+self-test passes repeatably. Each directly runnable test phase must complete in
+less than 60 seconds; split by medium or virtual environment when necessary.
+Prepared-environment startup and teardown follow the separate lifecycle budget
+in the programmatic connection-testing policy.
+
+| Gate                  | Required self-test                                                                     | Required evidence                                                 |
 | --------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
 | Oracle fixtures       | pinned Google generator against committed inbound and outbound fixtures                | byte equality, event-trace equality, source commit and hashes     |
 | Sharing reference     | Google-derived Sharing peer to itself, send and receive                                | accept and reject, cancel, exact file SHA, clean second run       |

@@ -78,7 +78,9 @@ RUN --mount=type=cache,target=/var/cache/bazel-disk \
       --@com_google_protobuf//bazel/toolchains:prefer_prebuilt_protoc=true \
       --copt=-DGITHUB_BUILD \
       //connections/file_share:file_share \
-      //sharing/linux:nearby_sharing_cli
+      //sharing/linux:nearby_sharing_cli \
+      //tools/quickshare_connections_peer:connections_peer \
+      //tools/quickshare_fixture_generator:sharing_fixture_generator
 
 FROM ${UBUNTU_IMAGE} AS runtime
 
@@ -113,12 +115,22 @@ COPY --from=builder \
 COPY --from=builder \
   /workspace/nearby/bazel-bin/sharing/linux/nearby_sharing_cli \
   /usr/local/bin/nearby_sharing_cli
+COPY --from=builder \
+  /workspace/nearby/bazel-bin/tools/quickshare_connections_peer/\
+connections_peer \
+  /usr/local/bin/connections_peer
+COPY --from=builder \
+  /workspace/nearby/bazel-bin/tools/quickshare_fixture_generator\
+/sharing_fixture_generator \
+  /usr/local/bin/sharing_fixture_generator
 COPY assets/NetworkManager.conf /etc/NetworkManager/NetworkManager.conf
 COPY assets/dbus-1/system.d/org.bluez.conf /etc/dbus-1/system.d/org.bluez.conf
 COPY assets/peer-entrypoint.sh /usr/local/libexec/nearby-linux-peer
 
-RUN chmod 0755 /usr/local/bin/file_share \
+RUN chmod 0755 /usr/local/bin/connections_peer \
+    /usr/local/bin/file_share \
     /usr/local/bin/nearby_sharing_cli \
+    /usr/local/bin/sharing_fixture_generator \
     /usr/local/libexec/nearby-linux-peer
 
 ARG ENVIRONMENT_FINGERPRINT

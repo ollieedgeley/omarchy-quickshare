@@ -2,7 +2,9 @@
 
 ## Current authority
 
-Repository setup, quality tooling, local hooks, commits, and pushes are authorized. Application behavior remains out of scope until the verification-environment start condition in the programmatic connection-testing document is satisfied.
+Repository setup, quality tooling, application behavior, local hooks, commits,
+and pushes are authorized. Use the development and release thresholds in the
+programmatic connection-testing document.
 
 ## Work loop
 
@@ -41,7 +43,9 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 
 - Follow the ownership, dependency, file-count, and directory-count rules in the project structure before adding or moving files.
 - Count physical lines before finishing. Project-authored files and every `AGENTS.md` stop at 500 lines; tests and test-only support stop at 800.
-- Before writing application code, satisfy the verification-environment start condition in the programmatic connection-testing document.
+- Before writing application behavior, satisfy the development threshold in
+  the programmatic connection-testing document. Treat live reference-peer
+  interoperability as release evidence rather than a development prerequisite.
 
 ## TDD and test design
 
@@ -87,6 +91,9 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make dbus-up` and `make dbus-down` measure private-bus lifecycle; `make test-dbus-bluez` and `make test-dbus-networkmanager` check service templates through real clients.
 - `make lint-bluetooth-radio` checks the pinned real-radio definition; `make bluetooth-radio-provision` builds it outside test time.
 - `make bluetooth-radio-{up,down}` measures lifecycle; `make test-bluetooth-{controller,ble,classic}` checks isolated BlueZ radio paths.
+- `make lint-live-bwu-kvm` checks the two-guest KVM harness;
+  `make live-bwu-kvm-provision` builds its sealed Google-peer image.
+- `make test-live-bwu-kvm` proves isolated LAN and Classic byte paths.
 - `make network-up` and `make network-down` measure virtual-radio lifecycle; `make test-network-wmediumd` and `make test-network-netem` check 802.11 and UDP fault recovery.
 - `make test-network-lan`, `make test-network-hotspot-client`, and `make test-network-hotspot-owner` check real Wi-Fi association and bidirectional TCP paths.
 - `make test-network-wifi-direct-client` checks the supported Linux-client P2P role against a simulated remote group owner.
@@ -96,10 +103,14 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make test-rust` runs workspace Rust tests; `make test-tooling` runs quality-gate and hook contract tests.
 - `make test-contracts` runs shared transfer scenarios against fast doubles; simulator adapters consume the same scenarios.
 - `make test-nearshare-reference` runs the pinned diverse LAN peer through discovery, encryption, both transfer roles, and byte-integrity checks.
+- `make diverse-lan-{up,down}` measures the isolated NearShare↔Google-derived LAN lifecycle.
+- `make test-diverse-lan` checks simulated/reference mDNS, PIN fingerprints, both transfer roles, SHA-256 bytes, and a clean repeat.
 - `make lint-nearby-linux` and `make test-nearby-linux-tooling` check the
   Google-derived peer definition and its fast contract tests.
 - `make test-nearby-linux-connections`, `make test-nearby-linux-sharing`, and
   `make test-nearby-linux-sharing-actions` run each prepared live peer suite.
+- `make test-nearby-linux-sharing-fixtures` compares every generated Google
+  Sharing frame and trace with the pinned corpus.
 - `make test-android-nearby` runs the experimental AVD admission control; it is not a compatibility gate until it passes repeatably.
 - `make verify-app` gives application-only feedback; `make verify-tooling` checks development tooling without starting environments.
 - `make pre-commit` checks the staged snapshot and its affected tests; `make pre-push` verifies and builds each pushed commit.

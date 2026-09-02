@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "image": "omarchy-quickshare/live-bwu-kvm-peer:2026-09-02",
+  "nearbyImage": "omarchy-quickshare/nearby-linux-peer:2026-09-02",
+  "radioImage": "omarchy-quickshare/bluetooth-radio:2026-09-02",
+  "btvirt": "../bluetooth-radio/artifacts/btvirt",
+  "container": "omarchy-quickshare-live-bwu-kvm",
+  "guestKernel": "6.1.176",
+  "qemu": "7.2.22"
+}

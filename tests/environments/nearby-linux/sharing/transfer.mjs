@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { failureEvents } from "./compose-runner.mjs";
+import { failureEvents } from "../compose-runner.mjs";
 
 const EVENT_PATTERN = /^QS_EVENT (?<fields>.+)$/mu;
 const RECEIVER_WAIT_MS = 2_000;

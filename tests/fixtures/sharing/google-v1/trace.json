@@ -1,0 +1,110 @@
+{
+  "schema": 5,
+  "scope": "pinned Google Sharing sessions",
+  "normalization": ["outgoing payload_id"],
+  "records": [
+    {
+      "path": "incoming/introductions/file.bin",
+      "direction": "incoming",
+      "seam": "IncomingShareSession.ProcessIntroduction",
+      "kind": "introduction",
+      "attachment": "file",
+      "outcome": "accepted"
+    },
+    {
+      "path": "incoming/introductions/text.bin",
+      "direction": "incoming",
+      "seam": "IncomingShareSession.ProcessIntroduction",
+      "kind": "introduction",
+      "attachment": "text",
+      "outcome": "accepted"
+    },
+    {
+      "path": "incoming/introductions/url.bin",
+      "direction": "incoming",
+      "seam": "IncomingShareSession.ProcessIntroduction",
+      "kind": "introduction",
+      "attachment": "url",
+      "outcome": "accepted"
+    },
+    {
+      "path": "incoming/introductions/apk.bin",
+      "direction": "incoming",
+      "seam": "IncomingShareSession.ProcessIntroduction",
+      "kind": "introduction",
+      "attachment": "apk",
+      "outcome": "accepted"
+    },
+    {
+      "path": "incoming/responses/accept.bin",
+      "direction": "incoming",
+      "seam": "IncomingShareSession.AcceptTransfer",
+      "kind": "response",
+      "status": "accept",
+      "outcome": "awaiting-remote-acceptance"
+    },
+    {
+      "path": "incoming/responses/not-enough-space.bin",
+      "direction": "incoming",
+      "seam": "IncomingShareSession.SendFailureResponse",
+      "kind": "response",
+      "status": "not-enough-space",
+      "outcome": "final"
+    },
+    {
+      "path": "incoming/responses/unsupported.bin",
+      "direction": "incoming",
+      "seam": "IncomingShareSession.SendFailureResponse",
+      "kind": "response",
+      "status": "unsupported",
+      "outcome": "final"
+    },
+    {
+      "path": "incoming/responses/timed-out.bin",
+      "direction": "incoming",
+      "seam": "ShareSession.WriteResponseFrame",
+      "kind": "response",
+      "status": "timed-out",
+      "outcome": "frame-written"
+    },
+    {
+      "path": "incoming/responses/reject.bin",
+      "direction": "incoming",
+      "seam": "ShareSession.WriteResponseFrame",
+      "kind": "response",
+      "status": "reject",
+      "outcome": "frame-written"
+    },
+    {
+      "path": "incoming/responses/cancel.bin",
+      "direction": "incoming",
+      "seam": "ShareSession.WriteCancelFrame",
+      "kind": "cancel",
+      "outcome": "cancel-frame-written"
+    },
+    {
+      "path": "outgoing/introductions/file.bin",
+      "direction": "outgoing",
+      "seam": "OutgoingShareSession.SendIntroduction",
+      "kind": "introduction",
+      "attachment": "file",
+      "outcome": "written"
+    },
+    {
+      "path": "outgoing/introductions/text.bin",
+      "direction": "outgoing",
+      "seam": "OutgoingShareSession.SendIntroduction",
+      "kind": "introduction",
+      "attachment": "text",
+      "outcome": "written"
+    },
+    {
+      "path": "outgoing/introductions/url.bin",
+      "direction": "outgoing",
+      "seam": "OutgoingShareSession.SendIntroduction",
+      "kind": "introduction",
+      "attachment": "url",
+      "outcome": "written"
+    }
+  ]
+}

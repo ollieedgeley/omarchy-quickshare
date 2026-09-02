@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { failureEvents } from "./compose-runner.mjs";
-import { parseEvents } from "./sharing-self-test.mjs";
+import { failureEvents } from "../compose-runner.mjs";
+import { parseEvents } from "./transfer.mjs";
 
 const BINARY = "/usr/local/bin/nearby_sharing_cli";
 const POLL_INTERVAL_MS = 100;

@@ -2,10 +2,8 @@ import { createHash } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
-  cpSync,
   mkdirSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -13,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 
 import { run } from "../../../tools/gates/lib/process.mjs";
-import { patchGoogleOverlay } from "./google-overlay.mjs";
+import { prepareOracleReference } from "./reference-preparation.mjs";
 import { runSelectedGtest } from "./selected-gtest.mjs";
 
 export { assertGtestEvidence } from "./selected-gtest.mjs";
@@ -35,6 +33,7 @@ const WORKSPACE = join(REFERENCE, "workspaces", "google-nearby");
 const OVERRIDES = join(REFERENCE, "overrides");
 const BAZEL_CACHE = join(REFERENCE, "bazel");
 const ARTIFACTS = join(REFERENCE, "bin");
+const FIXTURE_GENERATOR = join(ROOT, "tools", "oracle", "sharing-fixtures");
 const STATE_PATH = join(REFERENCE, "image.json");
 const CONTAINER = "omarchy-quickshare-oracle";
 const START_LIMIT_MS = 60_000;
@@ -274,167 +273,18 @@ function provision(manifest, fingerprint) {
   process.stdout.write(`Prepared oracle image ${imageId}.\n`);
 }
 
-function assertCachePath(path) {
-  const expectedPrefix = `${CACHE_ROOT}/`;
-  if (!resolve(path).startsWith(expectedPrefix)) {
-    throw new Error(`refusing unsafe test-environment path: ${path}`);
-  }
-}
-
-function replaceExpected(source, [before, after], count = 1) {
-  const occurrences = source.split(before).length - 1;
-  if (occurrences !== count) {
-    throw new Error(
-      `expected ${count} Google overlay occurrence(s), ` +
-        `found ${occurrences}: ${before.trim()}`,
-    );
-  }
-  return source.replaceAll(before, after);
-}
-
-function googlePath(...parts) {
-  return join(WORKSPACE, ...parts);
-}
-
-function stripUnsupportedGoogleTargets() {
-  const buildPath = googlePath(
-    "internal",
-    "platform",
-    "implementation",
-    "g3",
-    "BUILD",
-  );
-  let build = readFileSync(buildPath, "utf8");
-  for (const [line, count] of [
-    ['        "webrtc.cc",\n', 1],
-    ['        "webrtc.h",\n', 1],
-    ['        "webrtc_platform.cc",\n', 1],
-    ['        "//internal/platform/implementation:webrtc_platform",\n', 2],
-    [
-      '        "//third_party/webrtc/files/stable/webrtc/api:' +
-        'create_modular_peer_connection_factory",\n',
-      1,
-    ],
-    [
-      '        "//third_party/webrtc/files/stable/webrtc/api:' +
-        'peer_connection_interface",\n',
-      1,
-    ],
-    [
-      '        "//third_party/webrtc/files/stable/webrtc/api:scoped_refptr",\n',
-      1,
-    ],
-    [
-      '        "//third_party/webrtc/files/stable/webrtc/rtc_base:checks",\n',
-      1,
-    ],
-    [
-      '        "//third_party/webrtc/files/stable/webrtc/rtc_base:' +
-        'threading",\n',
-      1,
-    ],
-  ]) {
-    build = replaceExpected(build, [line, ""], count);
-  }
-  build = replaceExpected(build, [
-    '        "@com_google_protobuf//json",\n',
-    '        "@com_google_protobuf//:json",\n',
-  ]);
-  writeFileSync(buildPath, build);
-}
-
-function prepareGoogleLinuxOverlay() {
-  stripUnsupportedGoogleTargets();
-  patchGoogleOverlay(googlePath, replaceExpected);
-}
-
-function copyGoogleSource() {
-  assertCachePath(WORKSPACE);
-  const source = join(SOURCE_TREES, "google-nearby");
-  if (!readFileSync(join(source, "MODULE.bazel"), "utf8")) {
-    throw new Error(
-      "Google Nearby source is missing; run `make sources-fetch`",
-    );
-  }
-  rmSync(WORKSPACE, { recursive: true, force: true });
-  mkdirSync(dirname(WORKSPACE), { recursive: true });
-  cpSync(source, WORKSPACE, { recursive: true, preserveTimestamps: true });
-  cpSync(
-    join(DIRECTORY, "overlays", "gloop"),
-    join(WORKSPACE, "third_party", "gloop"),
-    {
-      recursive: true,
-      preserveTimestamps: true,
-    },
-  );
-  cpSync(
-    join(DIRECTORY, "overlays", "webrtc"),
-    join(WORKSPACE, "third_party", "webrtc", "files", "stable", "webrtc"),
-    {
-      recursive: true,
-      preserveTimestamps: true,
-    },
-  );
-  prepareGoogleLinuxOverlay();
-}
-
-function prepareSimpleOverride(sourceName, buildFile) {
-  const destination = join(OVERRIDES, sourceName);
-  cpSync(join(SOURCE_TREES, sourceName), destination, {
-    preserveTimestamps: true,
-    recursive: true,
-  });
-  copyFileSync(
-    join(DIRECTORY, "overlays", buildFile),
-    join(destination, "BUILD.bazel"),
-  );
-  writeFileSync(join(destination, "WORKSPACE"), "");
-}
-
-function prepareOverrides() {
-  rmSync(OVERRIDES, { recursive: true, force: true });
-  mkdirSync(OVERRIDES, { recursive: true });
-  for (const [sourceName, buildFile] of [
-    ["smhasher", "smhasher.BUILD.bazel"],
-    ["nlohmann-json", "nlohmann-json.BUILD.bazel"],
-  ]) {
-    prepareSimpleOverride(sourceName, buildFile);
-  }
-  const nisaba = join(OVERRIDES, "nisaba");
-  cpSync(join(SOURCE_TREES, "nisaba"), nisaba, {
-    preserveTimestamps: true,
-    recursive: true,
-  });
-  copyFileSync(
-    join(DIRECTORY, "overlays", "nisaba-port.BUILD.bazel"),
-    join(nisaba, "nisaba", "port", "BUILD.bazel"),
-  );
-  copyFileSync(
-    join(DIRECTORY, "overlays", "nisaba-thread-pool.h"),
-    join(nisaba, "nisaba", "port", "thread_pool.h"),
-  );
-  writeFileSync(join(nisaba, "WORKSPACE"), "");
-}
-
-function writeReferenceMetadata(manifest, fingerprint) {
-  const lockArchive = join(DIRECTORY, manifest.reference.lockFile);
-  const compressed = readFileSync(lockArchive);
-  validateReferenceLock(manifest, compressed);
-  writeFileSync(join(WORKSPACE, "MODULE.bazel.lock"), gunzipSync(compressed));
-  writeFileSync(
-    join(WORKSPACE, ".quickshare-reference.json"),
-    `${JSON.stringify(
-      { fingerprint, sources: manifest.reference.sources },
-      null,
-      2,
-    )}\n`,
-  );
-}
-
 function prepareReference(manifest, fingerprint) {
-  copyGoogleSource();
-  prepareOverrides();
-  writeReferenceMetadata(manifest, fingerprint);
+  prepareOracleReference({
+    cacheRoot: CACHE_ROOT,
+    directory: DIRECTORY,
+    fingerprint,
+    fixtureGenerator: FIXTURE_GENERATOR,
+    manifest,
+    overrides: OVERRIDES,
+    sourceTrees: SOURCE_TREES,
+    validateReferenceLock,
+    workspace: WORKSPACE,
+  });
 }
 
 function referenceContainerArgs(manifest, network, artifacts = false) {
@@ -748,6 +598,8 @@ function main() {
     selfTest(manifest);
   } else if (mode === "reference-provision") {
     provisionReference(manifest, fingerprint);
+  } else if (mode === "reference-prepare") {
+    prepareReference(manifest, fingerprint);
   } else if (mode === "reference-self-test") {
     selfTestReference(manifest);
   } else if (mode === "medium-self-test") {

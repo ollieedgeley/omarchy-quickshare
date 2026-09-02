@@ -187,12 +187,14 @@ implements the Omarchy group-client role. A future group-owner promise would
 need a second implementation and a new executable route. See its
 [`wifi_direct.cc`](https://github.com/kidfromjupiter/nearby/blob/6887b0983200c6c8c29e614ea2633d13bf18315d/internal/platform/implementation/linux/wifi_direct.cc).
 
-Before application code starts, every required route must have a pinned tool
-manifest, deterministic setup and cleanup, a passing reference self-test, an
-inbound and outbound Rust-facing scenario contract, negative and fallback
-cases, and a child quality gate under 60 seconds. The gate claim is limited to
-the paths actually executed. Physical-device coverage remains necessary for
-OEM differences, account/contact trust, AWDL, NFC, hosted QR behavior, and stock
+Before application behavior starts, its tools and upstream inputs must be
+pinned, its Google-derived state and payload fixtures must pass, and its fast
+adapter contract must run against an independently checked transport seam.
+Add each live reference route to release verification when deterministic setup,
+cleanup, a passing self-test, both applicable roles, negative and fallback
+cases, and a child gate under 60 seconds exist. The gate claim is limited to the
+paths actually executed. Physical-device coverage remains necessary for OEM
+differences, account/contact trust, AWDL, NFC, hosted QR behavior, and stock
 medium-selection claims.
 
 ## Reproducible oracle builds

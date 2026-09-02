@@ -73,17 +73,13 @@ Google's pinned C++ implementation communicates through a separate, versioned te
 
 Tests compare semantic states, decoded messages, authentication results, payload bytes, and terminal outcomes. They compare raw bytes only when Google supplies a deterministic reference value. Random keys, endpoint identifiers, and ciphertext are verified through live interoperability or decoded meaning.
 
-### Gate before transfer implementation
+### Development and release thresholds
 
-No transfer application code starts until the verification environment is ready. "Ready" means:
+Application behavior may start when its tools and upstream inputs are pinned, independent fixtures cover its states and payloads, deterministic adapters pass the shared contracts, and the underlying operating-system transport self-tests are green. The first failing behavior test permits only the code needed to pass it. Add missing fixtures and contracts with the slice that first needs them.
 
-1. every required tool and upstream revision is pinned
-2. each required oracle, simulator, D-Bus environment, and virtual-radio environment can pass a self-test against an existing reference implementation; experimental Android candidates must pass the separate admission control below before becoming required jobs
-3. every connection type above has an executable test route and named pass criteria for inbound and outbound transfers wherever the protocol supports both roles
-4. the full pre-push gate includes every reproducible oracle, simulator, virtual-radio, virtual-service, fault-injection, and Android virtual-device check; physical-device testing remains a separate manual procedure
-5. failures preserve enough structured diagnostics and packet traces to identify the failed protocol stage without collecting peer names, filenames, addresses, keys, or payload contents
+Release evidence has the stronger threshold described in [bidirectional programmatic verification](research/bidirectional-programmatic-verification.md). Each claimed connection type must prove the real adapter, encrypted connection, exact payload, terminal outcome, and cleanup in every supported role. A known-red reference-peer experiment is a diagnostic, not a development blocker or compatibility result.
 
-Setting up the environment does not mean writing every transfer test in advance. After the environment passes its own checks, application development follows a vertical red-to-green loop through the confirmed seams. The first failing behavior test permits only the application code needed to pass that test.
+The pre-push gate includes every admitted reproducible check. Admit an experimental route after it passes repeatably within its time budget. Physical devices remain a separate manual procedure. Every failure preserves structured, privacy-safe evidence of the failed protocol stage.
 
 ## Test-support policy
 
@@ -228,22 +224,20 @@ TDD slices, semantic commits, targeted pre-commit checks, affected-test selectio
 
 Cargo remains the Rust build system. Make targets delegate Rust compilation, formatting, linting, documentation, and tests to Cargo. The Makefile must not call `rustc` directly or duplicate dependency, feature, profile, or target selection that belongs in Cargo configuration.
 
-The root Makefile should expose stable targets for at least:
+`make help` is the authoritative list of public targets. Add a stable aggregate
+only when it has executable responsibilities and a targeted child command for
+failure feedback. Do not document planned targets as if they already exist.
 
-```text
-help
-build
-check
-test
-test-radio
-test-android
-oracle
-fuzz
-verify
-clean
-```
-
-`verify` is the complete non-release quality gate. Smaller targets may compose into it. It must include every reproducible check supported by the pinned C++ oracle, protocol fixtures, deterministic network simulation, D-Bus services, fault injectors, virtual Bluetooth controllers, virtual Wi-Fi radios, and a proven Android virtual-device route. Checks that need Linux capabilities must run through a prepared local VM, container, or namespace without an interactive privilege prompt. `build` produces the normal distributable artifact and runs only after `verify` passes in the pre-push hook. No Make target or Git hook may require a physical phone.
+`verify` is the complete non-release quality gate. Smaller targets may compose
+into it. It includes every admitted reproducible check supported by the pinned
+C++ oracle, protocol fixtures, deterministic network simulation, D-Bus
+services, fault injectors, virtual Bluetooth controllers, virtual Wi-Fi radios,
+and Android routes. An experiment becomes admitted after its reference control
+passes repeatably. Checks that need Linux capabilities must run through a
+prepared local VM, container, or namespace without an interactive privilege
+prompt. `build` produces the normal distributable artifact and runs only after
+`verify` passes in the pre-push hook. No Make target or Git hook may require a
+physical phone.
 
 ### Fail-fast and runtime budget
 

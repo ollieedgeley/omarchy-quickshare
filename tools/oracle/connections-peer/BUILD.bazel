@@ -1,0 +1,21 @@
+# Copyright 2026 Omarchy Quick Share contributors
+# SPDX-License-Identifier: Apache-2.0
+
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+cc_binary(
+    name = "connections_peer",
+    srcs = [
+        "connections_peer.cc",
+        "connections_peer.h",
+        "connections_peer_main.cc",
+        "connections_peer_options.cc",
+    ],
+    deps = [
+        "//connections:core",
+        "//connections:core_types",
+        "//internal/crypto_cros:crypto_cros",
+        "//internal/platform/implementation/linux:linux",
+        "@com_google_protobuf//:protobuf",
+    ],
+)

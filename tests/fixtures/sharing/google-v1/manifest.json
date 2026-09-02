@@ -1,0 +1,87 @@
+{
+  "files": [
+    {
+      "bytes": 64,
+      "path": "incoming/introductions/apk.bin",
+      "sha256": "49928b0c158f35200b14afbaa847b498fc3bb12b747baf6afc173f8a800c988c"
+    },
+    {
+      "bytes": 61,
+      "path": "incoming/introductions/file.bin",
+      "sha256": "d0d25bd5b9c77e9eada2c186fc915b4f28dc9d08082e839f60fec93aff6610ab"
+    },
+    {
+      "bytes": 31,
+      "path": "incoming/introductions/text.bin",
+      "sha256": "4f9982a950e1f20fc78a0b58c58b3accabe197d5a41d1f31a71bfe7f168edf59"
+    },
+    {
+      "bytes": 30,
+      "path": "incoming/introductions/url.bin",
+      "sha256": "0dbb59a8020c53f142d427924167eaa74ee002c3935b24ca1aae7459c9bde814"
+    },
+    {
+      "bytes": 10,
+      "path": "incoming/responses/accept.bin",
+      "sha256": "2d98e68c4ec845af3f4f1b818861e9060a609a9bd80fd7c20455a3144013e3a2"
+    },
+    {
+      "bytes": 6,
+      "path": "incoming/responses/cancel.bin",
+      "sha256": "bac2bb2c6de8fd966f509d985c11a0e8bfaf156b62322756fb9d2a348d6a3bbe"
+    },
+    {
+      "bytes": 10,
+      "path": "incoming/responses/not-enough-space.bin",
+      "sha256": "822f72b5e8cbe64264c3065da779a2aa4c54021a33d04f056d4fe2092dce2995"
+    },
+    {
+      "bytes": 10,
+      "path": "incoming/responses/reject.bin",
+      "sha256": "88114e97f63d2bc1e3018d2542942309321ba919aa005c15ba54f45bd74cf895"
+    },
+    {
+      "bytes": 10,
+      "path": "incoming/responses/timed-out.bin",
+      "sha256": "b6f0a5cdbd3678123943e5ec59e43420d45ac25b02b2e774db968c82b901babd"
+    },
+    {
+      "bytes": 10,
+      "path": "incoming/responses/unsupported.bin",
+      "sha256": "a2cf2cd2dc6f755e3a5ca9ee5d9a375891d7482132130c06219e0ba6163a90b7"
+    },
+    {
+      "bytes": 73,
+      "path": "outgoing/introductions/file.bin",
+      "sha256": "d1ca70709da39c5ac118942efeb6c130b7257aee9078c0443be4e4dead53ae14"
+    },
+    {
+      "bytes": 35,
+      "path": "outgoing/introductions/text.bin",
+      "sha256": "de8ef4174eda8ed5ee569373835c9e51de0e243cf18c6aff6b0290062554343a"
+    },
+    {
+      "bytes": 34,
+      "path": "outgoing/introductions/url.bin",
+      "sha256": "9e8cebc47fddd6844b8144bb77170eb177c50fa0390709e2988ac3139f2e8022"
+    },
+    {
+      "bytes": 3149,
+      "path": "trace.json",
+      "sha256": "d7a381428b1594b23dd7af4d08c8ab296f42e6870a384295eb68a507f937894c"
+    }
+  ],
+  "generator": {
+    "environmentFingerprint": "7ab52d2ded83a413490094bc7e844a29e093753b1273c51f05fa1ff219c56f44",
+    "target": "//tools/quickshare_fixture_generator:sharing_fixture_generator"
+  },
+  "schema": 1,
+  "source": {
+    "id": "nearby-linux",
+    "url": "https://github.com/kidfromjupiter/nearby/archive/6887b0983200c6c8c29e614ea2633d13bf18315d.tar.gz",
+    "revision": "6887b0983200c6c8c29e614ea2633d13bf18315d",
+    "sha256": "0a3bfb100a95d622dc3f19a28e49e6e19a03850a3c2c31078bb9dea2127aed38",
+    "license": "Apache-2.0",
+    "purpose": "Live Google-derived Linux reference peer"
+  }
+}

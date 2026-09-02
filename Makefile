@@ -15,21 +15,12 @@ RUFF ?= $(CURDIR)/.cache/tools/ruff-0.16.0/ruff
 REPOSITORY_FILES = git ls-files --cached --others --exclude-standard -z
 
 .PHONY: help setup hooks-install ruff-provision sources-fetch
-.PHONY: oracle-provision oracle-reference-provision oracle-up oracle-down
-.PHONY: nearshare-provision nearshare-up nearshare-down
-.PHONY: nearby-linux-provision nearby-linux-up nearby-linux-down
-.PHONY: proxy-provision proxy-up proxy-down
-.PHONY: dbus-provision dbus-up dbus-down
-.PHONY: bluetooth-radio-provision bluetooth-radio-up bluetooth-radio-down
-.PHONY: network-provision network-up network-down
-.PHONY: android-preflight android-bootstrap android-license android-provision
-.PHONY: android-orchestrator-provision
-.PHONY: android-seed android-up android-down test-android-nearby
 .PHONY: format format-app format-tooling
 .PHONY: format-check format-app-check format-tooling-check check
 .PHONY: lint-rust lint-javascript lint-python lint-ast lint-docs
 .PHONY: lint-structure lint-structure-app lint-structure-tooling
-.PHONY: lint-sources lint-oracle lint-nearshare lint-nearby-linux lint-proxies
+.PHONY: lint-sources lint-oracle lint-nearshare lint-nearby-linux
+.PHONY: lint-diverse-lan lint-proxies
 .PHONY: lint-dbus
 .PHONY: lint-bluetooth-radio lint-network lint-android
 .PHONY: test test-rust test-contracts test-tooling test-ast-rules
@@ -37,7 +28,8 @@ REPOSITORY_FILES = git ls-files --cached --others --exclude-standard -z
 .PHONY: test-oracle-toolchain test-oracle-reference
 .PHONY: test-nearshare-reference test-nearby-linux-tooling
 .PHONY: test-nearby-linux-connections test-nearby-linux-sharing
-.PHONY: test-nearby-linux-sharing-actions
+.PHONY: test-nearby-linux-sharing-actions sharing-fixtures-update
+.PHONY: test-nearby-linux-sharing-fixtures
 .PHONY: test-oracle-bluetooth test-oracle-ble test-oracle-lan
 .PHONY: test-oracle-hotspot test-oracle-wifi-direct
 .PHONY: test-oracle-bwu-handler test-oracle-bwu-fallback
@@ -72,6 +64,7 @@ setup: ## Install pinned development tools and activate repository hooks.
 	@$(MAKE) dbus-provision
 	@$(MAKE) bluetooth-radio-provision
 	@$(MAKE) network-provision
+	@$(MAKE) live-bwu-kvm-provision
 
 hooks-install: ## Activate Husky and initialize the staged CodeGraph mirror.
 	@$(NODE_BIN)/husky
@@ -83,96 +76,6 @@ ruff-provision: ## Install the pinned standalone Python quality tool.
 
 sources-fetch: ## Download, hash-check, and extract every pinned test source.
 	@node tools/gates/sources.mjs fetch
-
-oracle-provision: ## Build the pinned oracle toolchain image.
-	@node tests/environments/oracle/environment.mjs provision
-
-oracle-reference-provision: ## Build the pinned Google UKEY2 artifacts.
-	@node tests/environments/oracle/environment.mjs reference-provision
-
-oracle-up: ## Start and readiness-check the prepared oracle environment.
-	@node tests/environments/oracle/environment.mjs up
-
-oracle-down: ## Stop the prepared oracle environment within 60 seconds.
-	@node tests/environments/oracle/environment.mjs down
-
-nearshare-provision: ## Build the pinned implementation-diverse LAN peer.
-	@node tests/environments/nearshare/environment.mjs provision
-
-nearshare-up: ## Start and prepare the pinned NearShare peer.
-	@node tests/environments/nearshare/environment.mjs up
-
-nearshare-down: ## Stop the prepared NearShare peer.
-	@node tests/environments/nearshare/environment.mjs down
-
-nearby-linux-provision: ## Build the pinned Google-derived Linux peers.
-	@node tests/environments/nearby-linux/environment.mjs provision
-
-nearby-linux-up: ## Start and readiness-check the prepared Linux peers.
-	@node tests/environments/nearby-linux/environment.mjs up
-
-nearby-linux-down: ## Stop the prepared Linux peers and remove case data.
-	@node tests/environments/nearby-linux/environment.mjs down
-
-proxy-provision: ## Build pinned Toxiproxy and prove its offline rebuild.
-	@node tests/environments/proxies/environment.mjs provision
-
-proxy-up: ## Start and readiness-check Toxiproxy, measured outside test time.
-	@node tests/environments/proxies/environment.mjs up
-
-proxy-down: ## Stop Toxiproxy, measured outside test time.
-	@node tests/environments/proxies/environment.mjs down
-
-dbus-provision: ## Build the pinned BlueZ and NetworkManager private-bus image.
-	@node tests/environments/bluez/dbus-environment.mjs provision
-
-dbus-up: ## Start and readiness-check the private D-Bus environment.
-	@node tests/environments/bluez/dbus-environment.mjs up
-
-dbus-down: ## Stop the private D-Bus environment outside test time.
-	@node tests/environments/bluez/dbus-environment.mjs down
-
-bluetooth-radio-provision: ## Build the pinned BlueZ and Bumble radio image.
-	@node tests/environments/bluez/radio-environment.mjs provision
-
-bluetooth-radio-up: ## Boot and readiness-check the isolated radio guest.
-	@node tests/environments/bluez/radio-environment.mjs up
-
-bluetooth-radio-down: ## Stop the isolated radio guest and report teardown.
-	@node tests/environments/bluez/radio-environment.mjs down
-
-network-provision: ## Build pinned Wi-Fi tools and deterministic wmediumd.
-	@node tests/environments/network/environment.mjs provision
-
-network-up: ## Start isolated hwsim radios and report readiness time.
-	@node tests/environments/network/environment.mjs up
-
-network-down: ## Remove isolated radios and report teardown time.
-	@node tests/environments/network/environment.mjs down
-
-android-preflight: ## Check host support for the pinned Android AVD lab.
-	@$(TIMEOUT) node tests/environments/android/environment.mjs preflight
-
-android-bootstrap: ## Fetch and verify the pinned Android host tools.
-	@node tests/environments/android/environment.mjs bootstrap
-
-android-orchestrator-provision: ## Build the pinned Mobly controller image.
-	@node tests/environments/android/environment.mjs orchestrator-provision
-
-android-license: ## Interactively review the Android SDK license.
-	@node tests/environments/android/environment.mjs license
-
-android-provision: ## Install the SDK, create AVDs, and build the probe.
-	@node tests/environments/android/environment.mjs provision
-
-android-seed: ## Cold-boot both AVDs and save their Quick Boot state.
-	@node tests/environments/android/environment.mjs seed
-
-android-up: ## Boot both AVDs, wait for readiness, and install the probe.
-	@node tests/environments/android/environment.mjs up
-
-android-down: ## Stop both AVDs and report teardown time.
-	@node tests/environments/android/environment.mjs down
 
 format: format-app format-tooling ## Rewrite files with pinned formatters.
 
@@ -237,6 +140,9 @@ lint-nearshare: ## Validate the pinned diverse peer without starting Docker.
 lint-nearby-linux: ## Validate Google-derived Linux peer inputs statically.
 	@$(TIMEOUT) node tests/environments/nearby-linux/environment.mjs validate
 
+lint-diverse-lan: ## Validate isolated diverse-LAN interop inputs statically.
+	@$(TIMEOUT) node tests/environments/diverse-lan/environment.mjs validate
+
 lint-proxies: ## Validate pinned proxy environment inputs without starting it.
 	@$(TIMEOUT) node tests/environments/proxies/environment.mjs validate
 
@@ -282,7 +188,7 @@ test-nearshare-reference: ## Test full LAN Sharing in both peer roles.
 		$(TIMEOUT) node tests/environments/nearshare/environment.mjs self-test
 
 test-nearby-linux-tooling: ## Test Nearby Linux environment contracts.
-	@$(TIMEOUT) node --test tests/environments/nearby-linux/environment.test.mjs
+	@$(TIMEOUT) node --test tests/environments/nearby-linux/*.test.mjs
 
 test-nearby-linux-connections: ## Exchange exact bytes over Connections LAN.
 	@trap 'node tests/environments/nearby-linux/environment.mjs down' EXIT; \
@@ -300,6 +206,18 @@ test-nearby-linux-sharing-actions: ## Reject and cancel Sharing both ways.
 		node tests/environments/nearby-linux/environment.mjs up; \
 		$(TIMEOUT) node tests/environments/nearby-linux/environment.mjs \
 			sharing-actions-self-test
+
+sharing-fixtures-update: ## Regenerate pinned Google-derived Sharing fixtures.
+	@node tests/environments/nearby-linux/sharing/fixtures/runner.mjs update
+
+test-nearby-linux-sharing-fixtures: ## Compare pinned Sharing fixtures.
+	@$(TIMEOUT) node \
+		tests/environments/nearby-linux/sharing/fixtures/runner.mjs compare
+
+test-diverse-lan: ## Exchange bytes across diverse same-LAN reference peers.
+	@trap 'node tests/environments/diverse-lan/environment.mjs down' EXIT; \
+		node tests/environments/diverse-lan/environment.mjs up; \
+		$(TIMEOUT) node tests/environments/diverse-lan/environment.mjs self-test
 
 test-oracle-bluetooth: ## Check Google's simulated Bluetooth Classic medium.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs \
@@ -408,7 +326,7 @@ verify-app: lint-ast test-rust
 verify-tooling: ## Run tooling static and fast contract gates.
 verify-tooling: format-tooling-check lint-javascript lint-python lint-docs
 verify-tooling: lint-structure-tooling lint-sources lint-oracle lint-nearshare
-verify-tooling: lint-nearby-linux lint-proxies
+verify-tooling: lint-nearby-linux lint-diverse-lan lint-proxies
 verify-tooling: lint-dbus lint-bluetooth-radio lint-network lint-android
 verify-tooling: test-tooling test-ast-rules test-nearby-linux-tooling
 
@@ -416,7 +334,8 @@ verify: ## Run the complete local quality suite.
 verify: verify-app verify-tooling test-source-cache
 verify: test-oracle-toolchain test-oracle-reference test-nearshare-reference
 verify: test-nearby-linux-connections test-nearby-linux-sharing
-verify: test-nearby-linux-sharing-actions
+verify: test-nearby-linux-sharing-actions test-nearby-linux-sharing-fixtures
+verify: test-diverse-lan
 verify: test-oracle-bluetooth test-oracle-ble test-oracle-lan
 verify: test-oracle-hotspot test-oracle-wifi-direct test-oracle-bwu-handler
 verify: test-oracle-bwu-fallback test-proxy-toxiproxy
@@ -468,3 +387,5 @@ pre-commit-test: ## Run changed and conservatively affected tests.
 
 pre-push: ## Verify, then build, every exact local commit tip being pushed.
 	@node tools/hooks/pre-push.mjs
+
+include tools/gates/environments.mk
