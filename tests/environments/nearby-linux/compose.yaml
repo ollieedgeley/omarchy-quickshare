@@ -1,0 +1,80 @@
+name: omarchy-quickshare-nearby-linux
+
+x-peer: &peer
+  image: ${NEARBY_LINUX_IMAGE:?set NEARBY_LINUX_IMAGE}
+  build:
+    context: ${NEARBY_LINUX_BUILD_CONTEXT:?set NEARBY_LINUX_BUILD_CONTEXT}
+    dockerfile: ${NEARBY_LINUX_DOCKERFILE:?set Dockerfile path}
+    args:
+      BUILDER_BASE_PACKAGES: ${BUILDER_BASE_PACKAGES:?set package pins}
+      BUILDER_LLVM_PACKAGES: ${BUILDER_LLVM_PACKAGES:?set package pins}
+      ENVIRONMENT_FINGERPRINT: ${ENVIRONMENT_FINGERPRINT:?set fingerprint}
+      UBUNTU_APT_SNAPSHOT_URL: ${UBUNTU_APT_SNAPSHOT_URL:?set snapshot URL}
+      LLVM_SIGNING_CERT_SHA256: ${LLVM_SIGNING_CERT_SHA256:?set cert SHA-256}
+      LLVM_APT_SOURCE: ${LLVM_APT_SOURCE:?set LLVM apt source}
+      RUNTIME_PACKAGES: ${RUNTIME_PACKAGES:?set package pins}
+  cap_drop:
+    - ALL
+  cap_add:
+    - CHOWN
+    - DAC_OVERRIDE
+    - NET_ADMIN
+    - NET_BIND_SERVICE
+    - NET_RAW
+    - SETGID
+    - SETUID
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /run:rw,nosuid,nodev,size=16m
+    - /tmp:rw,nosuid,nodev,size=64m
+  networks:
+    nearby_linux:
+  healthcheck:
+    test:
+      - CMD-SHELL
+      - >-
+        dbus-send --system --print-reply --dest=org.bluez /org/bluez/hci0
+        org.freedesktop.DBus.Properties.Get string:org.bluez.Adapter1
+        string:Powered && dbus-send --system --print-reply
+        --dest=org.freedesktop.NetworkManager
+        /org/freedesktop/NetworkManager org.freedesktop.DBus.Peer.Ping
+        && nmcli --get-values STATE general
+        | grep --fixed-strings --quiet connected
+        && avahi-daemon --check
+    interval: 1s
+    timeout: 1s
+    retries: 20
+    start_period: 1s
+
+services:
+  peer-a:
+    <<: *peer
+    hostname: quickshare-a
+    networks:
+      nearby_linux:
+        ipv4_address: 172.30.44.10
+    volumes:
+      - type: bind
+        source: ${QUICKSHARE_CASE_A_DIR:?set case A directory}
+        target: /cases
+
+  peer-b:
+    <<: *peer
+    hostname: quickshare-b
+    networks:
+      nearby_linux:
+        ipv4_address: 172.30.44.11
+    volumes:
+      - type: bind
+        source: ${QUICKSHARE_CASE_B_DIR:?set case B directory}
+        target: /cases
+
+networks:
+  nearby_linux:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.44.0/24

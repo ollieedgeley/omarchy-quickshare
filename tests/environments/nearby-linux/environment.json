@@ -1,0 +1,67 @@
+{
+  "bazel": {
+    "sha256": "b4746d3ee7e698b08ebc6a91bd6b4062a25d1b4214a5964f866986f59fc159fb",
+    "url": "https://releases.bazel.build/9.0.1/release/bazel-9.0.1-linux-x86_64",
+    "version": "9.0.1"
+  },
+  "image": "omarchy-quickshare/nearby-linux-peer:2026-09-02",
+  "llvm": {
+    "aptSource": "deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main",
+    "keySha256": "8b2a587ffd672c4687e7581dad4b2f6c1bb2ad6b480cd9771ba2ff48e0b8c75d",
+    "keyUrl": "https://apt.llvm.org/llvm-snapshot.gpg.key",
+    "version": 21
+  },
+  "packages": {
+    "builder": [
+      "build-essential=12.10ubuntu1",
+      "ca-certificates=20260601~24.04.1",
+      "cmake=3.28.3-1build7",
+      "git=1:2.43.0-1ubuntu7.3",
+      "gnupg=2.4.4-2ubuntu17.4",
+      "libasound2-dev=1.2.11-1ubuntu0.3",
+      "libbluetooth-dev=5.72-0ubuntu5.5",
+      "libcurlpp-dev=0.8.1-5.3build1",
+      "libgpg-error-dev=1.47-3build2.1",
+      "libkrb5-dev=1.20.1-6ubuntu2.8",
+      "libldap-dev=2.6.10+dfsg-0ubuntu0.24.04.1",
+      "libssl-dev=3.0.13-0ubuntu3.15",
+      "libsystemd-dev=255.4-1ubuntu8.17",
+      "libunistring-dev=1.1-2build1.1",
+      "ninja-build=1.11.1-2",
+      "pkg-config=1.8.1-2build1"
+    ],
+    "llvm": [
+      "clang-21=1:21.1.8~++20251221032922+2078da43e25a-1~exp1~20251221153059.70"
+    ],
+    "runtime": [
+      "avahi-daemon=0.8-13ubuntu6.2",
+      "dbus-bin=1.14.10-4ubuntu4.1",
+      "dbus=1.14.10-4ubuntu4.1",
+      "iproute2=6.1.0-1ubuntu6.4",
+      "libbluetooth3=5.72-0ubuntu5.5",
+      "libcurl4t64=8.5.0-2ubuntu10.13",
+      "libgcc-s1=14.2.0-4ubuntu2~24.04.1",
+      "libssl3t64=3.0.13-0ubuntu3.15",
+      "libstdc++6=14.2.0-4ubuntu2~24.04.1",
+      "libsystemd0=255.4-1ubuntu8.17",
+      "network-manager=1.46.0-1ubuntu2.8",
+      "python3-dbusmock=0.31.1-1",
+      "util-linux=2.39.3-9ubuntu6.6"
+    ]
+  },
+  "schema": 1,
+  "sources": [
+    "gloop",
+    "google-ukey2",
+    "nearby-linux",
+    "nisaba",
+    "nlohmann-json",
+    "protobuf-matchers",
+    "sdbus-cpp",
+    "smhasher"
+  ],
+  "ubuntu": {
+    "base": "ubuntu@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517",
+    "snapshotUrl": "https://snapshot.ubuntu.com/ubuntu/20260901T000000Z"
+  }
+}

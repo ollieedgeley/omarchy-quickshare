@@ -315,6 +315,9 @@ A generator can run each case through the Google implementation and write the ex
 
 Live Sharing interoperability uses a pinned, test-only control wrapper around the Apache-2.0 Linux Nearby fork's `nearby_sharing_cli`. The wrapper must choose peer, accept or reject, cancel at a named stage, report selected media, and emit byte counts and SHA-256. It enters the gate only after reference-to-reference self-tests pass. Add pinned NearShare as an implementation-diverse same-LAN peer; it cannot stand in for Bluetooth, hotspot, or Wi-Fi Direct coverage.
 
+The test-only Google-derived reference lab uses Docker Compose only for its fixed two-peer topology, health, isolated bridge, case mounts, and teardown; a project runner owns its sealed multi-stage build, scenarios, assertions, evidence, and cleanup.
+Each peer uses a private bus, real NetworkManager and Avahi, and an adapter-shaped BlueZ fake that carries no traffic. The lab proves Wi-Fi LAN only; Bluetooth still requires virtual radios.
+
 ### UKEY2 interoperability tests
 
 UKEY2 has an especially good existing pattern. Google's [`ukey2_shell.cc`](https://github.com/google/ukey2/blob/10fc737aa901e873a3367e7e26b88eb01cd55d69/src/main/cpp/src/securegcm/ukey2_shell.cc) is a command-line compatibility endpoint with length-prefixed stdin and stdout messages. It can act as either role, report handshake messages and the verification string, encrypt, decrypt, and return the session-unique value. Google's [`Ukey2CppCompatibilityTest.java`](https://github.com/google/ukey2/blob/10fc737aa901e873a3367e7e26b88eb01cd55d69/src/main/javatest/com/google/security/cryptauth/lib/securegcm/Ukey2CppCompatibilityTest.java) launches that C++ process, completes both initiator and responder handshakes, compares the authentication string, then encrypts in one implementation and decrypts in the other.

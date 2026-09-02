@@ -12,10 +12,12 @@ ESLINT ?= $(NODE_BIN)/eslint
 PRETTIER ?= $(NODE_BIN)/prettier
 MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 RUFF ?= $(CURDIR)/.cache/tools/ruff-0.16.0/ruff
+REPOSITORY_FILES = git ls-files --cached --others --exclude-standard -z
 
 .PHONY: help setup hooks-install ruff-provision sources-fetch
 .PHONY: oracle-provision oracle-reference-provision oracle-up oracle-down
 .PHONY: nearshare-provision nearshare-up nearshare-down
+.PHONY: nearby-linux-provision nearby-linux-up nearby-linux-down
 .PHONY: proxy-provision proxy-up proxy-down
 .PHONY: dbus-provision dbus-up dbus-down
 .PHONY: bluetooth-radio-provision bluetooth-radio-up bluetooth-radio-down
@@ -27,12 +29,15 @@ RUFF ?= $(CURDIR)/.cache/tools/ruff-0.16.0/ruff
 .PHONY: format-check format-app-check format-tooling-check check
 .PHONY: lint-rust lint-javascript lint-python lint-ast lint-docs
 .PHONY: lint-structure lint-structure-app lint-structure-tooling
-.PHONY: lint-sources lint-oracle lint-nearshare lint-proxies lint-dbus
+.PHONY: lint-sources lint-oracle lint-nearshare lint-nearby-linux lint-proxies
+.PHONY: lint-dbus
 .PHONY: lint-bluetooth-radio lint-network lint-android
 .PHONY: test test-rust test-contracts test-tooling test-ast-rules
 .PHONY: test-source-cache
 .PHONY: test-oracle-toolchain test-oracle-reference
-.PHONY: test-nearshare-reference
+.PHONY: test-nearshare-reference test-nearby-linux-tooling
+.PHONY: test-nearby-linux-connections test-nearby-linux-sharing
+.PHONY: test-nearby-linux-sharing-actions
 .PHONY: test-oracle-bluetooth test-oracle-ble test-oracle-lan
 .PHONY: test-oracle-hotspot test-oracle-wifi-direct
 .PHONY: test-proxy-toxiproxy test-dbus-bluez test-dbus-networkmanager
@@ -61,6 +66,7 @@ setup: ## Install pinned development tools and activate repository hooks.
 	@$(MAKE) oracle-provision
 	@$(MAKE) oracle-reference-provision
 	@$(MAKE) nearshare-provision
+	@$(MAKE) nearby-linux-provision
 	@$(MAKE) proxy-provision
 	@$(MAKE) dbus-provision
 	@$(MAKE) bluetooth-radio-provision
@@ -97,6 +103,15 @@ nearshare-up: ## Start and prepare the pinned NearShare peer.
 
 nearshare-down: ## Stop the prepared NearShare peer.
 	@node tests/environments/nearshare/environment.mjs down
+
+nearby-linux-provision: ## Build the pinned Google-derived Linux peers.
+	@node tests/environments/nearby-linux/environment.mjs provision
+
+nearby-linux-up: ## Start and readiness-check the prepared Linux peers.
+	@node tests/environments/nearby-linux/environment.mjs up
+
+nearby-linux-down: ## Stop the prepared Linux peers and remove case data.
+	@node tests/environments/nearby-linux/environment.mjs down
 
 proxy-provision: ## Build pinned Toxiproxy and prove its offline rebuild.
 	@node tests/environments/proxies/environment.mjs provision
@@ -165,7 +180,9 @@ format-app: ## Rewrite Rust application files with rustfmt.
 
 format-tooling: ## Rewrite tooling and repository-document files.
 	@$(RUFF) format .
-	@$(PRETTIER) --write . --ignore-unknown
+	@set -o pipefail; $(REPOSITORY_FILES) | \
+		xargs --null --no-run-if-empty $(PRETTIER) --write \
+			--ignore-unknown --
 
 format-check: format-app-check format-tooling-check ## Check formatted files.
 
@@ -174,7 +191,9 @@ format-app-check: ## Check only Rust application formatting.
 
 format-tooling-check: ## Check tooling and repository-document formatting.
 	@$(TIMEOUT) $(RUFF) format --check .
-	@$(TIMEOUT) $(PRETTIER) --check . --ignore-unknown
+	@set -o pipefail; $(REPOSITORY_FILES) | \
+		$(TIMEOUT) xargs --null --no-run-if-empty $(PRETTIER) --check \
+			--ignore-unknown --
 
 check: ## Compiler-check the complete Cargo workspace.
 	@$(TIMEOUT) cargo check --workspace --all-targets --all-features --locked
@@ -213,6 +232,9 @@ lint-oracle: ## Validate pinned oracle image inputs without starting Docker.
 
 lint-nearshare: ## Validate the pinned diverse peer without starting Docker.
 	@$(TIMEOUT) node tests/environments/nearshare/environment.mjs validate
+
+lint-nearby-linux: ## Validate Google-derived Linux peer inputs statically.
+	@$(TIMEOUT) node tests/environments/nearby-linux/environment.mjs validate
 
 lint-proxies: ## Validate pinned proxy environment inputs without starting it.
 	@$(TIMEOUT) node tests/environments/proxies/environment.mjs validate
@@ -257,6 +279,26 @@ test-nearshare-reference: ## Test full LAN Sharing in both peer roles.
 	@trap 'node tests/environments/nearshare/environment.mjs down' EXIT; \
 		node tests/environments/nearshare/environment.mjs up; \
 		$(TIMEOUT) node tests/environments/nearshare/environment.mjs self-test
+
+test-nearby-linux-tooling: ## Test Nearby Linux environment contracts.
+	@$(TIMEOUT) node --test tests/environments/nearby-linux/environment.test.mjs
+
+test-nearby-linux-connections: ## Exchange exact bytes over Connections LAN.
+	@trap 'node tests/environments/nearby-linux/environment.mjs down' EXIT; \
+		node tests/environments/nearby-linux/environment.mjs up; \
+		$(TIMEOUT) node tests/environments/nearby-linux/environment.mjs \
+			connections-self-test
+
+test-nearby-linux-sharing: ## Accept Sharing transfers in both peer roles.
+	@trap 'node tests/environments/nearby-linux/environment.mjs down' EXIT; \
+		node tests/environments/nearby-linux/environment.mjs up; \
+		$(TIMEOUT) node tests/environments/nearby-linux/environment.mjs self-test
+
+test-nearby-linux-sharing-actions: ## Reject and cancel Sharing both ways.
+	@trap 'node tests/environments/nearby-linux/environment.mjs down' EXIT; \
+		node tests/environments/nearby-linux/environment.mjs up; \
+		$(TIMEOUT) node tests/environments/nearby-linux/environment.mjs \
+			sharing-actions-self-test
 
 test-oracle-bluetooth: ## Check Google's simulated Bluetooth Classic medium.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs \
@@ -357,13 +399,15 @@ verify-app: lint-ast test-rust
 verify-tooling: ## Run tooling static and fast contract gates.
 verify-tooling: format-tooling-check lint-javascript lint-python lint-docs
 verify-tooling: lint-structure-tooling lint-sources lint-oracle lint-nearshare
-verify-tooling: lint-proxies
+verify-tooling: lint-nearby-linux lint-proxies
 verify-tooling: lint-dbus lint-bluetooth-radio lint-network lint-android
-verify-tooling: test-tooling test-ast-rules
+verify-tooling: test-tooling test-ast-rules test-nearby-linux-tooling
 
 verify: ## Run the complete local quality suite.
 verify: verify-app verify-tooling test-source-cache
 verify: test-oracle-toolchain test-oracle-reference test-nearshare-reference
+verify: test-nearby-linux-connections test-nearby-linux-sharing
+verify: test-nearby-linux-sharing-actions
 verify: test-oracle-bluetooth test-oracle-ble test-oracle-lan
 verify: test-oracle-hotspot test-oracle-wifi-direct test-proxy-toxiproxy
 verify: test-dbus-bluez test-dbus-networkmanager
