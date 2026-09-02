@@ -1,0 +1,40 @@
+[
+  {
+    "schema": 1,
+    "id": "inbound-text-rejected",
+    "direction": "inbound",
+    "medium": "same_lan",
+    "local_role": "responder",
+    "attachment": {
+      "kind": "text",
+      "size": 5,
+      "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    },
+    "peer_decision": "reject",
+    "cancellation": null,
+    "expected": {
+      "terminal": "rejected",
+      "transferred_bytes": 0,
+      "cleanup_complete": true
+    }
+  },
+  {
+    "schema": 1,
+    "id": "outbound-url-rejected",
+    "direction": "outbound",
+    "medium": "same_lan",
+    "local_role": "initiator",
+    "attachment": {
+      "kind": "url",
+      "size": 5,
+      "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    },
+    "peer_decision": "reject",
+    "cancellation": null,
+    "expected": {
+      "terminal": "rejected",
+      "transferred_bytes": 0,
+      "cleanup_complete": true
+    }
+  }
+]

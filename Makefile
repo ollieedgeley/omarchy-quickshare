@@ -28,7 +28,8 @@ RUFF ?= $(CURDIR)/.cache/tools/ruff-0.16.0/ruff
 .PHONY: lint-structure lint-structure-app lint-structure-tooling
 .PHONY: lint-sources lint-oracle lint-proxies lint-dbus
 .PHONY: lint-bluetooth-radio lint-network lint-android
-.PHONY: test test-rust test-tooling test-ast-rules test-source-cache
+.PHONY: test test-rust test-contracts test-tooling test-ast-rules
+.PHONY: test-source-cache
 .PHONY: test-oracle-toolchain test-oracle-reference
 .PHONY: test-oracle-bluetooth test-oracle-ble test-oracle-lan
 .PHONY: test-oracle-hotspot test-oracle-wifi-direct
@@ -216,6 +217,9 @@ lint-android: ## Validate pinned Android SDK, probe, and AVD inputs.
 test-rust: ## Run complete workspace Rust tests and doc tests.
 	@$(TIMEOUT) cargo test --workspace --all-targets --all-features --locked
 	@$(TIMEOUT) cargo test --workspace --doc --all-features --locked
+
+test-contracts: ## Run shared transfer scenarios against fast test doubles.
+	@$(TIMEOUT) cargo test -p quickshare-contract-tests --test suite --locked
 
 test-tooling: ## Run quality-gate and hook contract tests.
 	@$(TIMEOUT) npm run test:tooling

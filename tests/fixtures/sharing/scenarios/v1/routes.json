@@ -1,0 +1,192 @@
+[
+  {
+    "schema": 1,
+    "id": "ble-inbound-responder-completes",
+    "direction": "inbound",
+    "medium": "ble",
+    "local_role": "responder",
+    "attachment": {
+      "kind": "file",
+      "size": 11,
+      "sha256": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    },
+    "peer_decision": "accept",
+    "cancellation": null,
+    "expected": {
+      "terminal": "completed",
+      "transferred_bytes": 11,
+      "cleanup_complete": true
+    }
+  },
+  {
+    "schema": 1,
+    "id": "ble-outbound-initiator-completes",
+    "direction": "outbound",
+    "medium": "ble",
+    "local_role": "initiator",
+    "attachment": {
+      "kind": "file",
+      "size": 11,
+      "sha256": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    },
+    "peer_decision": "accept",
+    "cancellation": null,
+    "expected": {
+      "terminal": "completed",
+      "transferred_bytes": 11,
+      "cleanup_complete": true
+    }
+  },
+  {
+    "schema": 1,
+    "id": "classic-inbound-initiator-completes",
+    "direction": "inbound",
+    "medium": "bluetooth_classic",
+    "local_role": "initiator",
+    "attachment": {
+      "kind": "file",
+      "size": 11,
+      "sha256": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    },
+    "peer_decision": "accept",
+    "cancellation": null,
+    "expected": {
+      "terminal": "completed",
+      "transferred_bytes": 11,
+      "cleanup_complete": true
+    }
+  },
+  {
+    "schema": 1,
+    "id": "classic-outbound-responder-completes",
+    "direction": "outbound",
+    "medium": "bluetooth_classic",
+    "local_role": "responder",
+    "attachment": {
+      "kind": "file",
+      "size": 11,
+      "sha256": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    },
+    "peer_decision": "accept",
+    "cancellation": null,
+    "expected": {
+      "terminal": "completed",
+      "transferred_bytes": 11,
+      "cleanup_complete": true
+    }
+  },
+  {
+    "schema": 1,
+    "id": "same-lan-inbound-responder-completes",
+    "direction": "inbound",
+    "medium": "same_lan",
+    "local_role": "responder",
+    "attachment": {
+      "kind": "file",
+      "size": 11,
+      "sha256": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    },
+    "peer_decision": "accept",
+    "cancellation": null,
+    "expected": {
+      "terminal": "completed",
+      "transferred_bytes": 11,
+      "cleanup_complete": true
+    }
+  },
+  {
+    "schema": 1,
+    "id": "same-lan-outbound-initiator-completes",
+    "direction": "outbound",
+    "medium": "same_lan",
+    "local_role": "initiator",
+    "attachment": {
+      "kind": "file",
+      "size": 11,
+      "sha256": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    },
+    "peer_decision": "accept",
+    "cancellation": null,
+    "expected": {
+      "terminal": "completed",
+      "transferred_bytes": 11,
+      "cleanup_complete": true
+    }
+  },
+  {
+    "schema": 1,
+    "id": "hotspot-inbound-responder-completes",
+    "direction": "inbound",
+    "medium": "hotspot",
+    "local_role": "responder",
+    "attachment": {
+      "kind": "file",
+      "size": 11,
+      "sha256": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    },
+    "peer_decision": "accept",
+    "cancellation": null,
+    "expected": {
+      "terminal": "completed",
+      "transferred_bytes": 11,
+      "cleanup_complete": true
+    }
+  },
+  {
+    "schema": 1,
+    "id": "hotspot-outbound-initiator-completes",
+    "direction": "outbound",
+    "medium": "hotspot",
+    "local_role": "initiator",
+    "attachment": {
+      "kind": "file",
+      "size": 11,
+      "sha256": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    },
+    "peer_decision": "accept",
+    "cancellation": null,
+    "expected": {
+      "terminal": "completed",
+      "transferred_bytes": 11,
+      "cleanup_complete": true
+    }
+  },
+  {
+    "schema": 1,
+    "id": "wifi-direct-inbound-responder-completes",
+    "direction": "inbound",
+    "medium": "wifi_direct",
+    "local_role": "responder",
+    "attachment": {
+      "kind": "file",
+      "size": 11,
+      "sha256": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    },
+    "peer_decision": "accept",
+    "cancellation": null,
+    "expected": {
+      "terminal": "completed",
+      "transferred_bytes": 11,
+      "cleanup_complete": true
+    }
+  },
+  {
+    "schema": 1,
+    "id": "wifi-direct-outbound-initiator-completes",
+    "direction": "outbound",
+    "medium": "wifi_direct",
+    "local_role": "initiator",
+    "attachment": {
+      "kind": "file",
+      "size": 11,
+      "sha256": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    },
+    "peer_decision": "accept",
+    "cancellation": null,
+    "expected": {
+      "terminal": "completed",
+      "transferred_bytes": 11,
+      "cleanup_complete": true
+    }
+  }
+]

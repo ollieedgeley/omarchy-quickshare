@@ -231,7 +231,10 @@ function toolingTests() {
 function workspacePackages(cargo) {
   return cargo.packages
     .filter((pkg) => cargo.workspace_members.includes(pkg.id))
-    .map((pkg) => ({ name: pkg.name }));
+    .map((pkg) => ({
+      hasLibrary: pkg.targets.some((target) => target.kind.includes("lib")),
+      name: pkg.name,
+    }));
 }
 
 function selectPackages(cargo, graph) {
@@ -276,11 +279,13 @@ function runPackageTests(packages) {
       ],
       { cwd: staged.mirror },
     );
-    run(
-      "cargo",
-      ["test", "--package", pkg.name, "--doc", "--all-features", "--locked"],
-      { cwd: staged.mirror },
-    );
+    if (pkg.hasLibrary) {
+      run(
+        "cargo",
+        ["test", "--package", pkg.name, "--doc", "--all-features", "--locked"],
+        { cwd: staged.mirror },
+      );
+    }
   }
 }
 

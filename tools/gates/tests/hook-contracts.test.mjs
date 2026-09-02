@@ -30,11 +30,12 @@ const RUFF_VERSION_PATTERN = /RUFF_VERSION="0\.16\.0"/u;
 const RUFF_DIGEST_PATTERN = /98001c995a134d95f9bc83106a7f94b5/u;
 const RUFF_VERIFY_PATTERN = /verify-tooling:.*lint-python/u;
 
-function cargoPackage(id, name, manifestPath) {
+function cargoPackage({ id, manifestPath, name, targetKinds = ["lib"] }) {
   return Object.fromEntries([
     ["id", id],
     ["name", name],
     ["manifest_path", manifestPath],
+    ["targets", targetKinds.map((kind) => ({ kind: [kind] }))],
   ]);
 }
 
@@ -95,12 +96,16 @@ test("CodeGraph candidate parsing accepts nested JSON response shapes", () => {
 
 test(CARGO_SELECTION_TEST, () => {
   const root = "/repo";
-  const core = cargoPackage(
-    "core 0.1.0",
-    "core",
-    "/repo/crates/core/Cargo.toml",
-  );
-  const app = cargoPackage("app 0.1.0", "app", "/repo/crates/app/Cargo.toml");
+  const core = cargoPackage({
+    id: "core 0.1.0",
+    manifestPath: "/repo/crates/core/Cargo.toml",
+    name: "core",
+  });
+  const app = cargoPackage({
+    id: "app 0.1.0",
+    manifestPath: "/repo/crates/app/Cargo.toml",
+    name: "app",
+  });
   const metadata = {
     packages: [core, app],
     ...Object.fromEntries([["workspace_members", [core.id, app.id]]]),
@@ -114,8 +119,33 @@ test(CARGO_SELECTION_TEST, () => {
   assert.deepEqual(
     packageSelection(metadata, ["crates/core/src/lib.rs"], root),
     [
-      { name: "app", root: "crates/app" },
-      { name: "core", root: "crates/core" },
+      { hasLibrary: true, name: "app", root: "crates/app" },
+      { hasLibrary: true, name: "core", root: "crates/core" },
+    ],
+  );
+});
+
+test("Cargo selection identifies packages without doc-test targets", () => {
+  const root = "/repo";
+  const suite = cargoPackage({
+    id: "suite 0.0.0",
+    manifestPath: "/repo/tests/suites/contracts/Cargo.toml",
+    name: "suite",
+    targetKinds: ["test"],
+  });
+  const metadata = {
+    packages: [suite],
+    resolve: { nodes: [{ id: suite.id, dependencies: [] }] },
+    ...Object.fromEntries([["workspace_members", [suite.id]]]),
+  };
+  assert.deepEqual(
+    packageSelection(metadata, ["tests/suites/contracts/tests/suite.rs"], root),
+    [
+      {
+        hasLibrary: false,
+        name: "suite",
+        root: "tests/suites/contracts",
+      },
     ],
   );
 });

@@ -1,4 +1,5 @@
 {
+  "dead-code-pub-in-binary": "A library test harness cannot observe public test-support APIs used by downstream suite crates, so that target has a narrow crate-level exception.",
   "deprecated-llvm-intrinsic": "Listed by rustc 1.98.0 but unstable on the stable channel, so requesting it is rejected as an unknown lint.",
   "implicit-provenance-casts": "Listed by rustc 1.98.0 but unstable on the stable channel, so requesting it is rejected as an unknown lint.",
   "multiple-supertrait-upcastable": "Listed by rustc 1.98.0 but unstable on the stable channel, so requesting it is rejected as an unknown lint.",

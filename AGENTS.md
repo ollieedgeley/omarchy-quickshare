@@ -93,6 +93,7 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make oracle-reference-provision` builds the pinned Google oracle; `make test-oracle-reference` checks UKEY2 both ways.
 - `make test-oracle-{bluetooth,ble,lan,hotspot,wifi-direct}` checks one pinned Google simulated connection family.
 - `make test-rust` runs workspace Rust tests; `make test-tooling` runs quality-gate and hook contract tests.
+- `make test-contracts` runs shared transfer scenarios against fast doubles; simulator adapters consume the same scenarios.
 - `make test-android-nearby` runs the experimental AVD admission control; it is not a compatibility gate until it passes repeatably.
 - `make verify-app` gives application-only feedback; `make verify-tooling` checks development tooling without starting environments.
 - `make pre-commit` checks the staged snapshot and its affected tests; `make pre-push` verifies and builds each pushed commit.

@@ -1,0 +1,46 @@
+[
+  {
+    "schema": 1,
+    "id": "inbound-file-sender-cancels",
+    "direction": "inbound",
+    "medium": "same_lan",
+    "local_role": "responder",
+    "attachment": {
+      "kind": "file",
+      "size": 11,
+      "sha256": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    },
+    "peer_decision": "accept",
+    "cancellation": {
+      "actor": "sender",
+      "after_bytes": 5
+    },
+    "expected": {
+      "terminal": "cancelled",
+      "transferred_bytes": 5,
+      "cleanup_complete": true
+    }
+  },
+  {
+    "schema": 1,
+    "id": "outbound-file-receiver-cancels",
+    "direction": "outbound",
+    "medium": "same_lan",
+    "local_role": "initiator",
+    "attachment": {
+      "kind": "file",
+      "size": 11,
+      "sha256": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+    },
+    "peer_decision": "accept",
+    "cancellation": {
+      "actor": "receiver",
+      "after_bytes": 5
+    },
+    "expected": {
+      "terminal": "cancelled",
+      "transferred_bytes": 5,
+      "cleanup_complete": true
+    }
+  }
+]

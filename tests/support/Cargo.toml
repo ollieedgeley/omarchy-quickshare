@@ -1,0 +1,19 @@
+[package]
+name = "quickshare-test-support"
+version = "0.0.0"
+description = "Shared semantic scenarios and test doubles for Quick Share tests"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false
+path = "src/lib.rs"
+test = false

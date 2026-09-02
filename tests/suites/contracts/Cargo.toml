@@ -1,0 +1,19 @@
+[package]
+name = "quickshare-contract-tests"
+version = "0.0.0"
+description = "Shared behavioral contracts for Quick Share adapters"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dev-dependencies]
+quickshare-test-support = { path = "../../support" }
+serde_json.workspace = true
+
+[lints]
+workspace = true
+
+[[test]]
+name = "suite"
+path = "tests/suite.rs"

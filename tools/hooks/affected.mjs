@@ -62,6 +62,7 @@ export function packageSelection(metadata, paths, workspaceRoot) {
   return packages
     .filter((pkg) => selected.has(pkg.id))
     .map((pkg) => ({
+      hasLibrary: pkg.targets.some((target) => target.kind.includes("lib")),
       name: pkg.name,
       root: relative(workspaceRoot, dirname(pkg.manifest_path)),
     }))
