@@ -11,9 +11,9 @@ PRETTIER ?= $(NODE_BIN)/prettier
 MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 
 .PHONY: help setup hooks-install sources-fetch oracle-provision oracle-reference-provision oracle-up oracle-down
-.PHONY: format format-check check lint-rust lint-ast lint-docs lint-structure lint-sources lint-oracle
+.PHONY: proxy-provision proxy-up proxy-down format format-check check lint-rust lint-ast lint-docs lint-structure lint-sources lint-oracle lint-proxies
 .PHONY: test test-rust test-tooling test-ast-rules test-source-cache test-oracle-toolchain test-oracle-reference
-.PHONY: test-oracle-bluetooth test-oracle-ble test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct verify build commit-msg
+.PHONY: test-oracle-bluetooth test-oracle-ble test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct test-proxy-toxiproxy verify build commit-msg
 .PHONY: pre-commit pre-commit-prepare pre-commit-structure pre-commit-format pre-commit-ast
 .PHONY: pre-commit-rust pre-commit-test pre-push
 
@@ -27,6 +27,7 @@ setup: ## Install pinned development tools and activate repository hooks.
 	@$(MAKE) sources-fetch
 	@$(MAKE) oracle-provision
 	@$(MAKE) oracle-reference-provision
+	@$(MAKE) proxy-provision
 
 hooks-install: ## Activate Husky and initialize the reusable staged CodeGraph mirror.
 	@$(NODE_BIN)/husky
@@ -46,6 +47,15 @@ oracle-up: ## Start and readiness-check the prepared oracle environment within 6
 
 oracle-down: ## Stop the prepared oracle environment within 60 seconds.
 	@node tests/environments/oracle/environment.mjs down
+
+proxy-provision: ## Build pinned Toxiproxy and prove its offline rebuild.
+	@node tests/environments/proxies/environment.mjs provision
+
+proxy-up: ## Start and readiness-check Toxiproxy, measured outside test time.
+	@node tests/environments/proxies/environment.mjs up
+
+proxy-down: ## Stop Toxiproxy, measured outside test time.
+	@node tests/environments/proxies/environment.mjs down
 
 format: ## Deliberately rewrite supported files with pinned formatters.
 	@cargo fmt --all
@@ -76,6 +86,9 @@ lint-sources: ## Validate immutable source revisions, hashes, licenses, and purp
 
 lint-oracle: ## Validate pinned oracle image inputs without starting Docker.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs validate
+
+lint-proxies: ## Validate pinned proxy environment inputs without starting it.
+	@$(TIMEOUT) node tests/environments/proxies/environment.mjs validate
 
 test-rust: ## Run complete workspace Rust tests and doc tests.
 	@$(TIMEOUT) cargo test --workspace --all-targets --all-features --locked
@@ -113,9 +126,14 @@ test-oracle-hotspot: ## Check Google's simulated Wi-Fi hotspot medium.
 test-oracle-wifi-direct: ## Check Google's simulated Wi-Fi Direct medium.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs medium-self-test wifi-direct
 
+test-proxy-toxiproxy: ## Prove bidirectional TCP cutoff and recovery through Toxiproxy.
+	@trap 'node tests/environments/proxies/environment.mjs down' EXIT; \
+		node tests/environments/proxies/environment.mjs up; \
+		$(TIMEOUT) node tests/environments/proxies/environment.mjs self-test
+
 test: test-rust test-tooling test-ast-rules ## Run all local tests.
 
-verify: format-check lint-docs lint-structure lint-sources lint-oracle check lint-rust lint-ast test test-source-cache test-oracle-toolchain test-oracle-reference test-oracle-bluetooth test-oracle-ble test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct ## Run the complete local quality suite.
+verify: format-check lint-docs lint-structure lint-sources lint-oracle lint-proxies check lint-rust lint-ast test test-source-cache test-oracle-toolchain test-oracle-reference test-oracle-bluetooth test-oracle-ble test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct test-proxy-toxiproxy ## Run the complete local quality suite.
 
 build: ## Build the complete locked workspace after verification.
 	@$(TIMEOUT) cargo build --workspace --all-targets --all-features --locked

@@ -77,6 +77,7 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make sources-fetch` provisions the pinned source cache; provisioning is not part of a child test's 60-second execution budget.
 - `make lint-oracle` checks the pinned oracle definition; `make oracle-provision` builds it outside the test budget.
 - `make oracle-up` and `make oracle-down` measure lifecycle time; `make test-oracle-toolchain` tests the warm environment.
+- `make proxy-up` and `make proxy-down` measure proxy lifecycle time; `make test-proxy-toxiproxy` checks TCP cutoff and recovery in both directions.
 - `make oracle-reference-provision` builds the pinned Google oracle; `make test-oracle-reference` checks UKEY2 both ways.
 - `make test-oracle-{bluetooth,ble,lan,hotspot,wifi-direct}` checks one pinned Google simulated connection family.
 - `make test-rust` runs workspace Rust tests; `make test-tooling` runs quality-gate and hook contract tests.

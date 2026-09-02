@@ -1,0 +1,24 @@
+FROM debian@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+
+ARG DEBIAN_SNAPSHOT=20260901T000000Z
+ARG GO_URL=https://go.dev/dl/go1.27.1.linux-amd64.tar.gz
+ARG GO_SHA256=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
+RUN printf '%s\n' \
+      "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/ bookworm main" \
+      > /etc/apt/sources.list \
+    && rm -f /etc/apt/sources.list.d/* \
+    && apt-get -o Acquire::Check-Valid-Until=false update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+      ca-certificates \
+      curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --fail --location --output /tmp/go.tar.gz "${GO_URL}" \
+    && printf '%s  %s\n' "${GO_SHA256}" /tmp/go.tar.gz | sha256sum --check --strict \
+    && tar --extract --gzip --file /tmp/go.tar.gz --directory /usr/local \
+    && rm /tmp/go.tar.gz
+
+ENV PATH=/usr/local/go/bin:${PATH}
+
+ARG ENVIRONMENT_FINGERPRINT
+LABEL org.omarchy-quickshare.environment="proxies" \
+      org.omarchy-quickshare.fingerprint="${ENVIRONMENT_FINGERPRINT}"

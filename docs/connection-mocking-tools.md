@@ -239,6 +239,8 @@ Every child test gate in an aggregate has a hard budget of 60 seconds of wall-cl
 
 Prepared-environment startup and teardown are separate, measured lifecycle targets. Their time is not charged to the child test gate. Aim to start an already provisioned environment in 30 seconds and keep startup or teardown under 60 seconds where practical. One-time downloads, compilation, image creation, and Android SDK installation belong to explicit provisioning targets and are not test execution. A test timer begins only after its environment reports ready and ends before teardown starts.
 
+Lifecycle commands must emit their measured wall-clock time. The Toxiproxy environment, for example, is provisioned once with `make proxy-provision`, started and readiness-checked by `make proxy-up`, and stopped by `make proxy-down`. `make test-proxy-toxiproxy` starts it before the timed self-test and tears it down after the timer ends.
+
 The same budget applies to scripts and tools invoked during the test phase by Make or Cargo. Wrapping slow assertions in another process or running them in the background does not reset or avoid the limit. Parallel execution may reduce aggregate time, but it does not make an over-budget child test gate acceptable.
 
 Run cheap, deterministic gates before expensive gates when dependencies allow it. The local gate runner must enforce the 60-second child-gate timeout and report the timed-out gate by name. `make help` must list the targeted command for every child gate so a developer can rerun only the failed area.

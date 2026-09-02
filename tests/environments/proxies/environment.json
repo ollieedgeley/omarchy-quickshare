@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "image": "omarchy-quickshare/proxy-toolchain:2026-09-02",
+  "base": "debian@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171",
+  "debianSnapshot": "20260901T000000Z",
+  "go": {
+    "version": "1.27.1",
+    "url": "https://go.dev/dl/go1.27.1.linux-amd64.tar.gz",
+    "sha256": "63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445"
+  },
+  "source": {
+    "id": "toxiproxy",
+    "revision": "40f7fd31bee529d824116bd2a11a9e3425e904ec"
+  },
+  "binary": "toxiproxy-server",
+  "version": "40f7fd31bee5"
+}
