@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Provide a small TCP round-trip peer for virtual-network gates."""
+
 import socket
 import sys
 from pathlib import Path
@@ -7,6 +9,7 @@ PORT = 28432
 
 
 def server(address: str, ready: str) -> None:
+    """Echo one TCP stream after publishing a readiness marker."""
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind((address, PORT))
@@ -22,6 +25,11 @@ def server(address: str, ready: str) -> None:
 
 
 def client(address: str, payload: str) -> None:
+    """Send one payload and require a byte-identical echo.
+
+    Raises:
+        RuntimeError: If the server returns different bytes.
+    """
     expected = payload.encode()
     connection = socket.create_connection((address, PORT), timeout=2)
     connection.sendall(expected)
@@ -31,10 +39,10 @@ def client(address: str, payload: str) -> None:
         received.extend(chunk)
     connection.close()
     if bytes(received) != expected:
-        raise RuntimeError(
-            f"TCP echo returned {len(received)} bytes, "
-            f"expected {len(expected)}"
+        message = (
+            f"TCP echo returned {len(received)} bytes, expected {len(expected)}"
         )
+        raise RuntimeError(message)
 
 
 if __name__ == "__main__":
@@ -43,4 +51,5 @@ if __name__ == "__main__":
     elif sys.argv[1] == "client":
         client(sys.argv[2], sys.argv[3])
     else:
-        raise RuntimeError("expected server or client")
+        message = "expected server or client"
+        raise RuntimeError(message)

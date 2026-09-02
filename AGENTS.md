@@ -69,8 +69,9 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 
 ## Fast feedback gates
 
-- `make format-app-check` checks Rust; `make format-tooling-check` checks JavaScript and repository documents. `make format-check` combines both.
+- `make format-app-check` checks Rust; `make format-tooling-check` checks test tooling and repository documents. `make format-check` combines both.
 - `make lint-rust` runs compiler, rustdoc, rust-analyzer, and all enabled Clippy diagnostics as errors.
+- `make ruff-provision` installs the pinned Python tool; `make lint-python` checks all Python tooling and `make pre-commit-python` checks staged Python.
 - `make lint-javascript` runs every current non-deprecated ESLint core rule as an error with no inline overrides.
 - `make lint-ast` runs the complete error-only ast-grep scan; `make test-ast-rules` checks its rule fixtures and snapshots.
 - `make lint-docs` checks Markdown policy; `make lint-structure-app` and `make lint-structure-tooling` isolate structure feedback. `make lint-structure` combines them.

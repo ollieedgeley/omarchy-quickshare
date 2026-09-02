@@ -1,5 +1,6 @@
 .cache
 .codegraph
+.ruff_cache
 .git
 dist
 node_modules

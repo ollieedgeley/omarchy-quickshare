@@ -72,6 +72,7 @@ async function main() {
         CODEGRAPH: join(nodeBin, "codegraph"),
         NODE_BIN: nodeBin,
         PATH: `${nodeBin}:${process.env.PATH}`,
+        RUFF: join(ROOT, ".cache", "tools", "ruff-0.16.0", "ruff"),
         TEST_ENV_CACHE: join(ROOT, ".cache", "test-env"),
       };
       run("make", ["verify"], { cwd: worktree, env });

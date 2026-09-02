@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Prove deterministic UDP loss and recovery through Linux netem."""
+
 import socket
 import subprocess
 import sys
@@ -11,11 +13,17 @@ PORT = 28431
 PAYLOAD = b"quickshare-netem-control"
 
 
-def run(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    """Run one fixed test-network command and capture its result.
+
+    Returns:
+        The completed command result.
+    """
     return subprocess.run(args, check=check, text=True, capture_output=True)
 
 
 def server() -> None:
+    """Echo UDP datagrams until the parent test process terminates."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("10.23.0.2", PORT))
     while True:
@@ -23,25 +31,38 @@ def server() -> None:
         sock.sendto(payload, peer)
 
 
-def client(expect_reply: bool) -> None:
+def client(*, expect_reply: bool) -> None:
+    """Run the client and check whether a reply should cross netem.
+
+    Raises:
+        RuntimeError: If the observed outcome differs from the expectation.
+    """
     result = run("ip", "netns", "exec", LEFT, SCRIPT, "client", check=False)
     if (result.returncode == 0) != expect_reply:
-        raise RuntimeError(
+        message = (
             f"UDP reply expectation {expect_reply} failed: "
             f"{result.stdout}{result.stderr}"
         )
+        raise RuntimeError(message)
 
 
 def client_process() -> None:
+    """Send and verify one UDP control payload.
+
+    Raises:
+        RuntimeError: If the echoed payload differs from the sent bytes.
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(0.4)
     sock.sendto(PAYLOAD, ("10.23.0.2", PORT))
     payload, _ = sock.recvfrom(4096)
     if payload != PAYLOAD:
-        raise RuntimeError("netem control corrupted UDP payload")
+        message = "netem control corrupted UDP payload"
+        raise RuntimeError(message)
 
 
 def configure_namespace(namespace: str, interface: str, address: str) -> None:
+    """Bring up one isolated network namespace and its test address."""
     prefix = ("ip", "netns", "exec", namespace, "ip")
     run(*prefix, "link", "set", "lo", "up")
     run(*prefix, "link", "set", interface, "up")
@@ -49,6 +70,7 @@ def configure_namespace(namespace: str, interface: str, address: str) -> None:
 
 
 def setup_network() -> None:
+    """Create the namespace pair and connect it with a veth link."""
     run("ip", "netns", "add", LEFT)
     run("ip", "netns", "add", RIGHT)
     run(
@@ -69,20 +91,41 @@ def setup_network() -> None:
 
 
 def exercise_faults() -> None:
-    client(True)
+    """Prove control, total loss, and recovery in sequence."""
+    client(expect_reply=True)
     run(
-        "ip", "netns", "exec", LEFT, "tc", "qdisc", "add",
-        "dev", "netem-left", "root", "netem", "loss", "100%",
+        "ip",
+        "netns",
+        "exec",
+        LEFT,
+        "tc",
+        "qdisc",
+        "add",
+        "dev",
+        "netem-left",
+        "root",
+        "netem",
+        "loss",
+        "100%",
     )
-    client(False)
+    client(expect_reply=False)
     run(
-        "ip", "netns", "exec", LEFT, "tc", "qdisc", "del",
-        "dev", "netem-left", "root",
+        "ip",
+        "netns",
+        "exec",
+        LEFT,
+        "tc",
+        "qdisc",
+        "del",
+        "dev",
+        "netem-left",
+        "root",
     )
-    client(True)
+    client(expect_reply=True)
 
 
 def main() -> None:
+    """Run the complete netem self-test with unconditional cleanup."""
     peer = None
     try:
         setup_network()

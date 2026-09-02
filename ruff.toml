@@ -1,0 +1,56 @@
+target-version = "py313"
+line-length = 80
+indent-width = 4
+preview = true
+respect-gitignore = true
+show-fixes = true
+cache-dir = ".cache/ruff"
+
+[lint]
+select = ["ALL"]
+ignore = [
+  "avoidable-escaped-quote",
+  "bad-quotes-docstring",
+  "bad-quotes-inline-string",
+  "bad-quotes-multiline-string",
+  "docstring-tab-indentation",
+  "incorrect-blank-line-before-class",
+  "indentation-with-invalid-multiple",
+  "indentation-with-invalid-multiple-comment",
+  "missing-copyright-notice",
+  "missing-trailing-comma",
+  "multi-line-implicit-string-concatenation",
+  "over-indented",
+  "prohibited-trailing-comma",
+  "tab-indentation",
+  "triple-single-quotes",
+  "unnecessary-escaped-quote",
+]
+
+[lint.per-file-ignores]
+"tests/environments/**/*.py" = ["print"]
+"tests/environments/network/netem-self-test.py" = [
+  "start-process-with-partial-path",
+  "subprocess-without-shell-equals-true",
+  "suspicious-subprocess-import",
+]
+"tests/environments/bluez/radio-bumble-gatt-peer.py" = ["deprecated-import"]
+
+[lint.mccabe]
+max-complexity = 10
+
+[lint.pydocstyle]
+convention = "google"
+
+[lint.pylint]
+max-args = 3
+max-branches = 6
+max-returns = 3
+max-statements = 40
+
+[format]
+docstring-code-format = true
+indent-style = "space"
+line-ending = "lf"
+quote-style = "double"
+skip-magic-trailing-comma = false

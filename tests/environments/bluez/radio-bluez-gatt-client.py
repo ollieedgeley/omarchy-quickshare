@@ -2,6 +2,7 @@
 """Exercise a Bumble GATT peer through real BlueZ D-Bus APIs."""
 
 import time
+from collections.abc import Callable
 
 import dbus
 
@@ -17,21 +18,48 @@ BUMBLE_TO_BLUEZ = b"bumble-to-bluez"
 BLUEZ_TO_BUMBLE = b"bluez-to-bumble"
 
 
-def wait_for(description, lookup, timeout=10):
+def wait_for(
+    description: str,
+    lookup: Callable[[], object | None],
+    timeout: float = 10,
+) -> object:
+    """Poll a BlueZ observation until it exists or the budget expires.
+
+    Returns:
+        The first available observation.
+
+    Raises:
+        TimeoutError: If the observation does not arrive within the budget.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         value = lookup()
         if value is not None:
             return value
         time.sleep(0.05)
-    raise TimeoutError(f"timed out waiting for {description}")
+    message = f"timed out waiting for {description}"
+    raise TimeoutError(message)
 
 
-def managed_objects(manager):
+def managed_objects(manager: object) -> dict[object, dict[str, object]]:
+    """Read BlueZ's managed-object snapshot.
+
+    Returns:
+        The current D-Bus object and interface map.
+    """
     return manager.GetManagedObjects()
 
 
-def interface_path(manager, interface, predicate=lambda _props: True):
+def interface_path(
+    manager: object,
+    interface: str,
+    predicate: Callable[[object], bool] = lambda _props: True,
+) -> str | None:
+    """Find the first managed object matching an interface predicate.
+
+    Returns:
+        The matching D-Bus object path, when one exists.
+    """
     for path, interfaces in managed_objects(manager).items():
         properties = interfaces.get(interface)
         if properties is not None and predicate(properties):
@@ -39,7 +67,12 @@ def interface_path(manager, interface, predicate=lambda _props: True):
     return None
 
 
-def configure_adapter(bus, manager):
+def configure_adapter(bus: object, manager: object) -> object:
+    """Power the local adapter and constrain discovery to BLE.
+
+    Returns:
+        The configured BlueZ adapter interface.
+    """
     path = wait_for(
         "hci0 adapter",
         lambda: interface_path(
@@ -50,13 +83,18 @@ def configure_adapter(bus, manager):
     )
     adapter_object = bus.get_object(BLUEZ, path)
     adapter_properties = dbus.Interface(adapter_object, PROPERTIES)
-    adapter_properties.Set(ADAPTER, "Powered", dbus.Boolean(True))
+    adapter_properties.Set(ADAPTER, "Powered", dbus.Boolean(1))
     adapter = dbus.Interface(adapter_object, ADAPTER)
     adapter.SetDiscoveryFilter({"Transport": dbus.String("le")})
     return adapter
 
 
-def discover_peer(manager, adapter):
+def discover_peer(manager: object, adapter: object) -> object:
+    """Discover the fixed Bumble peer and return its object path.
+
+    Returns:
+        The discovered peer's D-Bus object path.
+    """
     adapter.StartDiscovery()
     try:
         return wait_for(
@@ -71,7 +109,16 @@ def discover_peer(manager, adapter):
         adapter.StopDiscovery()
 
 
-def exchange_gatt_value(bus, manager, device_path):
+def exchange_gatt_value(
+    bus: object,
+    manager: object,
+    device_path: object,
+) -> None:
+    """Read and write the fixture characteristic through BlueZ.
+
+    Raises:
+        AssertionError: If the fixture read differs from the expected payload.
+    """
     device_object = bus.get_object(BLUEZ, device_path)
     device = dbus.Interface(device_object, DEVICE)
     device.Connect()
@@ -81,8 +128,9 @@ def exchange_gatt_value(bus, manager, device_path):
             lambda: interface_path(
                 manager,
                 CHARACTERISTIC,
-                lambda props: str(props.get("UUID", "")).lower()
-                == CHARACTERISTIC_UUID,
+                lambda props: (
+                    str(props.get("UUID", "")).lower() == CHARACTERISTIC_UUID
+                ),
             ),
         )
         characteristic = dbus.Interface(
@@ -90,7 +138,8 @@ def exchange_gatt_value(bus, manager, device_path):
         )
         received = bytes(characteristic.ReadValue({}))
         if received != BUMBLE_TO_BLUEZ:
-            raise AssertionError(f"unexpected GATT read: {received!r}")
+            message = f"unexpected GATT read: {received!r}"
+            raise AssertionError(message)
         characteristic.WriteValue(
             dbus.Array(BLUEZ_TO_BUMBLE, signature="y"), {}
         )
@@ -98,7 +147,8 @@ def exchange_gatt_value(bus, manager, device_path):
         device.Disconnect()
 
 
-def main():
+def main() -> None:
+    """Run the bidirectional BlueZ-to-Bumble GATT proof."""
     bus = dbus.SystemBus()
     manager = dbus.Interface(bus.get_object(BLUEZ, "/"), OBJECT_MANAGER)
     adapter = configure_adapter(bus, manager)

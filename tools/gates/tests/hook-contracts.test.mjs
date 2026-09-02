@@ -21,8 +21,14 @@ const PRE_PUSH_ENVIRONMENT_TEST =
 const CONVENTIONAL_COMMIT_PATTERN = /Conventional Commits/u;
 const SUBJECT_LENGTH_PATTERN = /72 characters/u;
 const AST_GREP_ENV_PATTERN = /AST_GREP: join\(nodeBin, "ast-grep"\)/u;
+const RUFF_ENV_PATTERN = /RUFF: join\(ROOT, "\.cache", "tools",/u;
 const TEST_ENV_PATTERN = /TEST_ENV_CACHE: join\(ROOT, "\.cache", "test-env"\)/u;
 const BROAD_CACHE_PATTERN = /TEST_ENV_CACHE: join\(ROOT, "\.cache"\)/u;
+const RUFF_ALL_PATTERN = /select = \["ALL"\]/u;
+const RUFF_PREVIEW_PATTERN = /preview = true/u;
+const RUFF_VERSION_PATTERN = /RUFF_VERSION="0\.16\.0"/u;
+const RUFF_DIGEST_PATTERN = /98001c995a134d95f9bc83106a7f94b5/u;
+const RUFF_VERIFY_PATTERN = /verify-tooling:.*lint-python/u;
 
 function cargoPackage(id, name, manifestPath) {
   return Object.fromEntries([
@@ -132,6 +138,19 @@ test(PRE_PUSH_ENVIRONMENT_TEST, () => {
     "utf8",
   );
   assert.match(source, AST_GREP_ENV_PATTERN);
+  assert.match(source, RUFF_ENV_PATTERN);
   assert.match(source, TEST_ENV_PATTERN);
   assert.doesNotMatch(source, BROAD_CACHE_PATTERN);
+});
+
+test("Python tooling selects all pinned Ruff rules", () => {
+  const config = readFileSync(join(ROOT, "ruff.toml"), "utf8");
+  const setup = readFileSync(join(ROOT, "tools", "setup", "ruff.sh"), "utf8");
+  const makefile = readFileSync(join(ROOT, "Makefile"), "utf8");
+  assert.match(config, RUFF_ALL_PATTERN);
+  assert.match(config, RUFF_PREVIEW_PATTERN);
+  assert.match(setup, RUFF_VERSION_PATTERN);
+  assert.match(setup, RUFF_DIGEST_PATTERN);
+  assert.match(makefile, RUFF_VERIFY_PATTERN);
+  assert.ok(makefile.includes("pre-commit-python"));
 });

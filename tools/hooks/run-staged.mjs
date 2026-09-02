@@ -13,6 +13,7 @@ if (!existsSync(metadataPath)) {
 const staged = JSON.parse(readFileSync(metadataPath, "utf8"));
 const currentTree = output("git", ["write-tree"], { cwd: ROOT });
 const JAVASCRIPT_EXTENSION_PATTERN = /\.(?:c|m)?js$/u;
+const PYTHON_EXTENSION_PATTERN = /\.pyi?$/u;
 const FORMATTED_EXTENSION_PATTERN =
   /(?:\.(?:c|m)?js|\.json|\.jsonc|\.md|\.ya?ml)$/u;
 const CARGO_MANIFEST_PATTERN = /(?:^|\/)Cargo\.(?:lock|toml)$/u;
@@ -34,6 +35,9 @@ const markdownFiles = existing.filter((path) => path.endsWith(".md"));
 const javascriptFiles = existing.filter((path) =>
   JAVASCRIPT_EXTENSION_PATTERN.test(path),
 );
+const pythonFiles = existing.filter((path) =>
+  PYTHON_EXTENSION_PATTERN.test(path),
+);
 const formattedFiles = existing.filter((path) =>
   FORMATTED_EXTENSION_PATTERN.test(path),
 );
@@ -46,6 +50,8 @@ const rustInputs = paths.filter(
 const nodeBin = process.env.NODE_BIN ?? join(ROOT, "node_modules", ".bin");
 const tool = (name) => join(nodeBin, name);
 const codegraph = process.env.CODEGRAPH ?? tool("codegraph");
+const ruff =
+  process.env.RUFF ?? join(ROOT, ".cache", "tools", "ruff-0.16.0", "ruff");
 
 function runStructure() {
   const scopes = new Set(paths.map(structureScope));
@@ -73,6 +79,11 @@ function runFormat() {
   }
   if (formattedFiles.length) {
     run(tool("prettier"), ["--check", ...formattedFiles], {
+      cwd: staged.mirror,
+    });
+  }
+  if (pythonFiles.length) {
+    run(ruff, ["format", "--check", ...pythonFiles], {
       cwd: staged.mirror,
     });
   }
@@ -107,6 +118,17 @@ function runJavascript() {
     ["--max-warnings", "0", "--no-warn-ignored", ...javascriptFiles],
     { cwd: staged.mirror },
   );
+}
+
+function runPython() {
+  if (!pythonFiles.length && !paths.includes("ruff.toml")) {
+    return;
+  }
+  let inputs = pythonFiles;
+  if (paths.includes("ruff.toml")) {
+    inputs = ["."];
+  }
+  run(ruff, ["check", ...inputs], { cwd: staged.mirror });
 }
 
 function runRust() {
@@ -175,6 +197,7 @@ function isToolingPath(path) {
     "tests/environments/",
     "tools/gates/",
     "tools/hooks/",
+    "tools/setup/",
   ];
   const files = new Set([
     ".prettierrc.json",
@@ -183,6 +206,7 @@ function isToolingPath(path) {
     "eslint.config.mjs",
     "package-lock.json",
     "package.json",
+    "ruff.toml",
     "rustfmt.toml",
     "sgconfig.yml",
   ]);
@@ -282,6 +306,7 @@ const handlers = {
   ast: runAst,
   format: runFormat,
   javascript: runJavascript,
+  python: runPython,
   rust: runRust,
   structure: runStructure,
   test: runTests,

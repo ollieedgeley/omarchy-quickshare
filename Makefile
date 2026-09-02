@@ -11,8 +11,9 @@ CODEGRAPH ?= $(NODE_BIN)/codegraph
 ESLINT ?= $(NODE_BIN)/eslint
 PRETTIER ?= $(NODE_BIN)/prettier
 MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
+RUFF ?= $(CURDIR)/.cache/tools/ruff-0.16.0/ruff
 
-.PHONY: help setup hooks-install sources-fetch
+.PHONY: help setup hooks-install ruff-provision sources-fetch
 .PHONY: oracle-provision oracle-reference-provision oracle-up oracle-down
 .PHONY: proxy-provision proxy-up proxy-down
 .PHONY: dbus-provision dbus-up dbus-down
@@ -23,7 +24,7 @@ MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 .PHONY: android-seed android-up android-down test-android-nearby
 .PHONY: format format-app format-tooling
 .PHONY: format-check format-app-check format-tooling-check check
-.PHONY: lint-rust lint-javascript lint-ast lint-docs
+.PHONY: lint-rust lint-javascript lint-python lint-ast lint-docs
 .PHONY: lint-structure lint-structure-app lint-structure-tooling
 .PHONY: lint-sources lint-oracle lint-proxies lint-dbus
 .PHONY: lint-bluetooth-radio lint-network lint-android
@@ -38,7 +39,8 @@ MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 .PHONY: test-network-hotspot-owner test-network-wifi-direct-client
 .PHONY: verify-app verify-tooling verify build commit-msg
 .PHONY: pre-commit pre-commit-prepare pre-commit-structure
-.PHONY: pre-commit-format pre-commit-javascript pre-commit-ast
+.PHONY: pre-commit-format pre-commit-javascript pre-commit-python
+.PHONY: pre-commit-ast
 .PHONY: pre-commit-rust pre-commit-test pre-push
 
 help: ## List public and targeted gates.
@@ -50,6 +52,7 @@ setup: ## Install pinned development tools and activate repository hooks.
 	@npm ci
 	@rustup toolchain install 1.98.0 --profile minimal \
 		--component rustfmt --component clippy --component rust-analyzer
+	@$(MAKE) ruff-provision
 	@$(MAKE) hooks-install
 	@$(MAKE) sources-fetch
 	@$(MAKE) oracle-provision
@@ -63,6 +66,9 @@ hooks-install: ## Activate Husky and initialize the staged CodeGraph mirror.
 	@$(NODE_BIN)/husky
 	@CODEGRAPH=$(CODEGRAPH) $(TIMEOUT) \
 		node tools/hooks/prepare-staged.mjs --initialize
+
+ruff-provision: ## Install the pinned standalone Python quality tool.
+	@tools/setup/ruff.sh
 
 sources-fetch: ## Download, hash-check, and extract every pinned test source.
 	@node tools/gates/sources.mjs fetch
@@ -144,7 +150,8 @@ format: format-app format-tooling ## Rewrite files with pinned formatters.
 format-app: ## Rewrite Rust application files with rustfmt.
 	@cargo fmt --all
 
-format-tooling: ## Rewrite JavaScript, Markdown, YAML, and JSON files.
+format-tooling: ## Rewrite tooling and repository-document files.
+	@$(RUFF) format .
 	@$(PRETTIER) --write . --ignore-unknown
 
 format-check: format-app-check format-tooling-check ## Check formatted files.
@@ -152,7 +159,8 @@ format-check: format-app-check format-tooling-check ## Check formatted files.
 format-app-check: ## Check only Rust application formatting.
 	@$(TIMEOUT) cargo fmt --all -- --check
 
-format-tooling-check: ## Check JavaScript and repository-document formatting.
+format-tooling-check: ## Check tooling and repository-document formatting.
+	@$(TIMEOUT) $(RUFF) format --check .
 	@$(TIMEOUT) $(PRETTIER) --check . --ignore-unknown
 
 check: ## Compiler-check the complete Cargo workspace.
@@ -163,6 +171,9 @@ lint-rust: ## Run compiler, rustdoc, rust-analyzer, and strict Clippy checks.
 
 lint-javascript: ## Run every current ESLint core rule as an error.
 	@$(TIMEOUT) $(ESLINT) . --max-warnings 0 --no-warn-ignored
+
+lint-python: ## Run every enabled Ruff rule against Python tooling.
+	@$(TIMEOUT) $(RUFF) check .
 
 lint-ast: ## Run the full error-only ast-grep scan.
 	@$(TIMEOUT) node tools/gates/ast-schema.mjs
@@ -320,7 +331,7 @@ verify-app: format-app-check lint-structure-app check lint-rust
 verify-app: lint-ast test-rust
 
 verify-tooling: ## Run tooling static and fast contract gates.
-verify-tooling: format-tooling-check lint-javascript lint-docs
+verify-tooling: format-tooling-check lint-javascript lint-python lint-docs
 verify-tooling: lint-structure-tooling lint-sources lint-oracle lint-proxies
 verify-tooling: lint-dbus lint-bluetooth-radio lint-network lint-android
 verify-tooling: test-tooling test-ast-rules
@@ -347,6 +358,7 @@ pre-commit: ## Check the staged snapshot and its conservatively affected tests.
 	@$(MAKE) pre-commit-structure
 	@$(MAKE) pre-commit-format
 	@$(MAKE) pre-commit-javascript
+	@$(MAKE) pre-commit-python
 	@$(MAKE) pre-commit-ast
 	@$(MAKE) pre-commit-rust
 	@$(MAKE) pre-commit-test
@@ -358,10 +370,13 @@ pre-commit-structure: ## Check staged file and repository structure contracts.
 	@$(TIMEOUT) node tools/hooks/run-staged.mjs structure
 
 pre-commit-format: ## Check formatter output for staged files only.
-	@$(TIMEOUT) node tools/hooks/run-staged.mjs format
+	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs format
 
 pre-commit-javascript: ## Run strict ESLint against staged JavaScript only.
 	@$(TIMEOUT) node tools/hooks/run-staged.mjs javascript
+
+pre-commit-python: ## Run strict Ruff checks against staged Python only.
+	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs python
 
 pre-commit-ast: ## Run strict ast-grep rules against staged Rust files.
 	@$(TIMEOUT) node tools/hooks/run-staged.mjs ast
