@@ -1,0 +1,120 @@
+{
+  "schema": 1,
+  "host": {
+    "architecture": "x86_64",
+    "operatingSystem": "linux",
+    "requiresKvm": true
+  },
+  "license": {
+    "identifier": "android-sdk-license",
+    "termsUrl": "https://developer.android.com/studio/terms"
+  },
+  "repositories": {
+    "gradle": "https://services.gradle.org/distributions/",
+    "sdk": "https://dl.google.com/android/repository/",
+    "systemImages": "https://dl.google.com/android/repository/sys-img/google_apis_playstore/",
+    "temurin": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/"
+  },
+  "packages": [
+    {
+      "archive": "commandlinetools-linux-16111833_latest.zip",
+      "id": "cmdline-tools;23.0",
+      "revision": "23.0",
+      "sha1": "e025545c62a8e64c7559119566a569fb1dec5f60",
+      "sha256": "0877a1d048fe4a24efe2eff536ca4223f7adeb58648bb81909d33c446918cfa8",
+      "size": 181052239,
+      "source": "sdk"
+    },
+    {
+      "archive": "platform-tools_r37.0.1-linux.zip",
+      "id": "platform-tools",
+      "revision": "37.0.1",
+      "sha1": "477254aa5f903c15cf51001717bdf347fb6b53e0",
+      "sha256": "d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1",
+      "size": 9054187,
+      "source": "sdk"
+    },
+    {
+      "archive": "emulator-linux_x64-15917651.zip",
+      "id": "emulator",
+      "revision": "37.1.11",
+      "sha1": "1b1f78891abf8ec268264356e1365c25519e8379",
+      "sha256": "95771e0ae431897b2a4bd2d97fa095f29a8b0624a7b216baf529f9306161c266",
+      "size": 334378080,
+      "source": "sdk"
+    },
+    {
+      "archive": "platform-36_r02.zip",
+      "id": "platforms;android-36",
+      "revision": "2",
+      "sha1": "2c1a80dd4d9f7d0e6dd336ec603d9b5c55a6f576",
+      "sha256": "37607369a28c5b640b3a7998868d45898ebcb777565a0e85f9acf36f29631d2e",
+      "size": 65878410,
+      "source": "sdk"
+    },
+    {
+      "archive": "build-tools_r36.1_linux.zip",
+      "id": "build-tools;36.1.0",
+      "revision": "36.1.0",
+      "sha1": "936a0d6bd5ae3e2118a7567dddbc95ff67ed46e9",
+      "sha256": "a7b5889e4a79fcf3b0976bef40d401f4240fb1eed891d9d91169da1111e11d78",
+      "size": 64195204,
+      "source": "sdk"
+    },
+    {
+      "archive": "x86_64-36_r07.zip",
+      "id": "system-images;android-36;google_apis_playstore;x86_64",
+      "revision": "7",
+      "sha1": "16fa3c441d29fde6c9eea2f766eecf77032d68b4",
+      "sha256": "279c419c2829627e2bb95104f47e6de02ca9d14774506195d5db93d71bd583c8",
+      "size": 1924689206,
+      "source": "systemImages"
+    }
+  ],
+  "avds": {
+    "hardwareProfile": "pixel_6",
+    "locale": "en-US",
+    "peers": [
+      {
+        "consolePort": 5554,
+        "name": "quickshare-a"
+      },
+      {
+        "consolePort": 5556,
+        "name": "quickshare-b"
+      }
+    ],
+    "systemImage": "system-images;android-36;google_apis_playstore;x86_64"
+  },
+  "probe": {
+    "androidGradlePlugin": "9.0.1",
+    "compileSdk": 36,
+    "dependencies": {
+      "androidx.test.runner": "1.7.0",
+      "androidx.test.uiautomator": "2.4.0",
+      "com.google.android.gms.play-services-nearby": "19.5.0",
+      "mobly": "1.13.1",
+      "mobly-snippet-lib": "1.4.0"
+    },
+    "minSdk": 31,
+    "targetSdk": 36,
+    "toolchain": [
+      {
+        "archive": "gradle-9.1.0-bin.zip",
+        "id": "gradle",
+        "revision": "9.1.0",
+        "sha256": "a17ddd85a26b6a7f5ddb71ff8b05fc5104c0202c6e64782429790c933686c806",
+        "size": 134528013,
+        "source": "gradle"
+      },
+      {
+        "archive": "OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz",
+        "id": "java",
+        "revision": "21.0.12.1+1",
+        "sha256": "ce79869e1307ed8ee1e2baa86a412b1eb5b75d10a01006d788a6f968bcfaee94",
+        "size": 207473347,
+        "source": "temurin"
+      }
+    ]
+  }
+}

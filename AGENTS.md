@@ -74,6 +74,7 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make lint-javascript` runs every current non-deprecated ESLint core rule as an error with no inline overrides.
 - `make lint-ast` runs the complete error-only ast-grep scan; `make test-ast-rules` checks its rule fixtures and snapshots.
 - `make lint-docs` checks Markdown policy; `make lint-structure-app` and `make lint-structure-tooling` isolate structure feedback. `make lint-structure` combines them.
+- `make lint-android` validates Android SDK, probe, and AVD pins; `make android-preflight` checks host and KVM support.
 - `make lint-sources` validates immutable test-source pins; `make test-source-cache` hash-checks their prepared archives.
 - `make sources-fetch` provisions the pinned source cache; provisioning is not part of a child test's 60-second execution budget.
 - `make lint-oracle` checks the pinned oracle definition; `make oracle-provision` builds it outside the test budget.

@@ -17,12 +17,13 @@ MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 .PHONY: dbus-provision dbus-up dbus-down
 .PHONY: bluetooth-radio-provision bluetooth-radio-up bluetooth-radio-down
 .PHONY: network-provision network-up network-down
+.PHONY: android-preflight
 .PHONY: format format-app format-tooling
 .PHONY: format-check format-app-check format-tooling-check check
 .PHONY: lint-rust lint-javascript lint-ast lint-docs
 .PHONY: lint-structure lint-structure-app lint-structure-tooling
 .PHONY: lint-sources lint-oracle lint-proxies lint-dbus
-.PHONY: lint-bluetooth-radio lint-network
+.PHONY: lint-bluetooth-radio lint-network lint-android
 .PHONY: test test-rust test-tooling test-ast-rules test-source-cache
 .PHONY: test-oracle-toolchain test-oracle-reference
 .PHONY: test-oracle-bluetooth test-oracle-ble test-oracle-lan
@@ -111,6 +112,9 @@ network-up: ## Start isolated hwsim radios and report readiness time.
 network-down: ## Remove isolated radios and report teardown time.
 	@node tests/environments/network/environment.mjs down
 
+android-preflight: ## Check host support for the pinned Android AVD lab.
+	@$(TIMEOUT) node tests/environments/android/environment.mjs preflight
+
 format: format-app format-tooling ## Rewrite files with pinned formatters.
 
 format-app: ## Rewrite Rust application files with rustfmt.
@@ -170,6 +174,9 @@ lint-bluetooth-radio: ## Validate the pinned BlueZ and Bumble radio image.
 
 lint-network: ## Validate pinned virtual Wi-Fi environment inputs.
 	@$(TIMEOUT) node tests/environments/network/environment.mjs validate
+
+lint-android: ## Validate pinned Android SDK, probe, and AVD inputs.
+	@$(TIMEOUT) node tests/environments/android/environment.mjs validate
 
 test-rust: ## Run complete workspace Rust tests and doc tests.
 	@$(TIMEOUT) cargo test --workspace --all-targets --all-features --locked
@@ -285,7 +292,7 @@ verify-app: lint-ast test-rust
 verify-tooling: ## Run tooling static and fast contract gates.
 verify-tooling: format-tooling-check lint-javascript lint-docs
 verify-tooling: lint-structure-tooling lint-sources lint-oracle lint-proxies
-verify-tooling: lint-dbus lint-bluetooth-radio lint-network
+verify-tooling: lint-dbus lint-bluetooth-radio lint-network lint-android
 verify-tooling: test-tooling test-ast-rules
 
 verify: ## Run the complete local quality suite.
