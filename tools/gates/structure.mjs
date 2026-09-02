@@ -18,6 +18,9 @@ const EXCLUDED_NAMES = new Set([
   "target",
 ]);
 const GENERATED_FILES = new Set(["Cargo.lock", "package-lock.json"]);
+GENERATED_FILES.add(
+  "tests/environments/android/probe/gradle/verification-metadata.xml",
+);
 const DIRECTORY_INDEXES = new Set(["crates", "tests/fixtures", "tests/suites"]);
 const APPLICATION_PREFIXES = [
   "crates/",

@@ -191,6 +191,8 @@ Suite ownership is stable:
 
 Fixtures are grouped by the domain that interprets them, then by scenario. Each generated fixture has provenance and expected semantic meaning beside it. Environment definitions contain orchestration only; assertions stay in suites. Large downloaded environments remain in `.cache/`.
 
+The Android probe keeps Gradle's generated dependency-verification metadata at `tests/environments/android/probe/gradle/verification-metadata.xml`. Gradle requires this as one canonical file, so the structure gate excludes it from authored-file metrics while contract tests verify its checksums and dependency lock. Regenerate it only through the pinned probe toolchain.
+
 Each `fuzz/<domain>` directory is an independent cargo-fuzz package and follows cargo-fuzz's standard `fuzz_targets/` layout. The official [Rust Fuzz Book](https://rust-fuzz.github.io/book/cargo-fuzz/tutorial.html) defines that layout. Keep fuzz packages outside the normal workspace members so ordinary Cargo commands do not select libFuzzer targets accidentally.
 
 ## Tools and upstream inputs

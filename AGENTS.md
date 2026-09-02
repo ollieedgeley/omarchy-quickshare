@@ -75,7 +75,9 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make lint-ast` runs the complete error-only ast-grep scan; `make test-ast-rules` checks its rule fixtures and snapshots.
 - `make lint-docs` checks Markdown policy; `make lint-structure-app` and `make lint-structure-tooling` isolate structure feedback. `make lint-structure` combines them.
 - `make lint-android` validates Android SDK, probe, and AVD pins; `make android-preflight` checks host and KVM support.
-- `make android-bootstrap` fetches pinned host tools; after the user runs `make android-license`, `make android-provision` installs the SDK and creates both AVDs.
+- `make android-bootstrap` fetches pinned host tools; `make android-orchestrator-provision` prepares the pinned Mobly controller.
+- After `make android-license`, `make android-provision` prepares the SDK, probe, and AVDs; `make android-seed` records clean first boots.
+- `make android-up` starts and checks the prepared peers; `make android-down` stops them and records lifecycle time.
 - `make lint-sources` validates immutable test-source pins; `make test-source-cache` hash-checks their prepared archives.
 - `make sources-fetch` provisions the pinned source cache; provisioning is not part of a child test's 60-second execution budget.
 - `make lint-oracle` checks the pinned oracle definition; `make oracle-provision` builds it outside the test budget.
@@ -90,6 +92,7 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make oracle-reference-provision` builds the pinned Google oracle; `make test-oracle-reference` checks UKEY2 both ways.
 - `make test-oracle-{bluetooth,ble,lan,hotspot,wifi-direct}` checks one pinned Google simulated connection family.
 - `make test-rust` runs workspace Rust tests; `make test-tooling` runs quality-gate and hook contract tests.
+- `make test-android-nearby` runs the experimental AVD admission control; it is not a compatibility gate until it passes repeatably.
 - `make verify-app` gives application-only feedback; `make verify-tooling` checks development tooling without starting environments.
 - `make pre-commit` checks the staged snapshot and its affected tests; `make pre-push` verifies and builds each pushed commit.
 - `make verify` runs the complete local quality suite; `make build` performs the locked workspace build after verification.

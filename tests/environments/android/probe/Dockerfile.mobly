@@ -1,0 +1,21 @@
+ARG BASE_IMAGE=\
+python@sha256:781449467ffb6f04218f09b1ecdcdc7d22b289ee5da9ec498b024e24ad7a6db7
+FROM ${BASE_IMAGE}
+
+ARG ENVIRONMENT_FINGERPRINT
+ARG PYTHON_VERSION=3.13.7
+LABEL io.omarchy-quickshare.environment="${ENVIRONMENT_FINGERPRINT}" \
+      io.omarchy-quickshare.python="${PYTHON_VERSION}"
+
+COPY mobly-requirements.txt /tmp/mobly-requirements.txt
+COPY --chmod=0555 mobly-ps /usr/local/bin/ps
+RUN python -m pip install \
+      --disable-pip-version-check \
+      --no-cache-dir \
+      --only-binary=:all: \
+      --require-hashes \
+      --requirement /tmp/mobly-requirements.txt \
+    && rm /tmp/mobly-requirements.txt
+
+WORKDIR /work
+ENTRYPOINT ["python"]

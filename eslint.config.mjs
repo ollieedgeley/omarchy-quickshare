@@ -52,6 +52,7 @@ export default defineConfig([
     "node_modules/**",
     "reports/**",
     "target/**",
+    "tests/environments/android/probe/build/**",
   ]),
   {
     extends: ["js/all"],

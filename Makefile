@@ -4,6 +4,7 @@ SHELL := /usr/bin/env bash
 .NOTPARALLEL:
 
 TIMEOUT ?= timeout --foreground 60s
+ANDROID_TEST_TIMEOUT ?= timeout --foreground 300s
 NODE_BIN ?= $(CURDIR)/node_modules/.bin
 AST_GREP ?= $(NODE_BIN)/ast-grep
 CODEGRAPH ?= $(NODE_BIN)/codegraph
@@ -18,6 +19,8 @@ MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 .PHONY: bluetooth-radio-provision bluetooth-radio-up bluetooth-radio-down
 .PHONY: network-provision network-up network-down
 .PHONY: android-preflight android-bootstrap android-license android-provision
+.PHONY: android-orchestrator-provision
+.PHONY: android-seed android-up android-down test-android-nearby
 .PHONY: format format-app format-tooling
 .PHONY: format-check format-app-check format-tooling-check check
 .PHONY: lint-rust lint-javascript lint-ast lint-docs
@@ -118,11 +121,23 @@ android-preflight: ## Check host support for the pinned Android AVD lab.
 android-bootstrap: ## Fetch and verify the pinned Android host tools.
 	@node tests/environments/android/environment.mjs bootstrap
 
+android-orchestrator-provision: ## Build the pinned Mobly controller image.
+	@node tests/environments/android/environment.mjs orchestrator-provision
+
 android-license: ## Interactively review the Android SDK license.
 	@node tests/environments/android/environment.mjs license
 
-android-provision: ## Install the pinned SDK and create both AVDs.
+android-provision: ## Install the SDK, create AVDs, and build the probe.
 	@node tests/environments/android/environment.mjs provision
+
+android-seed: ## Cold-boot both AVDs and save their Quick Boot state.
+	@node tests/environments/android/environment.mjs seed
+
+android-up: ## Boot both AVDs, wait for readiness, and install the probe.
+	@node tests/environments/android/environment.mjs up
+
+android-down: ## Stop both AVDs and report teardown time.
+	@node tests/environments/android/environment.mjs down
 
 format: format-app format-tooling ## Rewrite files with pinned formatters.
 
@@ -291,6 +306,12 @@ test-network-wifi-direct-client: ## Join a remote P2P group and transfer.
 		node tests/environments/network/environment.mjs up; \
 		$(TIMEOUT) node tests/environments/network/environment.mjs \
 		self-test wifi-direct-client
+
+test-android-nearby: ## Exchange verified bytes and files through both AVDs.
+	@trap 'node tests/environments/android/environment.mjs down' EXIT; \
+		node tests/environments/android/environment.mjs up; \
+		$(ANDROID_TEST_TIMEOUT) node \
+			tests/environments/android/environment.mjs self-test
 
 test: test-rust test-tooling test-ast-rules ## Run all local tests.
 

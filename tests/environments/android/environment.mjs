@@ -9,6 +9,15 @@ import {
   provisionAndroid,
   reviewAndroidLicense,
 } from "./provision.mjs";
+import {
+  provisionOrchestrator,
+  validateOrchestratorFiles,
+} from "./orchestrator.mjs";
+import { down, seed, up } from "./lifecycle.mjs";
+import { selfTest } from "./runner.mjs";
+
+export { coldEmulatorArguments, emulatorArguments } from "./lifecycle.mjs";
+export { orchestratorRunArguments } from "./runner.mjs";
 
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = join(DIRECTORY, "environment.json");
@@ -18,32 +27,39 @@ const REQUIRED_PACKAGE_IDS = [
   "emulator",
   "platform-tools",
   "platforms;android-36",
-  "system-images;android-36;google_apis_playstore;x86_64",
+  "system-images;android-36;google_apis;x86_64",
 ];
-const REQUIRED_REPOSITORIES = ["gradle", "sdk", "systemImages", "temurin"];
+const REQUIRED_REPOSITORIES = ["googleApis", "gradle", "sdk", "temurin"];
 const REQUIRED_TOOL_IDS = ["gradle", "java"];
+const LIFECYCLE_COMMANDS = {
+  down,
+  seed,
+  "self-test": selfTest,
+  up,
+};
 const EXPECTED_PEER_COUNT = 2;
+const FIRST_SUPPORTED_MEMORY_MEGABYTES = 1024;
+const FIRST_USER_PORT = 1024;
 const KVM_PATH = "/dev/kvm";
+const LAST_PORT = 65_535;
+const LAST_SUPPORTED_MEMORY_MEGABYTES = 8192;
 const LICENSE_IDENTIFIER = "android-sdk-license";
 const LICENSE_TERMS_URL = "https://developer.android.com/studio/terms";
 const GRADLE_REPOSITORY_PATTERN =
   /^https:\/\/services\.gradle\.org\/distributions\/$/u;
+const GOOGLE_APIS_REPOSITORY_PATTERN =
+  /^https:\/\/dl\.google\.com\/android\/repository\/sys-img\/google_apis\/$/u;
 const SDK_REPOSITORY_PATTERN =
   /^https:\/\/dl\.google\.com\/android\/repository\/$/u;
-const SYSTEM_IMAGE_REPOSITORY_PATTERN = new RegExp(
-  "^https://dl\\.google\\.com/android/repository/sys-img/" +
-    "google_apis_playstore/$",
-  "u",
-);
 const TEMURIN_REPOSITORY_PATTERN = new RegExp(
   "^https://github\\.com/adoptium/temurin21-binaries/releases/" +
     "download/jdk-21\\.0\\.12\\.1%2B1/$",
   "u",
 );
 const REPOSITORY_PATTERNS = {
+  googleApis: GOOGLE_APIS_REPOSITORY_PATTERN,
   gradle: GRADLE_REPOSITORY_PATTERN,
   sdk: SDK_REPOSITORY_PATTERN,
-  systemImages: SYSTEM_IMAGE_REPOSITORY_PATTERN,
   temurin: TEMURIN_REPOSITORY_PATTERN,
 };
 const PACKAGE_ID_PATTERN = /^[\w.;-]+$/u;
@@ -53,6 +69,15 @@ const SHA1_PATTERN = /^[0-9a-f]{40}$/u;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const PEER_NAME_PATTERN = /^quickshare-[a-z]$/u;
 const SEMANTIC_VERSION_PATTERN = /^\d+\.\d+\.\d+$/u;
+const CONTAINER_IMAGE_PATTERN =
+  /^omarchy-quickshare-android-mobly:[a-z0-9.-]+$/u;
+const PYTHON_IMAGE_PATTERN = /^python@sha256:[0-9a-f]{64}$/u;
+const REQUIRED_ORCHESTRATOR_DEPENDENCIES = [
+  "PyYAML",
+  "mobly",
+  "portpicker",
+  "psutil",
+];
 
 function assertExactKeys(actual, expected, owner) {
   const actualKeys = Object.keys(actual).sort();
@@ -76,9 +101,16 @@ function validateRepository(repository, name) {
 function validateHost(host) {
   assertExactKeys(
     host,
-    ["architecture", "operatingSystem", "requiresKvm"],
+    ["adbServerPort", "architecture", "operatingSystem", "requiresKvm"],
     "Android host",
   );
+  if (
+    !Number.isSafeInteger(host.adbServerPort) ||
+    host.adbServerPort < FIRST_USER_PORT ||
+    host.adbServerPort > LAST_PORT
+  ) {
+    throw new TypeError("Android host adbServerPort must be a user port");
+  }
   if (typeof host.requiresKvm !== "boolean") {
     throw new TypeError("Android host requiresKvm must be boolean");
   }
@@ -163,9 +195,16 @@ function validatePeer(peer) {
 function validateAvds(avds, packages) {
   assertExactKeys(
     avds,
-    ["hardwareProfile", "locale", "peers", "systemImage"],
+    ["hardwareProfile", "locale", "memoryMegabytes", "peers", "systemImage"],
     "Android AVD configuration",
   );
+  if (
+    !Number.isSafeInteger(avds.memoryMegabytes) ||
+    avds.memoryMegabytes < FIRST_SUPPORTED_MEMORY_MEGABYTES ||
+    avds.memoryMegabytes > LAST_SUPPORTED_MEMORY_MEGABYTES
+  ) {
+    throw new Error("Android AVD memory is outside the supported range");
+  }
   if (!packages.some(({ id }) => id === avds.systemImage)) {
     throw new Error("Android AVD system image is not pinned");
   }
@@ -198,6 +237,41 @@ function validateToolchain(toolchain, repositories) {
   }
 }
 
+function validateOrchestrator(orchestrator) {
+  assertExactKeys(
+    orchestrator,
+    ["baseImage", "dependencies", "image", "python"],
+    "Android orchestrator",
+  );
+  assertMatch(
+    orchestrator.baseImage,
+    PYTHON_IMAGE_PATTERN,
+    "Android orchestrator base image must use a digest",
+  );
+  assertMatch(
+    orchestrator.image,
+    CONTAINER_IMAGE_PATTERN,
+    "Android orchestrator image name is invalid",
+  );
+  assertMatch(
+    orchestrator.python,
+    SEMANTIC_VERSION_PATTERN,
+    "Android orchestrator Python needs an exact version",
+  );
+  assertExactKeys(
+    orchestrator.dependencies,
+    REQUIRED_ORCHESTRATOR_DEPENDENCIES,
+    "Android orchestrator dependencies",
+  );
+  for (const [name, value] of Object.entries(orchestrator.dependencies)) {
+    assertMatch(
+      value,
+      SEMANTIC_VERSION_PATTERN,
+      `${name} needs an exact version`,
+    );
+  }
+}
+
 function validateProbe(probe, repositories) {
   assertExactKeys(
     probe,
@@ -206,6 +280,7 @@ function validateProbe(probe, repositories) {
       "compileSdk",
       "dependencies",
       "minSdk",
+      "orchestrator",
       "targetSdk",
       "toolchain",
     ],
@@ -223,6 +298,7 @@ function validateProbe(probe, repositories) {
       `${name} needs an exact version`,
     );
   }
+  validateOrchestrator(probe.orchestrator);
   if (probe.minSdk > probe.targetSdk || probe.targetSdk > probe.compileSdk) {
     throw new Error("Android probe SDK levels are inconsistent");
   }
@@ -290,7 +366,9 @@ function preflight(manifest) {
 }
 
 function loadManifest() {
-  return validateEnvironment(readFileSync(MANIFEST_PATH, "utf8"));
+  const manifest = validateEnvironment(readFileSync(MANIFEST_PATH, "utf8"));
+  validateOrchestratorFiles(manifest);
+  return manifest;
 }
 
 async function main() {
@@ -308,6 +386,14 @@ async function main() {
     await bootstrapAndroid(loadManifest());
     return;
   }
+  if (command === "orchestrator-provision") {
+    provisionOrchestrator(loadManifest());
+    return;
+  }
+  if (Object.hasOwn(LIFECYCLE_COMMANDS, command)) {
+    await LIFECYCLE_COMMANDS[command](loadManifest());
+    return;
+  }
   if (command === "license") {
     preflight(loadManifest());
     await reviewAndroidLicense(loadManifest());
@@ -319,7 +405,9 @@ async function main() {
     return;
   }
   throw new Error(
-    "usage: environment.mjs <validate|preflight|bootstrap|license|provision>",
+    "usage: environment.mjs " +
+      "<validate|preflight|bootstrap|orchestrator-provision|license|" +
+      "provision|seed|up|down|self-test>",
   );
 }
 

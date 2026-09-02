@@ -1,0 +1,24 @@
+#!/bin/sh
+
+if [ "$1" != "-o" ] || [ "$2" != "pid" ] || [ "$3" != "--ppid" ]; then
+  echo "mobly ps shim only supports child-process lookup" >&2
+  exit 2
+fi
+
+parent_pid=$4
+found=false
+for status_file in /proc/[0-9]*/status; do
+  process_pid=${status_file#/proc/}
+  process_pid=${process_pid%/status}
+  while read -r key value _rest; do
+    if [ "$key" = "PPid:" ] && [ "$value" = "$parent_pid" ]; then
+      echo "$process_pid"
+      found=true
+      break
+    fi
+  done < "$status_file"
+done
+
+if [ "$found" = false ]; then
+  exit 1
+fi

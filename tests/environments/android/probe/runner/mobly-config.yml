@@ -1,0 +1,10 @@
+MoblyParams:
+  LogPath: /logs
+TestBeds:
+  - Name: NearbyConnectionsAvd
+    Controllers:
+      AndroidDevice:
+        - serial: emulator-5554
+          label: peer_a
+        - serial: emulator-5556
+          label: peer_b

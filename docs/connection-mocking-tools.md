@@ -78,7 +78,7 @@ Tests compare semantic states, decoded messages, authentication results, payload
 No transfer application code starts until the verification environment is ready. "Ready" means:
 
 1. every required tool and upstream revision is pinned
-2. each oracle, simulator, D-Bus environment, virtual-radio environment, and Android virtual-device job can pass a self-test against an existing reference implementation
+2. each required oracle, simulator, D-Bus environment, and virtual-radio environment can pass a self-test against an existing reference implementation; experimental Android candidates must pass the separate admission control below before becoming required jobs
 3. every connection type above has an executable test route and named pass criteria for inbound and outbound transfers wherever the protocol supports both roles
 4. the full pre-push gate includes every reproducible oracle, simulator, virtual-radio, virtual-service, fault-injection, and Android virtual-device check; physical-device testing remains a separate manual procedure
 5. failures preserve enough structured diagnostics and packet traces to identify the failed protocol stage without collecting peer names, filenames, addresses, keys, or payload contents
@@ -412,11 +412,13 @@ The pinned network environment is provisioned with `make network-provision`; thi
 
 The Android Emulator is more useful than it used to be. Google's current [network capability table](https://developer.android.com/studio/run/emulator-networking) lists Bluetooth Classic and BLE for API 31 and later. Version 36.5 and later puts emulator instances on a shared virtual Wi-Fi network with Network Service Discovery and Wi-Fi Direct support, according to the official [multi-device networking documentation](https://developer.android.com/studio/run/emulator-networking-interconnect). Android's Netsim also supplies virtual Bluetooth controllers for AVD and Cuttlefish instances.
 
-That does not automatically produce a reliable Quick Share test peer. The open `google/nearby` repository is the desktop C++ implementation, while Android Quick Share is delivered through Google software and has no public headless test API. A Google Play system image may expose both product roles, but UI automation, account state, server-side flags, and image updates make this a weak automated compatibility signal.
+That does not automatically produce a reliable Quick Share test peer. The open `google/nearby` repository is the desktop C++ implementation, while Android Quick Share is delivered through Google software and has no public headless test API. A Google APIs system image supplies Play services for the public probe without the Play Store. A Play Store image may expose the stock product roles, but UI automation, account state, server-side flags, and image updates make that a weak automated compatibility signal.
 
 Use Mobly only to orchestrate pinned AVDs, artifacts, a test-only Android probe, and [UI Automator](https://developer.android.com/training/testing/other-components/ui-automator). The probe's public Nearby Connections API can advertise, discover, connect, accept, reject, send a file, and cancel in both roles, but it does not prove the Sharing product or force a medium. Stock Quick Share cases drive the visible UI to send to Omarchy and accept or reject a file from Omarchy.
 
 The stock route enters `make verify` only after an AVD-to-AVD control and an AVD-to-Linux transfer pass repeatable self-tests in both directions. Pin the emulator, image digest, Play services, locale, display, Mobly, UI test stack, and probe APK. If the Linux bridge or UI remains unreliable, record the unsupported route and keep it out of compatibility claims.
+
+The September 2026 admission attempt is recorded in [the Android test-lab research](research/android-test-lab-existing-solutions-2026-09.md). Both pinned API 36 image variants reached the snippet control, but public Nearby advertising remained pending despite enabled radios, location, and granted permissions. The Google APIs variant met the warm lifecycle target; the route remains outside `make verify` until its AVD-to-AVD control passes repeatably.
 
 Cuttlefish can share virtual Bluetooth and Wi-Fi media between instances and provides controls for Rootcanal and wmediumd in its [multi-device connectivity guide](https://source.android.com/docs/devices/cuttlefish/connectivity). Add any distinct Cuttlefish connection case to `make verify` once its pinned self-test is repeatable. Its size or startup cost is not a reason to omit a supported case. Split the work into child gates that meet the 60-second rule.
 

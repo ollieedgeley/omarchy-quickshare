@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "host": {
+    "adbServerPort": 5038,
     "architecture": "x86_64",
     "operatingSystem": "linux",
     "requiresKvm": true
@@ -11,8 +12,8 @@
   },
   "repositories": {
     "gradle": "https://services.gradle.org/distributions/",
+    "googleApis": "https://dl.google.com/android/repository/sys-img/google_apis/",
     "sdk": "https://dl.google.com/android/repository/",
-    "systemImages": "https://dl.google.com/android/repository/sys-img/google_apis_playstore/",
     "temurin": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/"
   },
   "packages": [
@@ -63,17 +64,18 @@
     },
     {
       "archive": "x86_64-36_r07.zip",
-      "id": "system-images;android-36;google_apis_playstore;x86_64",
+      "id": "system-images;android-36;google_apis;x86_64",
       "revision": "7",
-      "sha1": "16fa3c441d29fde6c9eea2f766eecf77032d68b4",
-      "sha256": "279c419c2829627e2bb95104f47e6de02ca9d14774506195d5db93d71bd583c8",
-      "size": 1924689206,
-      "source": "systemImages"
+      "sha1": "c6bf44bdcd885bb902b4ba752d111a073ad7a817",
+      "sha256": "b1bb0769d0bed7698e61f203d7dc9bf6e7c37cd01a39d0d8788a11186bc78160",
+      "size": 1895447397,
+      "source": "googleApis"
     }
   ],
   "avds": {
     "hardwareProfile": "pixel_6",
     "locale": "en-US",
+    "memoryMegabytes": 1536,
     "peers": [
       {
         "consolePort": 5554,
@@ -84,17 +86,28 @@
         "name": "quickshare-b"
       }
     ],
-    "systemImage": "system-images;android-36;google_apis_playstore;x86_64"
+    "systemImage": "system-images;android-36;google_apis;x86_64"
   },
   "probe": {
     "androidGradlePlugin": "9.0.1",
     "compileSdk": 36,
     "dependencies": {
-      "androidx.test.runner": "1.7.0",
-      "androidx.test.uiautomator": "2.4.0",
-      "com.google.android.gms.play-services-nearby": "19.5.0",
-      "mobly": "1.13.1",
-      "mobly-snippet-lib": "1.4.0"
+      "androidx.annotation:annotation": "1.10.0",
+      "androidx.test:runner": "1.7.0",
+      "androidx.test.uiautomator:uiautomator": "2.4.0",
+      "com.google.android.gms:play-services-nearby": "19.5.0",
+      "com.google.android.mobly:mobly-snippet-lib": "1.4.0"
+    },
+    "orchestrator": {
+      "baseImage": "python@sha256:781449467ffb6f04218f09b1ecdcdc7d22b289ee5da9ec498b024e24ad7a6db7",
+      "dependencies": {
+        "mobly": "1.13.1",
+        "portpicker": "1.6.0",
+        "psutil": "7.2.2",
+        "PyYAML": "6.0.3"
+      },
+      "image": "omarchy-quickshare-android-mobly:local",
+      "python": "3.13.7"
     },
     "minSdk": 31,
     "targetSdk": 36,
