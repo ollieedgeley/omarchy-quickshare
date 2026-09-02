@@ -381,6 +381,8 @@ Google's [RootCanal](https://android.googlesource.com/platform/packages/modules/
 
 This is a good fast test for every push. It can prove that Rust makes the right D-Bus calls, handles signals in the wrong order, retries on service restart, unregisters advertisements, and removes temporary network profiles.
 
+The prepared private-bus image is pinned by base digest and Debian snapshot. `make test-dbus-bluez` runs upstream advertisement, pairing, monitor, and agent cases through `bluetoothctl`; `make test-dbus-networkmanager` runs upstream Wi-Fi, connection, state, and settings cases through `nmcli`. Environment startup and teardown are measured outside both test timers.
+
 The bundled templates are incomplete for this project. The BlueZ template lacks the full GATT application model, and the NetworkManager template does not model its Wi-Fi P2P interfaces. Extend them with only the methods and signals the daemon uses. NetworkManager also ships its own [`test-networkmanager-service.py`](https://github.com/NetworkManager/NetworkManager/blob/main/tools/test-networkmanager-service.py), which is useful as a more detailed reference service but likewise is not a radio simulator.
 
 Never count a D-Bus mock test as Bluetooth or Wi-Fi interoperability. It validates our use of a service API.

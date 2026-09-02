@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "image": "omarchy-quickshare/dbus-toolchain:2026-09-02",
+  "container": "omarchy-quickshare-dbus",
+  "base": "debian@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171",
+  "debianSnapshot": "20260901T000000Z",
+  "source": {
+    "id": "python-dbusmock",
+    "revision": "45885bf940b3f90f72570b202e8cc3b56d3b0506"
+  },
+  "packages": ["bluez", "network-manager", "python3-dbus", "python3-gi"],
+  "clients": ["bluetoothctl", "nmcli"],
+  "versions": {
+    "bluetoothctl": "5.66",
+    "nmcli": "1.42.4",
+    "python": "3.11.2"
+  },
+  "templates": ["bluez5", "networkmanager"]
+}
