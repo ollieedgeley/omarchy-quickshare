@@ -4,6 +4,12 @@ import { arch, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  bootstrapAndroid,
+  provisionAndroid,
+  reviewAndroidLicense,
+} from "./provision.mjs";
+
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = join(DIRECTORY, "environment.json");
 const REQUIRED_PACKAGE_IDS = [
@@ -287,7 +293,7 @@ function loadManifest() {
   return validateEnvironment(readFileSync(MANIFEST_PATH, "utf8"));
 }
 
-function main() {
+async function main() {
   const [, , command] = process.argv;
   if (command === "validate") {
     loadManifest();
@@ -297,11 +303,28 @@ function main() {
     preflight(loadManifest());
     return;
   }
-  throw new Error("usage: environment.mjs <validate|preflight>");
+  if (command === "bootstrap") {
+    preflight(loadManifest());
+    await bootstrapAndroid(loadManifest());
+    return;
+  }
+  if (command === "license") {
+    preflight(loadManifest());
+    await reviewAndroidLicense(loadManifest());
+    return;
+  }
+  if (command === "provision") {
+    preflight(loadManifest());
+    await provisionAndroid(loadManifest());
+    return;
+  }
+  throw new Error(
+    "usage: environment.mjs <validate|preflight|bootstrap|license|provision>",
+  );
 }
 
 const [, invokedArgument = ""] = process.argv;
 const invokedPath = resolve(invokedArgument);
 if (invokedPath === fileURLToPath(import.meta.url)) {
-  main();
+  await main();
 }

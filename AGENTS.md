@@ -75,6 +75,7 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make lint-ast` runs the complete error-only ast-grep scan; `make test-ast-rules` checks its rule fixtures and snapshots.
 - `make lint-docs` checks Markdown policy; `make lint-structure-app` and `make lint-structure-tooling` isolate structure feedback. `make lint-structure` combines them.
 - `make lint-android` validates Android SDK, probe, and AVD pins; `make android-preflight` checks host and KVM support.
+- `make android-bootstrap` fetches pinned host tools; after the user runs `make android-license`, `make android-provision` installs the SDK and creates both AVDs.
 - `make lint-sources` validates immutable test-source pins; `make test-source-cache` hash-checks their prepared archives.
 - `make sources-fetch` provisions the pinned source cache; provisioning is not part of a child test's 60-second execution budget.
 - `make lint-oracle` checks the pinned oracle definition; `make oracle-provision` builds it outside the test budget.

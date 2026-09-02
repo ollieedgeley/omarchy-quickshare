@@ -17,7 +17,7 @@ MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 .PHONY: dbus-provision dbus-up dbus-down
 .PHONY: bluetooth-radio-provision bluetooth-radio-up bluetooth-radio-down
 .PHONY: network-provision network-up network-down
-.PHONY: android-preflight
+.PHONY: android-preflight android-bootstrap android-license android-provision
 .PHONY: format format-app format-tooling
 .PHONY: format-check format-app-check format-tooling-check check
 .PHONY: lint-rust lint-javascript lint-ast lint-docs
@@ -114,6 +114,15 @@ network-down: ## Remove isolated radios and report teardown time.
 
 android-preflight: ## Check host support for the pinned Android AVD lab.
 	@$(TIMEOUT) node tests/environments/android/environment.mjs preflight
+
+android-bootstrap: ## Fetch and verify the pinned Android host tools.
+	@node tests/environments/android/environment.mjs bootstrap
+
+android-license: ## Interactively review the Android SDK license.
+	@node tests/environments/android/environment.mjs license
+
+android-provision: ## Install the pinned SDK and create both AVDs.
+	@node tests/environments/android/environment.mjs provision
 
 format: format-app format-tooling ## Rewrite files with pinned formatters.
 
