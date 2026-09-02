@@ -274,6 +274,8 @@ Do not compare only log text. The bridge should emit typed records for discovere
 
 Google's simulator is not a hardware model. It also has some timing sensitivity. One upstream test documents a rare advertisement race in the fake environment. Use it as the behavioral oracle, not as the sole release evidence.
 
+The public Google source tree references an internal `gloop` thread-ID helper, task-pool API, WebRTC tree, and UTF helpers that it does not publish. The oracle workspace supplies minimal, tracked Linux compatibility headers for thread identity, callback execution, and the WebRTC types present in shared headers; it also selects Google's own public-build UTF stub and limits the Linux binary to the five supported medium suites. AWDL, generic Wi-Fi state, and WebRTC are outside this matrix. The overlays do not implement or emulate discovery, advertising, sockets, or data links, so Bluetooth and Wi-Fi medium behavior remains Google's code. The overlays and their use are validated as part of the pinned oracle build.
+
 ### Sharing-layer fixtures and live peers
 
 Google's [`FakeNearbyConnectionsManager`](https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/sharing/fake_nearby_connections_manager.h) lets Sharing tests inject connections, raw authentication tokens, incoming payloads, completion events, and bandwidth-upgrade results. [`incoming_share_session_test.cc`](https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/sharing/incoming_share_session_test.cc) covers file, text, URL, APK, invalid-size, insufficient-storage, accept, cancel, failure, timeout, and upgrade cases.

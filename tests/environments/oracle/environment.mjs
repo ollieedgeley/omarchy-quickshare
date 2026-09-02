@@ -24,6 +24,7 @@ const CACHE_ROOT = resolve(
 const SOURCE_TREES = join(CACHE_ROOT, "sources", "trees");
 const REFERENCE = join(CACHE_ROOT, "oracle");
 const WORKSPACE = join(REFERENCE, "workspaces", "google-nearby");
+const OVERRIDES = join(REFERENCE, "overrides");
 const BAZEL_CACHE = join(REFERENCE, "bazel");
 const ARTIFACTS = join(REFERENCE, "bin");
 const STATE_PATH = join(REFERENCE, "image.json");
@@ -79,10 +80,19 @@ export function validateEnvironment(manifestSource, dockerfileSource) {
   }
   if (
     !Array.isArray(manifest.reference.sources) ||
-    !manifest.reference.sources.includes("google-nearby") ||
-    !manifest.reference.sources.includes("google-ukey2") ||
+    ![
+      "google-nearby",
+      "google-ukey2",
+      "nisaba",
+      "nlohmann-json",
+      "protobuf-matchers",
+      "smhasher",
+    ].every((source) => manifest.reference.sources.includes(source)) ||
     !Array.isArray(manifest.reference.targets) ||
-    manifest.reference.targets.length !== 2
+    !manifest.reference.targets.includes(
+      "//connections/implementation/mediums:core_internal_mediums_test",
+    ) ||
+    manifest.reference.targets.length !== 3
   ) {
     throw new Error("oracle reference inputs and targets are incomplete");
   }
@@ -217,6 +227,171 @@ function assertCachePath(path) {
   }
 }
 
+function replaceExpected(source, before, after, count = 1) {
+  const occurrences = source.split(before).length - 1;
+  if (occurrences !== count) {
+    throw new Error(
+      `expected ${count} Google overlay occurrence(s), found ${occurrences}: ${before.trim()}`,
+    );
+  }
+  return source.replaceAll(before, after);
+}
+
+function prepareGoogleLinuxOverlay() {
+  const buildPath = join(
+    WORKSPACE,
+    "internal",
+    "platform",
+    "implementation",
+    "g3",
+    "BUILD",
+  );
+  let build = readFileSync(buildPath, "utf8");
+  for (const [line, count] of [
+    ['        "webrtc.cc",\n', 1],
+    ['        "webrtc.h",\n', 1],
+    ['        "webrtc_platform.cc",\n', 1],
+    ['        "//internal/platform/implementation:webrtc_platform",\n', 2],
+    [
+      '        "//third_party/webrtc/files/stable/webrtc/api:create_modular_peer_connection_factory",\n',
+      1,
+    ],
+    [
+      '        "//third_party/webrtc/files/stable/webrtc/api:peer_connection_interface",\n',
+      1,
+    ],
+    [
+      '        "//third_party/webrtc/files/stable/webrtc/api:scoped_refptr",\n',
+      1,
+    ],
+    [
+      '        "//third_party/webrtc/files/stable/webrtc/rtc_base:checks",\n',
+      1,
+    ],
+    [
+      '        "//third_party/webrtc/files/stable/webrtc/rtc_base:threading",\n',
+      1,
+    ],
+  ]) {
+    build = replaceExpected(build, line, "", count);
+  }
+  build = replaceExpected(
+    build,
+    '        "@com_google_protobuf//json",\n',
+    '        "@com_google_protobuf//:json",\n',
+  );
+  writeFileSync(buildPath, build);
+
+  const platformBuildPath = join(
+    WORKSPACE,
+    "internal",
+    "platform",
+    "implementation",
+    "BUILD",
+  );
+  const platformBuild = replaceExpected(
+    readFileSync(platformBuildPath, "utf8"),
+    '    compatible_with = ["//buildenv/target:non_prod"],\n',
+    "",
+  );
+  writeFileSync(platformBuildPath, platformBuild);
+
+  const utfHeaderPath = join(
+    WORKSPACE,
+    "sharing",
+    "internal",
+    "base",
+    "utf_string_conversions.h",
+  );
+  const utfHeader = replaceExpected(
+    readFileSync(utfHeaderPath, "utf8"),
+    "#if defined(GITHUB_BUILD)\n",
+    "#if 1  // Public GitHub oracle build.\n",
+  );
+  writeFileSync(utfHeaderPath, utfHeader);
+
+  const preferencesPath = join(
+    WORKSPACE,
+    "internal",
+    "platform",
+    "implementation",
+    "g3",
+    "preferences_manager.cc",
+  );
+  const preferences = replaceExpected(
+    readFileSync(preferencesPath, "utf8"),
+    "proto2::json::",
+    "google::protobuf::json::",
+    2,
+  );
+  writeFileSync(preferencesPath, preferences);
+
+  const credentialsPath = join(
+    WORKSPACE,
+    "internal",
+    "platform",
+    "implementation",
+    "g3",
+    "credential_storage_impl.h",
+  );
+  const credentials = replaceExpected(
+    readFileSync(credentialsPath, "utf8"),
+    "    return std::make_tuple(std::string(manager_app_id),\n" +
+      "                           std::string(account_name));\n",
+    "    return std::make_pair(std::string(manager_app_id),\n" +
+      "                          std::string(account_name));\n",
+  );
+  writeFileSync(credentialsPath, credentials);
+
+  const hotspotHeaderPath = join(
+    WORKSPACE,
+    "internal",
+    "platform",
+    "implementation",
+    "g3",
+    "wifi_hotspot.h",
+  );
+  const hotspotHeader = replaceExpected(
+    readFileSync(hotspotHeaderPath, "utf8"),
+    '#include "absl/base/thread_annotations.h"\n',
+    '#include "absl/base/thread_annotations.h"\n' +
+      '#include "absl/container/flat_hash_map.h"\n',
+  );
+  writeFileSync(hotspotHeaderPath, hotspotHeader);
+
+  const hotspotTestPath = join(
+    WORKSPACE,
+    "connections",
+    "implementation",
+    "mediums",
+    "wifi_hotspot_test.cc",
+  );
+  const hotspotTest = replaceExpected(
+    readFileSync(hotspotTestPath, "utf8"),
+    "    .address = {123, 234, 23, 1},\n",
+    "    .address = {123, static_cast<char>(234), 23, 1},\n",
+  );
+  writeFileSync(hotspotTestPath, hotspotTest);
+
+  const mediumsBuildPath = join(
+    WORKSPACE,
+    "connections",
+    "implementation",
+    "mediums",
+    "BUILD",
+  );
+  let mediumsBuild = readFileSync(mediumsBuildPath, "utf8");
+  for (const source of [
+    "awdl_test.cc",
+    "bluetooth_radio_test.cc",
+    "lost_entity_tracker_test.cc",
+    "wifi_test.cc",
+  ]) {
+    mediumsBuild = replaceExpected(mediumsBuild, `        "${source}",\n`, "");
+  }
+  writeFileSync(mediumsBuildPath, mediumsBuild);
+}
+
 function prepareReference(manifest, fingerprint) {
   assertCachePath(WORKSPACE);
   const source = join(SOURCE_TREES, "google-nearby");
@@ -228,6 +403,55 @@ function prepareReference(manifest, fingerprint) {
   rmSync(WORKSPACE, { recursive: true, force: true });
   mkdirSync(dirname(WORKSPACE), { recursive: true });
   cpSync(source, WORKSPACE, { recursive: true, preserveTimestamps: true });
+  cpSync(
+    join(DIRECTORY, "overlays", "gloop"),
+    join(WORKSPACE, "third_party", "gloop"),
+    {
+      recursive: true,
+      preserveTimestamps: true,
+    },
+  );
+  cpSync(
+    join(DIRECTORY, "overlays", "webrtc"),
+    join(WORKSPACE, "third_party", "webrtc", "files", "stable", "webrtc"),
+    {
+      recursive: true,
+      preserveTimestamps: true,
+    },
+  );
+  prepareGoogleLinuxOverlay();
+
+  rmSync(OVERRIDES, { recursive: true, force: true });
+  mkdirSync(OVERRIDES, { recursive: true });
+  for (const [sourceName, buildFile] of [
+    ["smhasher", "smhasher.BUILD.bazel"],
+    ["nlohmann-json", "nlohmann-json.BUILD.bazel"],
+  ]) {
+    const destination = join(OVERRIDES, sourceName);
+    cpSync(join(SOURCE_TREES, sourceName), destination, {
+      recursive: true,
+      preserveTimestamps: true,
+    });
+    copyFileSync(
+      join(DIRECTORY, "overlays", buildFile),
+      join(destination, "BUILD.bazel"),
+    );
+    writeFileSync(join(destination, "WORKSPACE"), "");
+  }
+  const nisaba = join(OVERRIDES, "nisaba");
+  cpSync(join(SOURCE_TREES, "nisaba"), nisaba, {
+    recursive: true,
+    preserveTimestamps: true,
+  });
+  copyFileSync(
+    join(DIRECTORY, "overlays", "nisaba-port.BUILD.bazel"),
+    join(nisaba, "nisaba", "port", "BUILD.bazel"),
+  );
+  copyFileSync(
+    join(DIRECTORY, "overlays", "nisaba-thread-pool.h"),
+    join(nisaba, "nisaba", "port", "thread_pool.h"),
+  );
+  writeFileSync(join(nisaba, "WORKSPACE"), "");
 
   const lockArchive = join(DIRECTORY, manifest.reference.lockFile);
   const compressed = readFileSync(lockArchive);
@@ -251,12 +475,22 @@ function referenceContainerArgs(manifest, network, artifacts = false) {
     "--volume",
     `${SOURCE_TREES}:/sources:ro`,
     "--volume",
+    `${OVERRIDES}:/overrides:ro`,
+    "--volume",
     `${BAZEL_CACHE}:/bazel`,
   ];
   if (artifacts) args.push("--volume", `${ARTIFACTS}:/artifacts`);
   args.push("--workdir", "/workspace", manifest.image);
   return args;
 }
+
+const REPOSITORY_OVERRIDES = [
+  "--override_repository=com_google_ukey2=/sources/google-ukey2",
+  "--override_repository=aappleby_smhasher=/overrides/smhasher",
+  "--override_repository=nlohmann_json=/overrides/nlohmann-json",
+  "--override_repository=com_google_nisaba=/overrides/nisaba",
+  "--override_repository=com_github_protobuf_matchers=/sources/protobuf-matchers",
+];
 
 function bazelBuildArgs(manifest, noFetch) {
   const args = [
@@ -266,7 +500,8 @@ function bazelBuildArgs(manifest, noFetch) {
     "--repository_cache=/bazel/repository",
     "--disk_cache=/bazel/disk",
     "--lockfile_mode=error",
-    "--override_repository=com_google_ukey2=/sources/google-ukey2",
+    ...REPOSITORY_OVERRIDES,
+    "--cxxopt=-std=c++20",
     "--jobs=2",
   ];
   if (noFetch) args.push("--nofetch");
@@ -319,7 +554,8 @@ function selfTestReference(manifest) {
     "--repository_cache=/bazel/repository",
     "--disk_cache=/bazel/disk",
     "--lockfile_mode=error",
-    "--override_repository=com_google_ukey2=/sources/google-ukey2",
+    ...REPOSITORY_OVERRIDES,
+    "--cxxopt=-std=c++20",
     "--jobs=2",
     "--nofetch",
     "--test_output=errors",
@@ -331,6 +567,39 @@ function selfTestReference(manifest) {
       UKEY2_SHELL: shell,
     },
   });
+}
+
+const MEDIUM_FILTERS = {
+  bluetooth: "*BluetoothClassicTest.*",
+  ble: "*BleTest.*",
+  lan: "*WifiLanTest.*",
+  hotspot: "*WifiHotspotTest.*",
+  "wifi-direct": "*WifiDirectTest.*",
+};
+
+function selfTestMedium(manifest, medium) {
+  const filter = MEDIUM_FILTERS[medium];
+  if (!filter) throw new Error(`unknown oracle medium: ${medium}`);
+  docker([
+    ...referenceContainerArgs(manifest, "none"),
+    "bazel",
+    "--output_user_root=/bazel/user",
+    "test",
+    "--repository_cache=/bazel/repository",
+    "--disk_cache=/bazel/disk",
+    "--lockfile_mode=error",
+    ...REPOSITORY_OVERRIDES,
+    "--cxxopt=-std=c++20",
+    "--jobs=2",
+    "--nofetch",
+    "--test_output=errors",
+    "--cache_test_results=no",
+    "--test_sharding_strategy=disabled",
+    "--test_arg=--gtest_fail_if_no_test_selected",
+    `--test_filter=${filter}`,
+    "//connections/implementation/mediums:core_internal_mediums_test",
+  ]);
+  process.stdout.write(`Google ${medium} medium self-test passed.\n`);
 }
 
 function enforceLifecycle(name, started) {
@@ -409,6 +678,8 @@ async function main() {
     provisionReference(manifest, fingerprint);
   } else if (mode === "reference-self-test") {
     selfTestReference(manifest);
+  } else if (mode === "medium-self-test") {
+    selfTestMedium(manifest, process.argv[3]);
   } else {
     throw new Error(`unknown oracle environment action: ${mode}`);
   }

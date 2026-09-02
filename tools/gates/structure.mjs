@@ -58,14 +58,20 @@ export function lineBudgetFailures(files) {
     }
     const absolute = join(ROOT, path);
     if (!existsSync(absolute) || !statSync(absolute).isFile()) continue;
-    const isTest =
-      path.includes("/tests/") || /(?:^|\.)test\.[^.]+$/.test(path);
-    const limit = isTest ? 800 : 500;
+    const limit = lineLimit(path);
     const lines = physicalLines(absolute);
     if (lines > limit)
       failures.push(`${path}: ${lines} lines (limit ${limit})`);
   }
   return failures;
+}
+
+export function lineLimit(path) {
+  const isTest =
+    path.startsWith("tests/") ||
+    path.includes("/tests/") ||
+    /(?:^|\.)test\.[^.]+$/.test(path);
+  return isTest ? 800 : 500;
 }
 
 export function directoryBudgetFailures(files) {

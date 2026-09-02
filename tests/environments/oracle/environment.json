@@ -11,8 +11,16 @@
   "reference": {
     "lockFile": "google-nearby-lock.json.gz",
     "lockSha256": "2f8671e933b577d8f17b634fe9010fd7af0c5a2e563f7aaea1026918240007b9",
-    "sources": ["google-nearby", "google-ukey2"],
+    "sources": [
+      "google-nearby",
+      "google-ukey2",
+      "nisaba",
+      "nlohmann-json",
+      "protobuf-matchers",
+      "smhasher"
+    ],
     "targets": [
+      "//connections/implementation/mediums:core_internal_mediums_test",
       "@com_google_ukey2//src/main/cpp:cpp_tests",
       "@com_google_ukey2//src/main/cpp:ukey2_shell"
     ]

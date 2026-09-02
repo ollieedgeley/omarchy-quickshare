@@ -25,6 +25,19 @@ test("oracle environment pins every reproducibility input", () => {
   const parsed = validateEnvironment(manifest, dockerfile);
   assert.equal(parsed.bazel.version, "9.2.0");
   assert.match(parsed.base, /^debian@sha256:/);
+  assert.deepEqual(parsed.reference.sources, [
+    "google-nearby",
+    "google-ukey2",
+    "nisaba",
+    "nlohmann-json",
+    "protobuf-matchers",
+    "smhasher",
+  ]);
+  assert.ok(
+    parsed.reference.targets.includes(
+      "//connections/implementation/mediums:core_internal_mediums_test",
+    ),
+  );
   assert.match(environmentFingerprint(manifest, dockerfile), /^[0-9a-f]{64}$/);
   validateReferenceLock(
     parsed,

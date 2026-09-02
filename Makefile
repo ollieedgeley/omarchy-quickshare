@@ -12,7 +12,8 @@ MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 
 .PHONY: help setup hooks-install sources-fetch oracle-provision oracle-reference-provision oracle-up oracle-down
 .PHONY: format format-check check lint-rust lint-ast lint-docs lint-structure lint-sources lint-oracle
-.PHONY: test test-rust test-tooling test-ast-rules test-source-cache test-oracle-toolchain test-oracle-reference verify build commit-msg
+.PHONY: test test-rust test-tooling test-ast-rules test-source-cache test-oracle-toolchain test-oracle-reference
+.PHONY: test-oracle-bluetooth test-oracle-ble test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct verify build commit-msg
 .PHONY: pre-commit pre-commit-prepare pre-commit-structure pre-commit-format pre-commit-ast
 .PHONY: pre-commit-rust pre-commit-test pre-push
 
@@ -97,9 +98,24 @@ test-oracle-toolchain: ## Warm-start, test, and stop the prepared oracle toolcha
 test-oracle-reference: ## Run Google's UKEY2 tests and a bidirectional secure-session exchange.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs reference-self-test
 
+test-oracle-bluetooth: ## Check Google's simulated Bluetooth Classic medium.
+	@$(TIMEOUT) node tests/environments/oracle/environment.mjs medium-self-test bluetooth
+
+test-oracle-ble: ## Check Google's simulated BLE medium.
+	@$(TIMEOUT) node tests/environments/oracle/environment.mjs medium-self-test ble
+
+test-oracle-lan: ## Check Google's simulated Wi-Fi LAN medium.
+	@$(TIMEOUT) node tests/environments/oracle/environment.mjs medium-self-test lan
+
+test-oracle-hotspot: ## Check Google's simulated Wi-Fi hotspot medium.
+	@$(TIMEOUT) node tests/environments/oracle/environment.mjs medium-self-test hotspot
+
+test-oracle-wifi-direct: ## Check Google's simulated Wi-Fi Direct medium.
+	@$(TIMEOUT) node tests/environments/oracle/environment.mjs medium-self-test wifi-direct
+
 test: test-rust test-tooling test-ast-rules ## Run all local tests.
 
-verify: format-check lint-docs lint-structure lint-sources lint-oracle check lint-rust lint-ast test test-source-cache test-oracle-toolchain test-oracle-reference ## Run the complete local quality suite.
+verify: format-check lint-docs lint-structure lint-sources lint-oracle check lint-rust lint-ast test test-source-cache test-oracle-toolchain test-oracle-reference test-oracle-bluetooth test-oracle-ble test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct ## Run the complete local quality suite.
 
 build: ## Build the complete locked workspace after verification.
 	@$(TIMEOUT) cargo build --workspace --all-targets --all-features --locked
