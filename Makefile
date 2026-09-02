@@ -10,9 +10,9 @@ CODEGRAPH ?= $(NODE_BIN)/codegraph
 PRETTIER ?= $(NODE_BIN)/prettier
 MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 
-.PHONY: help setup hooks-install sources-fetch oracle-provision oracle-up oracle-down
+.PHONY: help setup hooks-install sources-fetch oracle-provision oracle-reference-provision oracle-up oracle-down
 .PHONY: format format-check check lint-rust lint-ast lint-docs lint-structure lint-sources lint-oracle
-.PHONY: test test-rust test-tooling test-ast-rules test-source-cache test-oracle-toolchain verify build commit-msg
+.PHONY: test test-rust test-tooling test-ast-rules test-source-cache test-oracle-toolchain test-oracle-reference verify build commit-msg
 .PHONY: pre-commit pre-commit-prepare pre-commit-structure pre-commit-format pre-commit-ast
 .PHONY: pre-commit-rust pre-commit-test pre-push
 
@@ -25,6 +25,7 @@ setup: ## Install pinned development tools and activate repository hooks.
 	@$(MAKE) hooks-install
 	@$(MAKE) sources-fetch
 	@$(MAKE) oracle-provision
+	@$(MAKE) oracle-reference-provision
 
 hooks-install: ## Activate Husky and initialize the reusable staged CodeGraph mirror.
 	@$(NODE_BIN)/husky
@@ -35,6 +36,9 @@ sources-fetch: ## Download, hash-check, and extract every pinned test source.
 
 oracle-provision: ## Build the pinned oracle toolchain image; one-time provisioning may exceed 60 seconds.
 	@node tests/environments/oracle/environment.mjs provision
+
+oracle-reference-provision: ## Compile pinned Google UKEY2 artifacts and prove an offline rebuild.
+	@node tests/environments/oracle/environment.mjs reference-provision
 
 oracle-up: ## Start and readiness-check the prepared oracle environment within 60 seconds.
 	@node tests/environments/oracle/environment.mjs up
@@ -90,9 +94,12 @@ test-oracle-toolchain: ## Warm-start, test, and stop the prepared oracle toolcha
 		node tests/environments/oracle/environment.mjs up; \
 		$(TIMEOUT) node tests/environments/oracle/environment.mjs self-test
 
+test-oracle-reference: ## Run Google's UKEY2 tests and a bidirectional secure-session exchange.
+	@$(TIMEOUT) node tests/environments/oracle/environment.mjs reference-self-test
+
 test: test-rust test-tooling test-ast-rules ## Run all local tests.
 
-verify: format-check lint-docs lint-structure lint-sources lint-oracle check lint-rust lint-ast test test-source-cache test-oracle-toolchain ## Run the complete local quality suite.
+verify: format-check lint-docs lint-structure lint-sources lint-oracle check lint-rust lint-ast test test-source-cache test-oracle-toolchain test-oracle-reference ## Run the complete local quality suite.
 
 build: ## Build the complete locked workspace after verification.
 	@$(TIMEOUT) cargo build --workspace --all-targets --all-features --locked

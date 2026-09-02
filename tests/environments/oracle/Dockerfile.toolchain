@@ -1,13 +1,9 @@
 FROM debian@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 
 ARG DEBIAN_SNAPSHOT=20260901T000000Z
-ARG BAZEL_URL=https://releases.bazel.build/9.0.1/release/bazel-9.0.1-linux-x86_64
-ARG BAZEL_SHA256=b4746d3ee7e698b08ebc6a91bd6b4062a25d1b4214a5964f866986f59fc159fb
+ARG BAZEL_URL=https://releases.bazel.build/9.2.0/release/bazel-9.2.0-linux-x86_64
+ARG BAZEL_SHA256=7668a95db1250f12c40407251e4e203b4ec8bf39bc495d2f485b2d8c99048694
 ARG ENVIRONMENT_FINGERPRINT
-
-LABEL org.opencontainers.image.title="omarchy-quickshare oracle toolchain" \
-      org.opencontainers.image.source="https://github.com/ollieedgeley/omarchy-quickshare" \
-      io.omarchy-quickshare.environment="${ENVIRONMENT_FINGERPRINT}"
 
 RUN rm -f /etc/apt/sources.list.d/* \
     && printf '%s\n' \
@@ -33,6 +29,10 @@ RUN rm -f /etc/apt/sources.list.d/* \
     && curl --fail --location --output /usr/local/bin/bazel "${BAZEL_URL}" \
     && printf '%s  %s\n' "${BAZEL_SHA256}" /usr/local/bin/bazel | sha256sum --check --strict \
     && chmod 0755 /usr/local/bin/bazel
+
+LABEL org.opencontainers.image.title="omarchy-quickshare oracle toolchain" \
+      org.opencontainers.image.source="https://github.com/ollieedgeley/omarchy-quickshare" \
+      io.omarchy-quickshare.environment="${ENVIRONMENT_FINGERPRINT}"
 
 ENV CC=/usr/bin/clang \
     CXX=/usr/bin/clang++ \

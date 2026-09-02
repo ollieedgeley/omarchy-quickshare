@@ -222,11 +222,14 @@ googletest at `3b49a56fe3958a3a9c3da722f5ee1a3053b6975f`, Abseil at
 The executable strategy is to maintain a repository-owned oracle lock manifest.
 For every fetched archive it records the source commit, canonical URL, SHA-256,
 license, and applied patch digest. A fetch command must verify every digest and
-fail offline or on mismatch. A tracked Bazel overlay replaces mutable URLs,
-declares `rules_cc`, and uses the pinned Bazel version and Google's checked-in
-module lock for registry dependencies. The oracle image or environment is then
-built twice, with the second build network-disabled, and its image digest is the
-only artifact accepted by gates. Branch-head commits above are audit anchors,
+fail offline or on mismatch. The oracle pins Bazel 9.2.0 and stores a compressed,
+hashed lock regenerated for that LTS because Google's checked-in lock format is
+not readable by Bazel 9. Repository overrides replace the mutable UKEY2 archive
+with its verified source tree. Provisioning builds once with network access and
+then repeats the exact targets with `--nofetch` and no container network. The
+warm gate runs Google's C++ tests and a live bidirectional UKEY2 session. The
+remaining mutable repositories above must receive the same override before a
+target that reaches them is accepted. Branch-head commits are audit anchors,
 not permission to fetch those branches later.
 
 ## Licensing and redistribution

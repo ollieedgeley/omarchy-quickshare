@@ -1,7 +1,16 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  cpSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 
 import { output, run } from "../../../tools/gates/lib/process.mjs";
 
@@ -9,7 +18,15 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const DIRECTORY = join(ROOT, "tests", "environments", "oracle");
 const MANIFEST_PATH = join(DIRECTORY, "environment.json");
 const DOCKERFILE_PATH = join(DIRECTORY, "Dockerfile.toolchain");
-const STATE_PATH = join(ROOT, ".cache", "test-env", "oracle", "image.json");
+const CACHE_ROOT = resolve(
+  process.env.TEST_ENV_CACHE ?? join(ROOT, ".cache", "test-env"),
+);
+const SOURCE_TREES = join(CACHE_ROOT, "sources", "trees");
+const REFERENCE = join(CACHE_ROOT, "oracle");
+const WORKSPACE = join(REFERENCE, "workspaces", "google-nearby");
+const BAZEL_CACHE = join(REFERENCE, "bazel");
+const ARTIFACTS = join(REFERENCE, "bin");
+const STATE_PATH = join(REFERENCE, "image.json");
 const CONTAINER = "omarchy-quickshare-oracle";
 const START_LIMIT_MS = 60_000;
 const START_GOAL_MS = 30_000;
@@ -19,7 +36,15 @@ function digest(value) {
 }
 
 export function environmentFingerprint(manifestSource, dockerfileSource) {
-  return digest(`${manifestSource}\0${dockerfileSource}`);
+  const manifest = JSON.parse(manifestSource);
+  const imageInputs = {
+    image: manifest.image,
+    base: manifest.base,
+    debianSnapshot: manifest.debianSnapshot,
+    bazel: manifest.bazel,
+    packages: manifest.packages,
+  };
+  return digest(`${JSON.stringify(imageInputs)}\0${dockerfileSource}`);
 }
 
 export function validateEnvironment(manifestSource, dockerfileSource) {
@@ -45,6 +70,21 @@ export function validateEnvironment(manifestSource, dockerfileSource) {
   }
   if (!/^[0-9a-f]{64}$/.test(manifest.bazel.sha256)) {
     throw new Error("oracle Bazel binary must have a SHA-256");
+  }
+  if (
+    !/^[a-z0-9-]+\.json\.gz$/.test(manifest.reference?.lockFile) ||
+    !/^[0-9a-f]{64}$/.test(manifest.reference?.lockSha256)
+  ) {
+    throw new Error("oracle reference lock must be a hashed gzip file");
+  }
+  if (
+    !Array.isArray(manifest.reference.sources) ||
+    !manifest.reference.sources.includes("google-nearby") ||
+    !manifest.reference.sources.includes("google-ukey2") ||
+    !Array.isArray(manifest.reference.targets) ||
+    manifest.reference.targets.length !== 2
+  ) {
+    throw new Error("oracle reference inputs and targets are incomplete");
   }
   if (
     !Array.isArray(manifest.packages) ||
@@ -75,11 +115,26 @@ export function validateEnvironment(manifestSource, dockerfileSource) {
   return manifest;
 }
 
+export function validateReferenceLock(manifest, compressed) {
+  if (digest(compressed) !== manifest.reference.lockSha256) {
+    throw new Error("Google Nearby reference lock SHA-256 mismatch");
+  }
+  const lock = JSON.parse(gunzipSync(compressed));
+  if (lock.lockFileVersion !== 28 || !lock.registryFileHashes) {
+    throw new Error("Google Nearby reference lock is incomplete");
+  }
+}
+
 function inputs() {
   const manifestSource = readFileSync(MANIFEST_PATH, "utf8");
   const dockerfileSource = readFileSync(DOCKERFILE_PATH, "utf8");
+  const manifest = validateEnvironment(manifestSource, dockerfileSource);
+  validateReferenceLock(
+    manifest,
+    readFileSync(join(DIRECTORY, manifest.reference.lockFile)),
+  );
   return {
-    manifest: validateEnvironment(manifestSource, dockerfileSource),
+    manifest,
     fingerprint: environmentFingerprint(manifestSource, dockerfileSource),
   };
 }
@@ -155,6 +210,129 @@ function provision(manifest, fingerprint) {
   process.stdout.write(`Prepared oracle image ${imageId}.\n`);
 }
 
+function assertCachePath(path) {
+  const expectedPrefix = `${CACHE_ROOT}/`;
+  if (!resolve(path).startsWith(expectedPrefix)) {
+    throw new Error(`refusing unsafe test-environment path: ${path}`);
+  }
+}
+
+function prepareReference(manifest, fingerprint) {
+  assertCachePath(WORKSPACE);
+  const source = join(SOURCE_TREES, "google-nearby");
+  if (!readFileSync(join(source, "MODULE.bazel"), "utf8")) {
+    throw new Error(
+      "Google Nearby source is missing; run `make sources-fetch`",
+    );
+  }
+  rmSync(WORKSPACE, { recursive: true, force: true });
+  mkdirSync(dirname(WORKSPACE), { recursive: true });
+  cpSync(source, WORKSPACE, { recursive: true, preserveTimestamps: true });
+
+  const lockArchive = join(DIRECTORY, manifest.reference.lockFile);
+  const compressed = readFileSync(lockArchive);
+  validateReferenceLock(manifest, compressed);
+  writeFileSync(join(WORKSPACE, "MODULE.bazel.lock"), gunzipSync(compressed));
+  writeFileSync(
+    join(WORKSPACE, ".quickshare-reference.json"),
+    `${JSON.stringify({ fingerprint, sources: manifest.reference.sources }, null, 2)}\n`,
+  );
+}
+
+function referenceContainerArgs(manifest, network, artifacts = false) {
+  const args = [
+    "run",
+    "--rm",
+    `--network=${network}`,
+    "--user",
+    `${process.getuid()}:${process.getgid()}`,
+    "--volume",
+    `${WORKSPACE}:/workspace`,
+    "--volume",
+    `${SOURCE_TREES}:/sources:ro`,
+    "--volume",
+    `${BAZEL_CACHE}:/bazel`,
+  ];
+  if (artifacts) args.push("--volume", `${ARTIFACTS}:/artifacts`);
+  args.push("--workdir", "/workspace", manifest.image);
+  return args;
+}
+
+function bazelBuildArgs(manifest, noFetch) {
+  const args = [
+    "bazel",
+    "--output_user_root=/bazel/user",
+    "build",
+    "--repository_cache=/bazel/repository",
+    "--disk_cache=/bazel/disk",
+    "--lockfile_mode=error",
+    "--override_repository=com_google_ukey2=/sources/google-ukey2",
+    "--jobs=2",
+  ];
+  if (noFetch) args.push("--nofetch");
+  return [...args, ...manifest.reference.targets];
+}
+
+function provisionReference(manifest, fingerprint) {
+  assertPrepared(manifest, fingerprint);
+  prepareReference(manifest, fingerprint);
+  mkdirSync(BAZEL_CACHE, { recursive: true });
+  mkdirSync(ARTIFACTS, { recursive: true });
+  docker([
+    ...referenceContainerArgs(manifest, "bridge"),
+    ...bazelBuildArgs(manifest, false),
+  ]);
+  docker([
+    ...referenceContainerArgs(manifest, "none"),
+    ...bazelBuildArgs(manifest, true),
+  ]);
+
+  const name = "ukey2_shell";
+  const binary =
+    `/workspace/bazel-bin/external/+http_archive+com_google_ukey2/` +
+    `src/main/cpp/${name}`;
+  docker([
+    ...referenceContainerArgs(manifest, "none", true),
+    "cp",
+    binary,
+    `/artifacts/${name}`,
+  ]);
+  chmodSync(join(ARTIFACTS, name), 0o755);
+  const hash = digest(readFileSync(join(ARTIFACTS, name)));
+  copyFileSync(
+    join(WORKSPACE, ".quickshare-reference.json"),
+    join(REFERENCE, "reference.json"),
+  );
+  process.stdout.write(`Prepared Google UKEY2 reference ${hash}.\n`);
+}
+
+function selfTestReference(manifest) {
+  const shell = join(ARTIFACTS, "ukey2_shell");
+  if (!readFileSync(shell).length) {
+    throw new Error("reference artifact ukey2_shell is missing or empty");
+  }
+  docker([
+    ...referenceContainerArgs(manifest, "none"),
+    "bazel",
+    "--output_user_root=/bazel/user",
+    "test",
+    "--repository_cache=/bazel/repository",
+    "--disk_cache=/bazel/disk",
+    "--lockfile_mode=error",
+    "--override_repository=com_google_ukey2=/sources/google-ukey2",
+    "--jobs=2",
+    "--nofetch",
+    "--test_output=errors",
+    "@com_google_ukey2//src/main/cpp:cpp_tests",
+  ]);
+  run("node", [join(DIRECTORY, "ukey2-self-test.mjs")], {
+    env: {
+      ...process.env,
+      UKEY2_SHELL: shell,
+    },
+  });
+}
+
 function enforceLifecycle(name, started) {
   const elapsed = Date.now() - started;
   if (elapsed > START_LIMIT_MS) {
@@ -227,6 +405,10 @@ async function main() {
     down();
   } else if (mode === "self-test") {
     selfTest(manifest);
+  } else if (mode === "reference-provision") {
+    provisionReference(manifest, fingerprint);
+  } else if (mode === "reference-self-test") {
+    selfTestReference(manifest);
   } else {
     throw new Error(`unknown oracle environment action: ${mode}`);
   }
