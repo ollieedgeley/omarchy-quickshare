@@ -39,10 +39,8 @@ def interface_path(manager, interface, predicate=lambda _props: True):
     return None
 
 
-def main():
-    bus = dbus.SystemBus()
-    manager = dbus.Interface(bus.get_object(BLUEZ, "/"), OBJECT_MANAGER)
-    adapter_path = wait_for(
+def configure_adapter(bus, manager):
+    path = wait_for(
         "hci0 adapter",
         lambda: interface_path(
             manager,
@@ -50,14 +48,18 @@ def main():
             lambda props: str(props.get("Address", "")) != PEER_ADDRESS,
         ),
     )
-    adapter_object = bus.get_object(BLUEZ, adapter_path)
+    adapter_object = bus.get_object(BLUEZ, path)
     adapter_properties = dbus.Interface(adapter_object, PROPERTIES)
     adapter_properties.Set(ADAPTER, "Powered", dbus.Boolean(True))
     adapter = dbus.Interface(adapter_object, ADAPTER)
     adapter.SetDiscoveryFilter({"Transport": dbus.String("le")})
+    return adapter
+
+
+def discover_peer(manager, adapter):
     adapter.StartDiscovery()
     try:
-        device_path = wait_for(
+        return wait_for(
             "Bumble advertisement",
             lambda: interface_path(
                 manager,
@@ -68,6 +70,8 @@ def main():
     finally:
         adapter.StopDiscovery()
 
+
+def exchange_gatt_value(bus, manager, device_path):
     device_object = bus.get_object(BLUEZ, device_path)
     device = dbus.Interface(device_object, DEVICE)
     device.Connect()
@@ -93,6 +97,13 @@ def main():
     finally:
         device.Disconnect()
 
+
+def main():
+    bus = dbus.SystemBus()
+    manager = dbus.Interface(bus.get_object(BLUEZ, "/"), OBJECT_MANAGER)
+    adapter = configure_adapter(bus, manager)
+    device_path = discover_peer(manager, adapter)
+    exchange_gatt_value(bus, manager, device_path)
     print("BLUEZ_GATT_BIDIRECTIONAL_OK", flush=True)
 
 

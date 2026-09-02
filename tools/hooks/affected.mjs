@@ -3,9 +3,15 @@ import { dirname, relative, resolve, sep } from "node:path";
 export function parseAffectedJson(value) {
   const paths = new Set();
   const visit = (node) => {
-    if (typeof node === "string" && node.endsWith(".rs")) paths.add(node);
-    if (Array.isArray(node)) node.forEach(visit);
-    if (node && typeof node === "object") Object.values(node).forEach(visit);
+    if (typeof node === "string" && node.endsWith(".rs")) {
+      paths.add(node);
+    }
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+    }
+    if (node && typeof node === "object") {
+      Object.values(node).forEach(visit);
+    }
   };
   visit(value);
   return [...paths];
@@ -28,7 +34,9 @@ export function packageSelection(metadata, paths, workspaceRoot) {
       .sort(
         (left, right) => right.manifest_path.length - left.manifest_path.length,
       );
-    if (candidates[0]) owners.add(candidates[0].id);
+    if (candidates[0]) {
+      owners.add(candidates[0].id);
+    }
   }
 
   const reverse = new Map();

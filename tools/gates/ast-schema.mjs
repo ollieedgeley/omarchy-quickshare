@@ -29,7 +29,9 @@ function checkedJson(name) {
 
 function yamlValue(path) {
   const document = parseDocument(readFileSync(path, "utf8"));
-  if (document.errors.length) throw document.errors[0];
+  if (document.errors.length) {
+    throw document.errors[0];
+  }
   return document.toJS();
 }
 
@@ -69,10 +71,14 @@ for (const name of readdirSync(ruleDirectory).filter((entry) =>
   const path = join(ruleDirectory, name);
   const documents = parseAllDocuments(readFileSync(path, "utf8"));
   for (const document of documents) {
-    if (document.errors.length) throw document.errors[0];
+    if (document.errors.length) {
+      throw document.errors[0];
+    }
     if (!ruleValidator(document.toJS())) {
       throw new Error(
-        `${name} violates the pinned schema: ${JSON.stringify(ruleValidator.errors)}`,
+        `${name} violates the pinned schema: ${JSON.stringify(
+          ruleValidator.errors,
+        )}`,
       );
     }
   }

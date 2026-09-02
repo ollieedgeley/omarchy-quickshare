@@ -104,7 +104,8 @@ tcp_one_way() {
   local label=$4
   local ready="/run/oqs-tcp-${label}.ready"
   rm -f "${ready}"
-  run_in "${target_ns}" /environment/tcp-roundtrip.py server "${target_ip}" "${ready}" &
+  run_in "${target_ns}" /environment/tcp-roundtrip.py \
+    server "${target_ip}" "${ready}" &
   local server_pid=$!
   for _ in {1..100}; do
     [[ -f ${ready} ]] && break
@@ -129,7 +130,10 @@ verify_path() {
 }
 
 if [[ ${mode} == lan ]]; then
-  [[ ${#interfaces[@]} -ge 3 ]] || { echo "LAN test needs three radios" >&2; exit 1; }
+  if [[ ${#interfaces[@]} -lt 3 ]]; then
+    echo "LAN test needs three radios" >&2
+    exit 1
+  fi
   endpoint=${interfaces[0]}
   peer=${interfaces[1]}
   access_point=${interfaces[2]}

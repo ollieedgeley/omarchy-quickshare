@@ -6,21 +6,26 @@ export function run(command, args, options = {}) {
     process.stdout.write(`+ ${rendered}\n`);
   }
 
+  let standardIo = "inherit";
+  if (options.capture) {
+    standardIo = "pipe";
+  }
   const result = spawnSync(command, args, {
     cwd: options.cwd,
     encoding: "utf8",
     env: options.env ?? process.env,
     input: options.input,
-    stdio: options.capture ? "pipe" : "inherit",
+    stdio: standardIo,
   });
 
   if (result.error) {
     throw new Error(`${rendered}: ${result.error.message}`);
   }
   if (result.status !== 0 && !options.allowFailure) {
-    const detail = options.capture
-      ? `\n${result.stdout ?? ""}${result.stderr ?? ""}`
-      : "";
+    let detail = "";
+    if (options.capture) {
+      detail = `\n${result.stdout ?? ""}${result.stderr ?? ""}`;
+    }
     throw new Error(`${rendered} exited with ${result.status}${detail}`);
   }
   return result;

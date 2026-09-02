@@ -30,8 +30,10 @@ setup() {
   ip netns exec "${peer_namespace}" ip link set lo up
   ip netns exec "${peer_namespace}" iw dev "${second}" set type mp
   ip netns exec "${peer_namespace}" ip link set "${second}" up
-  ip netns exec "${peer_namespace}" iw dev "${second}" mesh join quickshare-mesh freq 5180
-  ip netns exec "${peer_namespace}" ip address add 10.10.10.11/24 dev "${second}"
+  ip netns exec "${peer_namespace}" iw dev "${second}" \
+    mesh join quickshare-mesh freq 5180
+  ip netns exec "${peer_namespace}" ip address add \
+    10.10.10.11/24 dev "${second}"
   printf '%s\n' "${first}" "${second}" >"${state}"
 }
 

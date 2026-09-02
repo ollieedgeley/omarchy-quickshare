@@ -28,18 +28,38 @@ const TRACE = join(RUNTIME, "radio.btsnoop");
 const REPORTS = join(ROOT, "reports", "bluetooth-radio");
 const MANIFEST_PATH = join(DIRECTORY, "radio-environment.json");
 const DOCKERFILE_PATH = join(DIRECTORY, "Dockerfile.radio");
+const GUEST_TIMEOUT_MS = 60_000;
+const GUEST_RETRY_MS = 25;
+const STOP_TIMEOUT_MS = 10_000;
+const LIFECYCLE_TIMEOUT_MS = 60_000;
+const EXPECTED_CONTROLLER_COUNT = 2;
+const GUEST_KERNEL_ARGUMENTS =
+  "console=ttyS0,115200 earlyprintk=serial root=oqs-root " +
+  "rootfstype=9p rootflags=trans=virtio,version=9p2000.u ro " +
+  "init=/environment/radio-guest-init.sh";
+const QEMU_ROOT_SECURITY = "security_model=none,multidevs=remap";
+
+function runOptions(options) {
+  const result = { encoding: "utf8", stdio: "inherit" };
+  if (options.capture) {
+    result.stdio = "pipe";
+  }
+  return result;
+}
 
 function run(command, args, options = {}) {
-  if (!options.quiet) process.stdout.write(`+ ${command} ${args.join(" ")}\n`);
-  const result = spawnSync(command, args, {
-    encoding: "utf8",
-    stdio: options.capture ? "pipe" : "inherit",
-  });
-  if (result.error) throw result.error;
+  if (!options.quiet) {
+    process.stdout.write(`+ ${command} ${args.join(" ")}\n`);
+  }
+  const result = spawnSync(command, args, runOptions(options));
+  if (result.error) {
+    throw result.error;
+  }
   if (result.status !== 0 && !options.allowFailure) {
-    const detail = options.capture
-      ? `\n${result.stdout ?? ""}${result.stderr ?? ""}`
-      : "";
+    let detail = "";
+    if (options.capture) {
+      detail = `\n${result.stdout ?? ""}${result.stderr ?? ""}`;
+    }
     throw new Error(`${command} exited with ${result.status}${detail}`);
   }
   return result;
@@ -84,12 +104,12 @@ function assertPrepared(manifest, fingerprint) {
   }
 }
 
-function guestTransaction(command, expected, timeoutMs = 60_000) {
+function guestTransaction(command, expected, timeoutMs = GUEST_TIMEOUT_MS) {
   return new Promise((resolvePromise, rejectPromise) => {
     const started = performance.now();
     let transcript = "";
-    let socket;
-    let retry;
+    let socket = null;
+    let retry = null;
     let sent = false;
     const deadline = setTimeout(() => {
       socket?.destroy();
@@ -99,8 +119,11 @@ function guestTransaction(command, expected, timeoutMs = 60_000) {
       clearTimeout(deadline);
       clearTimeout(retry);
       socket?.destroy();
-      if (error) rejectPromise(error);
-      else resolvePromise({ elapsed: performance.now() - started, transcript });
+      if (error) {
+        rejectPromise(error);
+      } else {
+        resolvePromise({ elapsed: performance.now() - started, transcript });
+      }
     };
     const connect = () => {
       socket = createConnection(CONTROL);
@@ -108,7 +131,7 @@ function guestTransaction(command, expected, timeoutMs = 60_000) {
       socket.once("error", (error) => {
         socket.destroy();
         if (performance.now() - started < timeoutMs) {
-          retry = setTimeout(connect, 25);
+          retry = setTimeout(connect, GUEST_RETRY_MS);
         } else {
           finish(error);
         }
@@ -119,7 +142,9 @@ function guestTransaction(command, expected, timeoutMs = 60_000) {
           sent = true;
           socket.write(`${command}\n`);
         }
-        if (transcript.includes(expected)) finish();
+        if (transcript.includes(expected)) {
+          finish();
+        }
       });
     };
     connect();
@@ -128,16 +153,17 @@ function guestTransaction(command, expected, timeoutMs = 60_000) {
 
 export function validateRadioEnvironment(manifestSource, dockerfile) {
   const manifest = JSON.parse(manifestSource);
-  if (manifest.schema !== 1)
+  if (manifest.schema !== 1) {
     throw new Error("unsupported Bluetooth radio schema");
-  if (!/^debian@sha256:[0-9a-f]{64}$/.test(manifest.base)) {
+  }
+  if (!/^debian@sha256:[0-9a-f]{64}$/u.test(manifest.base)) {
     throw new Error("Bluetooth radio base must use a SHA-256 digest");
   }
-  if (!/^\d{8}T\d{6}Z$/.test(manifest.debianSnapshot)) {
+  if (!/^\d{8}T\d{6}Z$/u.test(manifest.debianSnapshot)) {
     throw new Error("Bluetooth radio Debian snapshot must be timestamped");
   }
   for (const [name, revision] of Object.entries(manifest.sources)) {
-    if (!/^[0-9a-f]{40}$/.test(revision)) {
+    if (!/^[0-9a-f]{40}$/u.test(revision)) {
       throw new Error(`${name} revision must be a full commit`);
     }
   }
@@ -212,34 +238,17 @@ function buildBtvirt(manifest) {
     "-ceu",
     [
       "./bootstrap",
-      "./configure --disable-systemd --disable-udev --disable-cups --disable-manpages --disable-datafiles --disable-client --disable-obex --disable-mesh --disable-admin --disable-monitor --enable-tools --enable-testing",
+      "./configure --disable-systemd --disable-udev --disable-cups " +
+        "--disable-manpages --disable-datafiles --disable-client " +
+        "--disable-obex --disable-mesh --disable-admin " +
+        "--disable-monitor --enable-tools --enable-testing",
       "make -j2 emulator/btvirt",
       "cp emulator/btvirt /artifacts/btvirt",
     ].join(" && "),
   ]);
 }
 
-function provision() {
-  const { manifest, manifestSource, dockerfile } = inputs();
-  run("docker", [
-    "build",
-    "--file",
-    DOCKERFILE_PATH,
-    "--build-arg",
-    `DEBIAN_SNAPSHOT=${manifest.debianSnapshot}`,
-    "--build-arg",
-    `ENVIRONMENT_FINGERPRINT=${radioEnvironmentFingerprint(manifestSource, dockerfile)}`,
-    "--tag",
-    manifest.image,
-    DIRECTORY,
-  ]);
-  assertPrepared(
-    manifest,
-    radioEnvironmentFingerprint(manifestSource, dockerfile),
-  );
-  buildBtvirt(manifest);
-  if (!existsSync(BTVIRT))
-    throw new Error("btvirt build did not produce a binary");
+function verifyRadioTools(manifest) {
   run("docker", [
     "run",
     "--rm",
@@ -258,14 +267,45 @@ function provision() {
     [
       `test "$(bluetoothd -v)" = '${manifest.versions.bluetoothd}'`,
       `test "$(btvirt --version)" = '${manifest.versions.btvirt}'`,
-      `test "$(dpkg-query -W -f='\${Version}' linux-image-amd64)" = '${manifest.versions.kernelPackage}'`,
+      `test "$(dpkg-query -W -f='\${Version}' linux-image-amd64)" = ` +
+        `'${manifest.versions.kernelPackage}'`,
       `test "$(python3 --version)" = 'Python ${manifest.versions.python}'`,
-      `test "$(qemu-system-x86_64 --version | head -n 1 | awk '{print $4}')" = '${manifest.versions.qemu}'`,
+      'test "$(qemu-system-x86_64 --version | head -n 1 | ' +
+        `awk '{print $4}')" = '${manifest.versions.qemu}'`,
       "lsinitramfs /boot/initrd-oqs | grep -q '/9pnet_virtio.ko'",
       "python3 -c 'from typing_extensions import TypeIs'",
-      "python3 -c 'from bumble.controller import Controller; from bumble.device import Device'",
+      "python3 -c 'from bumble.controller import Controller; " +
+        "from bumble.device import Device'",
     ].join(" && "),
   ]);
+}
+
+function provision() {
+  const { manifest, manifestSource, dockerfile } = inputs();
+  run("docker", [
+    "build",
+    "--file",
+    DOCKERFILE_PATH,
+    "--build-arg",
+    `DEBIAN_SNAPSHOT=${manifest.debianSnapshot}`,
+    "--build-arg",
+    `ENVIRONMENT_FINGERPRINT=${radioEnvironmentFingerprint(
+      manifestSource,
+      dockerfile,
+    )}`,
+    "--tag",
+    manifest.image,
+    DIRECTORY,
+  ]);
+  assertPrepared(
+    manifest,
+    radioEnvironmentFingerprint(manifestSource, dockerfile),
+  );
+  buildBtvirt(manifest);
+  if (!existsSync(BTVIRT)) {
+    throw new Error("btvirt build did not produce a binary");
+  }
+  verifyRadioTools(manifest);
   process.stdout.write("Prepared pinned Bluetooth radio environment.\n");
 }
 
@@ -276,6 +316,78 @@ function cleanup(manifest) {
   rmSync(RUNTIME, { recursive: true, force: true });
 }
 
+function qemuMachineArguments() {
+  return [
+    "qemu-system-x86_64",
+    "-machine",
+    "q35,accel=kvm",
+    "-cpu",
+    "host",
+    "-m",
+    "512M",
+    "-smp",
+    "2",
+    "-nodefaults",
+    "-no-reboot",
+    "-display",
+    "none",
+    "-monitor",
+    "none",
+    "-kernel",
+    "/boot/vmlinuz-oqs",
+    "-initrd",
+    "/boot/initrd-oqs",
+    "-append",
+    GUEST_KERNEL_ARGUMENTS,
+  ];
+}
+
+function qemuDeviceArguments() {
+  return [
+    "-fsdev",
+    `local,id=root,path=/,readonly=on,${QEMU_ROOT_SECURITY}`,
+    "-device",
+    "virtio-9p-pci,fsdev=root,mount_tag=oqs-root",
+    "-device",
+    "virtio-serial-pci",
+    "-serial",
+    "file:/runtime/console.log",
+    "-chardev",
+    "socket,id=control,path=/runtime/control.sock,server=on,wait=off",
+    "-device",
+    "virtserialport,chardev=control,name=oqs.control",
+  ];
+}
+
+function startRadioContainer(manifest) {
+  run("docker", [
+    "run",
+    "--detach",
+    "--name",
+    manifest.container,
+    "--network=none",
+    "--device=/dev/kvm",
+    "--user",
+    "1000:1000",
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,nosuid,nodev,size=64m",
+    "--volume",
+    `${DIRECTORY}:/environment:ro`,
+    "--volume",
+    `${join(SOURCE_ROOT, "bumble")}:/bumble:ro`,
+    "--volume",
+    `${join(SOURCE_ROOT, "typing-extensions")}:/typing-extensions:ro`,
+    "--volume",
+    `${ARTIFACTS}:/artifacts:ro`,
+    "--volume",
+    `${RUNTIME}:/runtime`,
+    manifest.image,
+    ...qemuMachineArguments(),
+    ...qemuDeviceArguments(),
+  ]);
+}
+
 async function up() {
   const started = performance.now();
   const { manifest, manifestSource, dockerfile } = inputs();
@@ -283,82 +395,29 @@ async function up() {
     manifest,
     radioEnvironmentFingerprint(manifestSource, dockerfile),
   );
-  if (!existsSync(BTVIRT))
+  if (!existsSync(BTVIRT)) {
     throw new Error("run bluetooth-radio-provision first");
+  }
   if (containerExists(manifest.container)) {
     throw new Error("Bluetooth radio environment is already running");
   }
   rmSync(RUNTIME, { recursive: true, force: true });
   mkdirSync(RUNTIME, { recursive: true });
   try {
-    run("docker", [
-      "run",
-      "--detach",
-      "--name",
-      manifest.container,
-      "--network=none",
-      "--device=/dev/kvm",
-      "--user",
-      "1000:1000",
-      "--read-only",
-      "--tmpfs",
-      "/tmp:rw,nosuid,nodev,size=64m",
-      "--volume",
-      `${DIRECTORY}:/environment:ro`,
-      "--volume",
-      `${join(SOURCE_ROOT, "bumble")}:/bumble:ro`,
-      "--volume",
-      `${join(SOURCE_ROOT, "typing-extensions")}:/typing-extensions:ro`,
-      "--volume",
-      `${ARTIFACTS}:/artifacts:ro`,
-      "--volume",
-      `${RUNTIME}:/runtime`,
-      manifest.image,
-      "qemu-system-x86_64",
-      "-machine",
-      "q35,accel=kvm",
-      "-cpu",
-      "host",
-      "-m",
-      "512M",
-      "-smp",
-      "2",
-      "-nodefaults",
-      "-no-reboot",
-      "-display",
-      "none",
-      "-monitor",
-      "none",
-      "-kernel",
-      "/boot/vmlinuz-oqs",
-      "-initrd",
-      "/boot/initrd-oqs",
-      "-append",
-      "console=ttyS0,115200 earlyprintk=serial root=oqs-root rootfstype=9p rootflags=trans=virtio,version=9p2000.u ro init=/environment/radio-guest-init.sh",
-      "-fsdev",
-      "local,id=root,path=/,readonly=on,security_model=none,multidevs=remap",
-      "-device",
-      "virtio-9p-pci,fsdev=root,mount_tag=oqs-root",
-      "-device",
-      "virtio-serial-pci",
-      "-serial",
-      "file:/runtime/console.log",
-      "-chardev",
-      "socket,id=control,path=/runtime/control.sock,server=on,wait=off",
-      "-device",
-      "virtserialport,chardev=control,name=oqs.control",
-    ]);
-    await guestTransaction(undefined, "READY\n");
+    startRadioContainer(manifest);
+    await guestTransaction(null, "READY\n");
   } catch (error) {
-    const consoleOutput = existsSync(CONSOLE)
-      ? readFileSync(CONSOLE, "utf8")
-      : "";
+    let consoleOutput = "";
+    if (existsSync(CONSOLE)) {
+      consoleOutput = readFileSync(CONSOLE, "utf8");
+    }
     cleanup(manifest);
-    throw new Error(`${error.message}\n${consoleOutput}`);
+    throw new Error(`${error.message}\n${consoleOutput}`, { cause: error });
   }
   const elapsed = performance.now() - started;
-  if (elapsed > 60_000)
+  if (elapsed > LIFECYCLE_TIMEOUT_MS) {
     throw new Error(`Bluetooth radio startup took ${elapsed}ms`);
+  }
   process.stdout.write(
     `Bluetooth radio environment ready in ${Math.round(elapsed)}ms.\n`,
   );
@@ -368,13 +427,16 @@ async function down() {
   const started = performance.now();
   const { manifest } = inputs();
   if (containerExists(manifest.container)) {
-    await guestTransaction("STOP", "STOPPING\n", 10_000).catch(() => undefined);
+    await guestTransaction("STOP", "STOPPING\n", STOP_TIMEOUT_MS).catch(
+      () => null,
+    );
     run("docker", ["container", "rm", "--force", manifest.container]);
   }
   rmSync(RUNTIME, { recursive: true, force: true });
   const elapsed = performance.now() - started;
-  if (elapsed > 60_000)
+  if (elapsed > LIFECYCLE_TIMEOUT_MS) {
     throw new Error(`Bluetooth radio teardown took ${elapsed}ms`);
+  }
   process.stdout.write(
     `Bluetooth radio environment stopped in ${Math.round(elapsed)}ms.\n`,
   );
@@ -391,57 +453,75 @@ function preserveFailure(kind, transcript) {
   }
 }
 
+function proveBle(kind, result) {
+  if (!result.transcript.includes("OUT BLUEZ_GATT_BIDIRECTIONAL_OK")) {
+    preserveFailure(kind, result.transcript);
+    throw new Error(`Bluetooth LE proof is incomplete\n${result.transcript}`);
+  }
+  process.stdout.write(
+    "BlueZ and Bumble exchanged exact bytes bidirectionally over BLE GATT.\n",
+  );
+}
+
+function proveClassic(kind, result) {
+  if (!result.transcript.includes("OUT BLUEZ_RFCOMM_BIDIRECTIONAL_OK")) {
+    preserveFailure(kind, result.transcript);
+    throw new Error(
+      `Bluetooth Classic proof is incomplete\n${result.transcript}`,
+    );
+  }
+  process.stdout.write(
+    "Linux BlueZ and Bumble exchanged exact bytes bidirectionally " +
+      "over RFCOMM.\n",
+  );
+}
+
+function proveControllers(kind, result) {
+  const controllerCount =
+    result.transcript.match(/^OUT Controller /gmu)?.length ?? 0;
+  if (controllerCount !== EXPECTED_CONTROLLER_COUNT) {
+    preserveFailure(kind, result.transcript);
+    throw new Error(`guest reported ${controllerCount} controllers`);
+  }
+  process.stdout.write("Pinned BlueZ sees two isolated btvirt controllers.\n");
+}
+
+async function runRadioCommand(kind, command) {
+  try {
+    return await guestTransaction(command, "STATUS ");
+  } catch (error) {
+    preserveFailure(kind, error.message);
+    throw error;
+  }
+}
+
 async function selfTest(kind) {
   const commands = {
     ble: "RUN_BLE",
     classic: "RUN_CLASSIC",
     controller: "RUN_CONTROLLER",
   };
-  if (!commands[kind]) throw new Error(`unknown radio self-test: ${kind}`);
+  if (!commands[kind]) {
+    throw new Error(`unknown radio self-test: ${kind}`);
+  }
   const report = join(REPORTS, `${kind}-failure.json`);
   const trace = join(REPORTS, `${kind}-failure.btsnoop`);
   rmSync(report, { force: true });
   rmSync(trace, { force: true });
-  let result;
-  try {
-    result = await guestTransaction(commands[kind], "STATUS ");
-  } catch (error) {
-    preserveFailure(kind, error.message);
-    throw error;
-  }
+  const result = await runRadioCommand(kind, commands[kind]);
   if (!result.transcript.includes("STATUS 0")) {
     preserveFailure(kind, result.transcript);
     throw new Error(`Bluetooth ${kind} self-test failed\n${result.transcript}`);
   }
   if (kind === "ble") {
-    if (!result.transcript.includes("OUT BLUEZ_GATT_BIDIRECTIONAL_OK")) {
-      preserveFailure(kind, result.transcript);
-      throw new Error(`Bluetooth LE proof is incomplete\n${result.transcript}`);
-    }
-    process.stdout.write(
-      "BlueZ and Bumble exchanged exact bytes bidirectionally over BLE GATT.\n",
-    );
+    proveBle(kind, result);
     return;
   }
   if (kind === "classic") {
-    if (!result.transcript.includes("OUT BLUEZ_RFCOMM_BIDIRECTIONAL_OK")) {
-      preserveFailure(kind, result.transcript);
-      throw new Error(
-        `Bluetooth Classic proof is incomplete\n${result.transcript}`,
-      );
-    }
-    process.stdout.write(
-      "Linux BlueZ and Bumble exchanged exact bytes bidirectionally over RFCOMM.\n",
-    );
+    proveClassic(kind, result);
     return;
   }
-  const controllerCount =
-    result.transcript.match(/^OUT Controller /gm)?.length ?? 0;
-  if (controllerCount !== 2) {
-    preserveFailure(kind, result.transcript);
-    throw new Error(`guest reported ${controllerCount} controllers`);
-  }
-  process.stdout.write("Pinned BlueZ sees two isolated btvirt controllers.\n");
+  proveControllers(kind, result);
 }
 
 function validate() {
@@ -457,8 +537,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     up,
     validate,
   };
-  const command = process.argv[2];
-  if (!actions[command])
+  const [, , command] = process.argv;
+  if (!actions[command]) {
     throw new Error(`unknown Bluetooth radio command: ${command}`);
+  }
   await actions[command]();
 }

@@ -11,6 +11,8 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const DIRECTORY = join(ROOT, "tests", "environments", "bluez");
+const GUEST_ISOLATION_TEST =
+  "Bluetooth radio guest isolates real BlueZ and both transport proofs";
 
 function inputs() {
   return {
@@ -26,12 +28,12 @@ function source(name) {
 test("Bluetooth radio environment pins BlueZ and Bumble", () => {
   const { manifest, dockerfile } = inputs();
   const parsed = validateRadioEnvironment(manifest, dockerfile);
-  assert.match(parsed.sources.bluez, /^[0-9a-f]{40}$/);
-  assert.match(parsed.sources.bumble, /^[0-9a-f]{40}$/);
-  assert.match(parsed.sources["typing-extensions"], /^[0-9a-f]{40}$/);
+  assert.match(parsed.sources.bluez, /^[0-9a-f]{40}$/u);
+  assert.match(parsed.sources.bumble, /^[0-9a-f]{40}$/u);
+  assert.match(parsed.sources["typing-extensions"], /^[0-9a-f]{40}$/u);
   assert.match(
     radioEnvironmentFingerprint(manifest, dockerfile),
-    /^[0-9a-f]{64}$/,
+    /^[0-9a-f]{64}$/u,
   );
 });
 
@@ -43,31 +45,31 @@ test("Bluetooth radio environment rejects mutable source revisions", () => {
   });
   assert.throws(
     () => validateRadioEnvironment(changed, dockerfile),
-    /full commit/,
+    /full commit/u,
   );
 });
 
-test("Bluetooth radio guest isolates real BlueZ and both transport proofs", () => {
+test(GUEST_ISOLATION_TEST, () => {
   const dockerfile = source("Dockerfile.radio");
   const guest = source("radio-guest-init.sh");
   const manager = source("radio-environment.mjs");
   const makefile = readFileSync(join(ROOT, "Makefile"), "utf8");
 
   for (const module of ["9p", "9pnet", "9pnet_virtio", "virtio_pci"]) {
-    assert.match(dockerfile, new RegExp(`(?:^|\\s)${module}(?:\\s|$)`));
+    assert.match(dockerfile, new RegExp(`(?:^|\\s)${module}(?:\\s|$)`, "u"));
   }
   for (const command of ["RUN_CONTROLLER", "RUN_BLE", "RUN_CLASSIC"]) {
-    assert.match(guest, new RegExp(command));
-    assert.match(manager, new RegExp(command));
+    assert.match(guest, new RegExp(command, "u"));
+    assert.match(manager, new RegExp(command, "u"));
   }
   for (const target of [
     "test-bluetooth-controller",
     "test-bluetooth-ble",
     "test-bluetooth-classic",
   ]) {
-    assert.match(makefile, new RegExp(`^${target}:`, "m"));
+    assert.match(makefile, new RegExp(`^${target}:`, "mu"));
   }
-  assert.match(manager, /--network=none/);
-  assert.match(manager, /--device=\/dev\/kvm/);
-  assert.match(manager, /org\.omarchy-quickshare\.fingerprint/);
+  assert.match(manager, /--network=none/u);
+  assert.match(manager, /--device=\/dev\/kvm/u);
+  assert.match(manager, /org\.omarchy-quickshare\.fingerprint/u);
 });

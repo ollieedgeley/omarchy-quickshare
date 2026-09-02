@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { output, run } from "./lib/process.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const MINIMUM_EXCEPTION_REASON_LENGTH = 20;
 const exceptions = JSON.parse(
   readFileSync(join(ROOT, "tools/gates/clippy-exceptions.json"), "utf8"),
 );
@@ -13,14 +14,22 @@ const rustcExceptions = JSON.parse(
 );
 
 for (const [lint, reason] of Object.entries(exceptions)) {
-  if (!lint || typeof reason !== "string" || reason.trim().length < 20) {
+  if (
+    !lint ||
+    typeof reason !== "string" ||
+    reason.trim().length < MINIMUM_EXCEPTION_REASON_LENGTH
+  ) {
     throw new Error(
       `Clippy exception ${lint || "<empty>"} needs a specific reason`,
     );
   }
 }
 for (const [lint, reason] of Object.entries(rustcExceptions)) {
-  if (!lint || typeof reason !== "string" || reason.trim().length < 20) {
+  if (
+    !lint ||
+    typeof reason !== "string" ||
+    reason.trim().length < MINIMUM_EXCEPTION_REASON_LENGTH
+  ) {
     throw new Error(
       `rustc exception ${lint || "<empty>"} needs a specific reason`,
     );
@@ -38,14 +47,15 @@ if (!analyzerVersion.includes("1.98.0")) {
 
 const rustcHelp = output("rustc", ["-W", "help"], { cwd: ROOT });
 const allowedRustcLints = [
-  ...rustcHelp.matchAll(/^\s+([a-z0-9-]+)\s+allow\s+/gm),
-].map((match) => match[1]);
+  ...rustcHelp.matchAll(/^\s+(?<lint>[a-z0-9-]+)\s+allow\s+/gmu),
+].map((match) => match.groups.lint);
 const cargoManifest = readFileSync(join(ROOT, "Cargo.toml"), "utf8");
 const missingRustcLints = allowedRustcLints.filter((lint) => {
   const manifestName = lint.replaceAll("-", "_");
-  const enabled = new RegExp(`^${manifestName} = "(?:deny|forbid)"$`, "m").test(
-    cargoManifest,
-  );
+  const enabled = new RegExp(
+    `^${manifestName} = "(?:deny|forbid)"$`,
+    "mu",
+  ).test(cargoManifest);
   return !enabled && !Object.hasOwn(rustcExceptions, lint);
 });
 if (missingRustcLints.length) {

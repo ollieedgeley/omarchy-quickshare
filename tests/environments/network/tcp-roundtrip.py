@@ -31,7 +31,10 @@ def client(address: str, payload: str) -> None:
         received.extend(chunk)
     connection.close()
     if bytes(received) != expected:
-        raise RuntimeError(f"TCP echo returned {len(received)} bytes, expected {len(expected)}")
+        raise RuntimeError(
+            f"TCP echo returned {len(received)} bytes, "
+            f"expected {len(expected)}"
+        )
 
 
 if __name__ == "__main__":

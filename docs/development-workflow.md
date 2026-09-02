@@ -8,6 +8,8 @@ Build every behavior change with test-driven development through a confirmed sea
 
 Local hooks are the project's automated verification. The pre-commit hook gives targeted feedback. The pre-push hook is authoritative. It verifies and then builds the exact commit being pushed. Hosted CI and automated release builds are outside the current scope. A future decision may add release automation that calls the same local targets, but it must not replace local verification or the source-build fallback.
 
+Application and development-tool feedback have separate aggregates. `make verify-app` runs only Rust formatting, compiler checks, Rust diagnostics, ast-grep, and Rust tests. `make verify-tooling` runs JavaScript and repository formatting, every current ESLint core rule, static environment definitions, and fast tooling contracts; it does not start simulators or virtual devices. `make verify` combines both with every programmatic environment check. This keeps environment implementation out of the normal application loop without weakening pre-push verification.
+
 ## TDD cycle
 
 One slice is one externally observable behavior through the local-control, transfer, connection, or oracle seam. Work in this order:
@@ -96,16 +98,19 @@ Run child gates in this fail-fast order:
 2. Refresh the staged-tree mirror, incrementally sync its CodeGraph index, and prove that the mirror matches the Git index.
 3. Check file-size limits for changed project-authored files.
 4. Check formatting for changed files with their pinned formatter.
-5. Run ast-grep against changed Rust files with every applicable rule at error severity.
-6. Run rust-analyzer diagnostics for changed Rust files.
-7. Run compiler and Clippy checks for the smallest Cargo targets that own or consume those files.
-8. Run directly changed tests and every test target selected by impact analysis.
+5. Run every current ESLint core rule against changed JavaScript files.
+6. Run ast-grep against changed Rust files with every applicable rule at error severity.
+7. Run rust-analyzer diagnostics for changed Rust files.
+8. Run compiler and Clippy checks for the smallest Cargo targets that own or consume those files.
+9. Run directly changed tests and every test target selected by impact analysis.
 
 The hook prints each selected command before running it. On failure it prints the narrow Make target that reproduces the result. It also records the changed files, Cargo owners, selected tests, selection source, fallback reason, and gate timings.
 
 ### Formatting and linting granularity
 
 Rustfmt can check staged `.rs` files directly in the staged-tree mirror. Cargo's formatter can select packages but does not expose a changed-file selector; see the official [`cargo fmt` options](https://doc.rust-lang.org/cargo/commands/cargo-fmt.html).
+
+Prettier receives only changed files in the formats it supports, while ESLint receives only changed, existing JavaScript paths from the staged mirror. A JavaScript change also selects the fast tooling contracts. Rust-only application changes do not run those JavaScript checks. Executable configuration and contract tests own code-metric policy.
 
 Clippy and rustc analyze compilation units rather than independent source files. Map a changed file to the smallest valid Cargo target:
 

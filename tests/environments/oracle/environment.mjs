@@ -12,7 +12,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 
-import { output, run } from "../../../tools/gates/lib/process.mjs";
+import { run } from "../../../tools/gates/lib/process.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const DIRECTORY = join(ROOT, "tests", "environments", "oracle");
@@ -31,6 +31,9 @@ const STATE_PATH = join(REFERENCE, "image.json");
 const CONTAINER = "omarchy-quickshare-oracle";
 const START_LIMIT_MS = 60_000;
 const START_GOAL_MS = 30_000;
+const REFERENCE_TARGET_COUNT = 3;
+const REFERENCE_LOCK_VERSION = 28;
+const EXECUTABLE_MODE = 0o755;
 
 function digest(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -38,29 +41,30 @@ function digest(value) {
 
 export function environmentFingerprint(manifestSource, dockerfileSource) {
   const manifest = JSON.parse(manifestSource);
-  const imageInputs = {
-    image: manifest.image,
-    base: manifest.base,
-    debianSnapshot: manifest.debianSnapshot,
-    bazel: manifest.bazel,
-    packages: manifest.packages,
-  };
+  const imageInputs = Object.fromEntries([
+    ["image", manifest.image],
+    ["base", manifest.base],
+    ["debianSnapshot", manifest.debianSnapshot],
+    ["bazel", manifest.bazel],
+    ["packages", manifest.packages],
+  ]);
   return digest(`${JSON.stringify(imageInputs)}\0${dockerfileSource}`);
 }
 
-export function validateEnvironment(manifestSource, dockerfileSource) {
-  const manifest = JSON.parse(manifestSource);
-  if (manifest.schema !== 1) throw new Error("unsupported oracle schema");
-  if (!/^[a-z0-9./-]+:[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(manifest.image)) {
+function validateImagePins(manifest) {
+  if (manifest.schema !== 1) {
+    throw new Error("unsupported oracle schema");
+  }
+  if (!/^[a-z0-9./-]+:[0-9]{4}-[0-9]{2}-[0-9]{2}$/u.test(manifest.image)) {
     throw new Error("oracle image must use a dated immutable tag");
   }
-  if (!/^debian@sha256:[0-9a-f]{64}$/.test(manifest.base)) {
+  if (!/^debian@sha256:[0-9a-f]{64}$/u.test(manifest.base)) {
     throw new Error("oracle base image must use a SHA-256 digest");
   }
-  if (!/^20[0-9]{6}T000000Z$/.test(manifest.debianSnapshot)) {
+  if (!/^20[0-9]{6}T000000Z$/u.test(manifest.debianSnapshot)) {
     throw new Error("oracle Debian snapshot must identify a UTC day");
   }
-  if (!/^[0-9]+\.[0-9]+\.[0-9]+$/.test(manifest.bazel?.version)) {
+  if (!/^[0-9]+\.[0-9]+\.[0-9]+$/u.test(manifest.bazel?.version)) {
     throw new Error("oracle Bazel version must be exact");
   }
   if (
@@ -69,12 +73,15 @@ export function validateEnvironment(manifestSource, dockerfileSource) {
   ) {
     throw new Error("oracle Bazel URL does not match its version");
   }
-  if (!/^[0-9a-f]{64}$/.test(manifest.bazel.sha256)) {
+  if (!/^[0-9a-f]{64}$/u.test(manifest.bazel.sha256)) {
     throw new Error("oracle Bazel binary must have a SHA-256");
   }
+}
+
+function validateReferenceDefinition(manifest) {
   if (
-    !/^[a-z0-9-]+\.json\.gz$/.test(manifest.reference?.lockFile) ||
-    !/^[0-9a-f]{64}$/.test(manifest.reference?.lockSha256)
+    !/^[a-z0-9-]+\.json\.gz$/u.test(manifest.reference?.lockFile) ||
+    !/^[0-9a-f]{64}$/u.test(manifest.reference?.lockSha256)
   ) {
     throw new Error("oracle reference lock must be a hashed gzip file");
   }
@@ -92,10 +99,13 @@ export function validateEnvironment(manifestSource, dockerfileSource) {
     !manifest.reference.targets.includes(
       "//connections/implementation/mediums:core_internal_mediums_test",
     ) ||
-    manifest.reference.targets.length !== 3
+    manifest.reference.targets.length !== REFERENCE_TARGET_COUNT
   ) {
     throw new Error("oracle reference inputs and targets are incomplete");
   }
+}
+
+function validatePackages(manifest) {
   if (
     !Array.isArray(manifest.packages) ||
     manifest.packages.length === 0 ||
@@ -104,15 +114,23 @@ export function validateEnvironment(manifestSource, dockerfileSource) {
   ) {
     throw new Error("oracle packages must be a non-empty sorted unique list");
   }
+}
+
+function validateDockerfile(manifest, dockerfileSource) {
+  const fingerprintVariable = "ENVIRONMENT_FINGERPRINT";
+  const logicalSource = dockerfileSource.replace(/\\\n/gu, "");
   const requiredFragments = [
-    `FROM ${manifest.base}`,
+    `ARG BASE_IMAGE=${manifest.base}`,
+    ["FROM $", "{BASE_IMAGE}"].join(""),
     `ARG DEBIAN_SNAPSHOT=${manifest.debianSnapshot}`,
     `ARG BAZEL_URL=${manifest.bazel.url}`,
     `ARG BAZEL_SHA256=${manifest.bazel.sha256}`,
-    'io.omarchy-quickshare.environment="${ENVIRONMENT_FINGERPRINT}"',
+    ['io.omarchy-quickshare.environment="$', `{${fingerprintVariable}}"`].join(
+      "",
+    ),
   ];
   for (const fragment of requiredFragments) {
-    if (!dockerfileSource.includes(fragment)) {
+    if (!logicalSource.includes(fragment)) {
       throw new Error(`oracle Dockerfile lacks manifest value: ${fragment}`);
     }
   }
@@ -122,6 +140,14 @@ export function validateEnvironment(manifestSource, dockerfileSource) {
       throw new Error(`oracle Dockerfile lacks package ${packageName}`);
     }
   }
+}
+
+export function validateEnvironment(manifestSource, dockerfileSource) {
+  const manifest = JSON.parse(manifestSource);
+  validateImagePins(manifest);
+  validateReferenceDefinition(manifest);
+  validatePackages(manifest);
+  validateDockerfile(manifest, dockerfileSource);
   return manifest;
 }
 
@@ -130,7 +156,10 @@ export function validateReferenceLock(manifest, compressed) {
     throw new Error("Google Nearby reference lock SHA-256 mismatch");
   }
   const lock = JSON.parse(gunzipSync(compressed));
-  if (lock.lockFileVersion !== 28 || !lock.registryFileHashes) {
+  if (
+    lock.lockFileVersion !== REFERENCE_LOCK_VERSION ||
+    !lock.registryFileHashes
+  ) {
     throw new Error("Google Nearby reference lock is incomplete");
   }
 }
@@ -215,7 +244,11 @@ function provision(manifest, fingerprint) {
   ]).stdout;
   writeFileSync(
     STATE_PATH,
-    `${JSON.stringify({ fingerprint, image: manifest.image, imageId }, null, 2)}\n`,
+    `${JSON.stringify(
+      { fingerprint, image: manifest.image, imageId },
+      null,
+      2,
+    )}\n`,
   );
   process.stdout.write(`Prepared oracle image ${imageId}.\n`);
 }
@@ -227,19 +260,23 @@ function assertCachePath(path) {
   }
 }
 
-function replaceExpected(source, before, after, count = 1) {
+function replaceExpected(source, [before, after], count = 1) {
   const occurrences = source.split(before).length - 1;
   if (occurrences !== count) {
     throw new Error(
-      `expected ${count} Google overlay occurrence(s), found ${occurrences}: ${before.trim()}`,
+      `expected ${count} Google overlay occurrence(s), ` +
+        `found ${occurrences}: ${before.trim()}`,
     );
   }
   return source.replaceAll(before, after);
 }
 
-function prepareGoogleLinuxOverlay() {
-  const buildPath = join(
-    WORKSPACE,
+function googlePath(...parts) {
+  return join(WORKSPACE, ...parts);
+}
+
+function stripUnsupportedGoogleTargets() {
+  const buildPath = googlePath(
     "internal",
     "platform",
     "implementation",
@@ -253,11 +290,13 @@ function prepareGoogleLinuxOverlay() {
     ['        "webrtc_platform.cc",\n', 1],
     ['        "//internal/platform/implementation:webrtc_platform",\n', 2],
     [
-      '        "//third_party/webrtc/files/stable/webrtc/api:create_modular_peer_connection_factory",\n',
+      '        "//third_party/webrtc/files/stable/webrtc/api:' +
+        'create_modular_peer_connection_factory",\n',
       1,
     ],
     [
-      '        "//third_party/webrtc/files/stable/webrtc/api:peer_connection_interface",\n',
+      '        "//third_party/webrtc/files/stable/webrtc/api:' +
+        'peer_connection_interface",\n',
       1,
     ],
     [
@@ -269,21 +308,22 @@ function prepareGoogleLinuxOverlay() {
       1,
     ],
     [
-      '        "//third_party/webrtc/files/stable/webrtc/rtc_base:threading",\n',
+      '        "//third_party/webrtc/files/stable/webrtc/rtc_base:' +
+        'threading",\n',
       1,
     ],
   ]) {
-    build = replaceExpected(build, line, "", count);
+    build = replaceExpected(build, [line, ""], count);
   }
-  build = replaceExpected(
-    build,
+  build = replaceExpected(build, [
     '        "@com_google_protobuf//json",\n',
     '        "@com_google_protobuf//:json",\n',
-  );
+  ]);
   writeFileSync(buildPath, build);
+}
 
-  const platformBuildPath = join(
-    WORKSPACE,
+function patchGooglePlatform() {
+  const platformBuildPath = googlePath(
     "internal",
     "platform",
     "implementation",
@@ -291,27 +331,11 @@ function prepareGoogleLinuxOverlay() {
   );
   const platformBuild = replaceExpected(
     readFileSync(platformBuildPath, "utf8"),
-    '    compatible_with = ["//buildenv/target:non_prod"],\n',
-    "",
+    ['    compatible_with = ["//buildenv/target:non_prod"],\n', ""],
   );
   writeFileSync(platformBuildPath, platformBuild);
 
-  const utfHeaderPath = join(
-    WORKSPACE,
-    "sharing",
-    "internal",
-    "base",
-    "utf_string_conversions.h",
-  );
-  const utfHeader = replaceExpected(
-    readFileSync(utfHeaderPath, "utf8"),
-    "#if defined(GITHUB_BUILD)\n",
-    "#if 1  // Public GitHub oracle build.\n",
-  );
-  writeFileSync(utfHeaderPath, utfHeader);
-
-  const preferencesPath = join(
-    WORKSPACE,
+  const preferencesPath = googlePath(
     "internal",
     "platform",
     "implementation",
@@ -320,31 +344,26 @@ function prepareGoogleLinuxOverlay() {
   );
   const preferences = replaceExpected(
     readFileSync(preferencesPath, "utf8"),
-    "proto2::json::",
-    "google::protobuf::json::",
+    ["proto2::json::", "google::protobuf::json::"],
     2,
   );
   writeFileSync(preferencesPath, preferences);
+}
 
-  const credentialsPath = join(
-    WORKSPACE,
+function patchGoogleHeaders() {
+  const utfHeaderPath = googlePath(
+    "sharing",
     "internal",
-    "platform",
-    "implementation",
-    "g3",
-    "credential_storage_impl.h",
+    "base",
+    "utf_string_conversions.h",
   );
-  const credentials = replaceExpected(
-    readFileSync(credentialsPath, "utf8"),
-    "    return std::make_tuple(std::string(manager_app_id),\n" +
-      "                           std::string(account_name));\n",
-    "    return std::make_pair(std::string(manager_app_id),\n" +
-      "                          std::string(account_name));\n",
-  );
-  writeFileSync(credentialsPath, credentials);
+  const utfHeader = replaceExpected(readFileSync(utfHeaderPath, "utf8"), [
+    "#if defined(GITHUB_BUILD)\n",
+    "#if 1  // Public GitHub oracle build.\n",
+  ]);
+  writeFileSync(utfHeaderPath, utfHeader);
 
-  const hotspotHeaderPath = join(
-    WORKSPACE,
+  const hotspotHeaderPath = googlePath(
     "internal",
     "platform",
     "implementation",
@@ -353,28 +372,46 @@ function prepareGoogleLinuxOverlay() {
   );
   const hotspotHeader = replaceExpected(
     readFileSync(hotspotHeaderPath, "utf8"),
-    '#include "absl/base/thread_annotations.h"\n',
-    '#include "absl/base/thread_annotations.h"\n' +
-      '#include "absl/container/flat_hash_map.h"\n',
+    [
+      '#include "absl/base/thread_annotations.h"\n',
+      '#include "absl/base/thread_annotations.h"\n' +
+        '#include "absl/container/flat_hash_map.h"\n',
+    ],
   );
   writeFileSync(hotspotHeaderPath, hotspotHeader);
+}
 
-  const hotspotTestPath = join(
-    WORKSPACE,
+function patchGoogleCredentials() {
+  const credentialsPath = googlePath(
+    "internal",
+    "platform",
+    "implementation",
+    "g3",
+    "credential_storage_impl.h",
+  );
+  const credentials = replaceExpected(readFileSync(credentialsPath, "utf8"), [
+    "    return std::make_tuple(std::string(manager_app_id),\n" +
+      "                           std::string(account_name));\n",
+    "    return std::make_pair(std::string(manager_app_id),\n" +
+      "                          std::string(account_name));\n",
+  ]);
+  writeFileSync(credentialsPath, credentials);
+}
+
+function patchGoogleMediumTests() {
+  const hotspotTestPath = googlePath(
     "connections",
     "implementation",
     "mediums",
     "wifi_hotspot_test.cc",
   );
-  const hotspotTest = replaceExpected(
-    readFileSync(hotspotTestPath, "utf8"),
+  const hotspotTest = replaceExpected(readFileSync(hotspotTestPath, "utf8"), [
     "    .address = {123, 234, 23, 1},\n",
     "    .address = {123, static_cast<char>(234), 23, 1},\n",
-  );
+  ]);
   writeFileSync(hotspotTestPath, hotspotTest);
 
-  const mediumsBuildPath = join(
-    WORKSPACE,
+  const mediumsBuildPath = googlePath(
     "connections",
     "implementation",
     "mediums",
@@ -387,12 +424,23 @@ function prepareGoogleLinuxOverlay() {
     "lost_entity_tracker_test.cc",
     "wifi_test.cc",
   ]) {
-    mediumsBuild = replaceExpected(mediumsBuild, `        "${source}",\n`, "");
+    mediumsBuild = replaceExpected(mediumsBuild, [
+      `        "${source}",\n`,
+      "",
+    ]);
   }
   writeFileSync(mediumsBuildPath, mediumsBuild);
 }
 
-function prepareReference(manifest, fingerprint) {
+function prepareGoogleLinuxOverlay() {
+  stripUnsupportedGoogleTargets();
+  patchGooglePlatform();
+  patchGoogleHeaders();
+  patchGoogleCredentials();
+  patchGoogleMediumTests();
+}
+
+function copyGoogleSource() {
   assertCachePath(WORKSPACE);
   const source = join(SOURCE_TREES, "google-nearby");
   if (!readFileSync(join(source, "MODULE.bazel"), "utf8")) {
@@ -420,28 +468,34 @@ function prepareReference(manifest, fingerprint) {
     },
   );
   prepareGoogleLinuxOverlay();
+}
 
+function prepareSimpleOverride(sourceName, buildFile) {
+  const destination = join(OVERRIDES, sourceName);
+  cpSync(join(SOURCE_TREES, sourceName), destination, {
+    preserveTimestamps: true,
+    recursive: true,
+  });
+  copyFileSync(
+    join(DIRECTORY, "overlays", buildFile),
+    join(destination, "BUILD.bazel"),
+  );
+  writeFileSync(join(destination, "WORKSPACE"), "");
+}
+
+function prepareOverrides() {
   rmSync(OVERRIDES, { recursive: true, force: true });
   mkdirSync(OVERRIDES, { recursive: true });
   for (const [sourceName, buildFile] of [
     ["smhasher", "smhasher.BUILD.bazel"],
     ["nlohmann-json", "nlohmann-json.BUILD.bazel"],
   ]) {
-    const destination = join(OVERRIDES, sourceName);
-    cpSync(join(SOURCE_TREES, sourceName), destination, {
-      recursive: true,
-      preserveTimestamps: true,
-    });
-    copyFileSync(
-      join(DIRECTORY, "overlays", buildFile),
-      join(destination, "BUILD.bazel"),
-    );
-    writeFileSync(join(destination, "WORKSPACE"), "");
+    prepareSimpleOverride(sourceName, buildFile);
   }
   const nisaba = join(OVERRIDES, "nisaba");
   cpSync(join(SOURCE_TREES, "nisaba"), nisaba, {
-    recursive: true,
     preserveTimestamps: true,
+    recursive: true,
   });
   copyFileSync(
     join(DIRECTORY, "overlays", "nisaba-port.BUILD.bazel"),
@@ -452,15 +506,27 @@ function prepareReference(manifest, fingerprint) {
     join(nisaba, "nisaba", "port", "thread_pool.h"),
   );
   writeFileSync(join(nisaba, "WORKSPACE"), "");
+}
 
+function writeReferenceMetadata(manifest, fingerprint) {
   const lockArchive = join(DIRECTORY, manifest.reference.lockFile);
   const compressed = readFileSync(lockArchive);
   validateReferenceLock(manifest, compressed);
   writeFileSync(join(WORKSPACE, "MODULE.bazel.lock"), gunzipSync(compressed));
   writeFileSync(
     join(WORKSPACE, ".quickshare-reference.json"),
-    `${JSON.stringify({ fingerprint, sources: manifest.reference.sources }, null, 2)}\n`,
+    `${JSON.stringify(
+      { fingerprint, sources: manifest.reference.sources },
+      null,
+      2,
+    )}\n`,
   );
+}
+
+function prepareReference(manifest, fingerprint) {
+  copyGoogleSource();
+  prepareOverrides();
+  writeReferenceMetadata(manifest, fingerprint);
 }
 
 function referenceContainerArgs(manifest, network, artifacts = false) {
@@ -479,7 +545,9 @@ function referenceContainerArgs(manifest, network, artifacts = false) {
     "--volume",
     `${BAZEL_CACHE}:/bazel`,
   ];
-  if (artifacts) args.push("--volume", `${ARTIFACTS}:/artifacts`);
+  if (artifacts) {
+    args.push("--volume", `${ARTIFACTS}:/artifacts`);
+  }
   args.push("--workdir", "/workspace", manifest.image);
   return args;
 }
@@ -489,7 +557,8 @@ const REPOSITORY_OVERRIDES = [
   "--override_repository=aappleby_smhasher=/overrides/smhasher",
   "--override_repository=nlohmann_json=/overrides/nlohmann-json",
   "--override_repository=com_google_nisaba=/overrides/nisaba",
-  "--override_repository=com_github_protobuf_matchers=/sources/protobuf-matchers",
+  "--override_repository=com_github_protobuf_matchers=" +
+    "/sources/protobuf-matchers",
 ];
 
 function bazelBuildArgs(manifest, noFetch) {
@@ -504,7 +573,9 @@ function bazelBuildArgs(manifest, noFetch) {
     "--cxxopt=-std=c++20",
     "--jobs=2",
   ];
-  if (noFetch) args.push("--nofetch");
+  if (noFetch) {
+    args.push("--nofetch");
+  }
   return [...args, ...manifest.reference.targets];
 }
 
@@ -532,7 +603,7 @@ function provisionReference(manifest, fingerprint) {
     binary,
     `/artifacts/${name}`,
   ]);
-  chmodSync(join(ARTIFACTS, name), 0o755);
+  chmodSync(join(ARTIFACTS, name), EXECUTABLE_MODE);
   const hash = digest(readFileSync(join(ARTIFACTS, name)));
   copyFileSync(
     join(WORKSPACE, ".quickshare-reference.json"),
@@ -570,16 +641,18 @@ function selfTestReference(manifest) {
 }
 
 const MEDIUM_FILTERS = {
-  bluetooth: "*BluetoothClassicTest.*",
   ble: "*BleTest.*",
-  lan: "*WifiLanTest.*",
+  bluetooth: "*BluetoothClassicTest.*",
   hotspot: "*WifiHotspotTest.*",
+  lan: "*WifiLanTest.*",
   "wifi-direct": "*WifiDirectTest.*",
 };
 
 function selfTestMedium(manifest, medium) {
   const filter = MEDIUM_FILTERS[medium];
-  if (!filter) throw new Error(`unknown oracle medium: ${medium}`);
+  if (!filter) {
+    throw new Error(`unknown oracle medium: ${medium}`);
+  }
   docker([
     ...referenceContainerArgs(manifest, "none"),
     "bazel",
@@ -607,7 +680,10 @@ function enforceLifecycle(name, started) {
   if (elapsed > START_LIMIT_MS) {
     throw new Error(`${name} took ${elapsed}ms; lifecycle limit is 60000ms`);
   }
-  const goal = elapsed <= START_GOAL_MS ? "met" : "missed";
+  let goal = "missed";
+  if (elapsed <= START_GOAL_MS) {
+    goal = "met";
+  }
   process.stdout.write(
     `${name} ready in ${elapsed}ms; 30000ms goal ${goal}.\n`,
   );
@@ -639,13 +715,16 @@ function up(manifest, fingerprint) {
 
 function down() {
   const started = Date.now();
-  if (inspectContainer()) docker(["container", "rm", "--force", CONTAINER]);
+  if (inspectContainer()) {
+    docker(["container", "rm", "--force", CONTAINER]);
+  }
   enforceLifecycle("oracle teardown", started);
 }
 
 function selfTest(manifest) {
-  if (!runningContainer())
+  if (!runningContainer()) {
     throw new Error("oracle is not running; run `make oracle-up`");
+  }
   const expected = `bazel ${manifest.bazel.version}`;
   const actual = dockerOutput(["exec", CONTAINER, "bazel", "--version"]).stdout;
   if (actual !== expected) {
@@ -656,12 +735,14 @@ function selfTest(manifest) {
     CONTAINER,
     "sh",
     "-ceu",
-    "clang --version >/dev/null && clang++ --version >/dev/null && python3 --version >/dev/null",
+    "clang --version >/dev/null && " +
+      "clang++ --version >/dev/null && " +
+      "python3 --version >/dev/null",
   ]);
   process.stdout.write("Oracle toolchain self-test passed.\n");
 }
 
-async function main() {
+function main() {
   const mode = process.argv[2] ?? "validate";
   const { manifest, fingerprint } = inputs();
   if (mode === "validate") {
@@ -685,4 +766,6 @@ async function main() {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) await main();
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main();
+}

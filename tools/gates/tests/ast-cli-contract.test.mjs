@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const AST_GREP = join(ROOT, "node_modules", ".bin", "ast-grep");
+const AST_GREP =
+  process.env.AST_GREP ?? join(ROOT, "node_modules", ".bin", "ast-grep");
 
 function fixtureRoot(source) {
   const root = mkdtempSync(join(tmpdir(), "quickshare-ast-contract-"));
@@ -36,7 +37,7 @@ function fixtureRoot(source) {
 function scanStatus(source) {
   const root = fixtureRoot(source);
   try {
-    return spawnSync(
+    const result = spawnSync(
       AST_GREP,
       [
         "scan",
@@ -48,7 +49,11 @@ function scanStatus(source) {
         ".",
       ],
       { cwd: root, encoding: "utf8" },
-    ).status;
+    );
+    if (result.error) {
+      throw result.error;
+    }
+    return result.status;
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

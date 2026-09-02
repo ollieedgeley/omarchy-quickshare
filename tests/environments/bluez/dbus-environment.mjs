@@ -10,19 +10,36 @@ const CACHE = process.env.TEST_ENV_CACHE ?? join(ROOT, ".cache", "test-env");
 const SOURCE = join(CACHE, "sources", "trees", "python-dbusmock");
 const MANIFEST_PATH = join(DIRECTORY, "dbus-environment.json");
 const DOCKERFILE_PATH = join(DIRECTORY, "Dockerfile.dbus");
+const LIFECYCLE_TIMEOUT_MS = 60_000;
+
+function runOptions(options) {
+  const result = {
+    encoding: "utf8",
+    env: process.env,
+    stdio: "inherit",
+  };
+  if (options.env) {
+    result.env = options.env;
+  }
+  if (options.capture) {
+    result.stdio = "pipe";
+  }
+  return result;
+}
 
 function run(command, args, options = {}) {
-  if (!options.quiet) process.stdout.write(`+ ${command} ${args.join(" ")}\n`);
-  const result = spawnSync(command, args, {
-    encoding: "utf8",
-    env: options.env ?? process.env,
-    stdio: options.capture ? "pipe" : "inherit",
-  });
-  if (result.error) throw result.error;
+  if (!options.quiet) {
+    process.stdout.write(`+ ${command} ${args.join(" ")}\n`);
+  }
+  const result = spawnSync(command, args, runOptions(options));
+  if (result.error) {
+    throw result.error;
+  }
   if (result.status !== 0 && !options.allowFailure) {
-    const detail = options.capture
-      ? `\n${result.stdout ?? ""}${result.stderr ?? ""}`
-      : "";
+    let detail = "";
+    if (options.capture) {
+      detail = `\n${result.stdout ?? ""}${result.stderr ?? ""}`;
+    }
     throw new Error(`${command} exited with ${result.status}${detail}`);
   }
   return result;
@@ -30,21 +47,23 @@ function run(command, args, options = {}) {
 
 export function validateEnvironment(manifestSource, dockerfile) {
   const manifest = JSON.parse(manifestSource);
-  if (manifest.schema !== 1) throw new Error("unsupported D-Bus schema");
-  if (!/^debian@sha256:[0-9a-f]{64}$/.test(manifest.base)) {
+  if (manifest.schema !== 1) {
+    throw new Error("unsupported D-Bus schema");
+  }
+  if (!/^debian@sha256:[0-9a-f]{64}$/u.test(manifest.base)) {
     throw new Error("D-Bus base image must use a SHA-256 digest");
   }
-  if (!/^\d{8}T\d{6}Z$/.test(manifest.debianSnapshot)) {
+  if (!/^\d{8}T\d{6}Z$/u.test(manifest.debianSnapshot)) {
     throw new Error("D-Bus Debian snapshot must be timestamped");
   }
-  if (!/^[0-9a-f]{40}$/.test(manifest.source.revision)) {
+  if (!/^[0-9a-f]{40}$/u.test(manifest.source.revision)) {
     throw new Error("python-dbusmock revision must be a full commit");
   }
   if (new Set(manifest.clients).size !== manifest.clients.length) {
     throw new Error("D-Bus client list contains duplicates");
   }
   for (const client of [...manifest.clients, "python"]) {
-    if (!/^\d+\.\d+(?:\.\d+)?$/.test(manifest.versions[client])) {
+    if (!/^\d+\.\d+(?:\.\d+)?$/u.test(manifest.versions[client])) {
       throw new Error(`D-Bus client ${client} needs an exact version`);
     }
   }
@@ -83,6 +102,7 @@ function inputs() {
 
 function provision() {
   const { manifest, manifestSource, dockerfile } = inputs();
+  const pythonVersion = manifest.versions.python;
   if (!existsSync(join(SOURCE, "dbusmock", "templates", "bluez5.py"))) {
     throw new Error(
       "pinned python-dbusmock source is missing; run make sources-fetch",
@@ -95,7 +115,10 @@ function provision() {
     "--build-arg",
     `DEBIAN_SNAPSHOT=${manifest.debianSnapshot}`,
     "--build-arg",
-    `ENVIRONMENT_FINGERPRINT=${environmentFingerprint(manifestSource, dockerfile)}`,
+    `ENVIRONMENT_FINGERPRINT=${environmentFingerprint(
+      manifestSource,
+      dockerfile,
+    )}`,
     "--tag",
     manifest.image,
     DIRECTORY,
@@ -113,9 +136,11 @@ function provision() {
     "-ceu",
     [
       "python3 -c 'import dbus, dbusmock, gi, packaging'",
-      `test \"$(bluetoothctl --version)\" = 'bluetoothctl: ${manifest.versions.bluetoothctl}'`,
-      `test \"$(nmcli --version)\" = 'nmcli tool, version ${manifest.versions.nmcli}'`,
-      `test \"$(python3 --version)\" = 'Python ${manifest.versions.python}'`,
+      `test "$(bluetoothctl --version)" = ` +
+        `'bluetoothctl: ${manifest.versions.bluetoothctl}'`,
+      `test "$(nmcli --version)" = ` +
+        `'nmcli tool, version ${manifest.versions.nmcli}'`,
+      `test "$(python3 --version)" = 'Python ${pythonVersion}'`,
     ].join(" && "),
   ]);
   process.stdout.write("Prepared pinned private D-Bus environment.\n");
@@ -161,10 +186,16 @@ function up() {
     manifest.container,
     "sh",
     "-ceu",
-    "python3 -c 'import dbus, dbusmock, gi, packaging' && test -r /source/tests/test_bluez5.py && test -r /source/tests/test_networkmanager.py",
+    [
+      "python3 -c 'import dbus, dbusmock, gi, packaging'",
+      "test -r /source/tests/test_bluez5.py",
+      "test -r /source/tests/test_networkmanager.py",
+    ].join(" && "),
   ]);
   const elapsed = performance.now() - started;
-  if (elapsed > 60_000) throw new Error(`D-Bus startup took ${elapsed}ms`);
+  if (elapsed > LIFECYCLE_TIMEOUT_MS) {
+    throw new Error(`D-Bus startup took ${elapsed}ms`);
+  }
   process.stdout.write(
     `D-Bus environment ready in ${Math.round(elapsed)}ms.\n`,
   );
@@ -177,7 +208,9 @@ function down() {
     run("docker", ["container", "rm", "--force", manifest.container]);
   }
   const elapsed = performance.now() - started;
-  if (elapsed > 60_000) throw new Error(`D-Bus teardown took ${elapsed}ms`);
+  if (elapsed > LIFECYCLE_TIMEOUT_MS) {
+    throw new Error(`D-Bus teardown took ${elapsed}ms`);
+  }
   process.stdout.write(
     `D-Bus environment stopped in ${Math.round(elapsed)}ms.\n`,
   );
@@ -193,7 +226,8 @@ const CASES = {
     "tests.test_bluez5.TestBlueZ5.test_agent",
   ],
   networkmanager: [
-    "tests.test_networkmanager.TestNetworkManager.test_one_wifi_with_accesspoints",
+    "tests.test_networkmanager.TestNetworkManager." +
+      "test_one_wifi_with_accesspoints",
     "tests.test_networkmanager.TestNetworkManager.test_wifi_with_connection",
     "tests.test_networkmanager.TestNetworkManager.test_global_state",
     "tests.test_networkmanager.TestNetworkManager.test_add_connection",
@@ -203,7 +237,9 @@ const CASES = {
 
 function selfTest(kind) {
   const { manifest } = inputs();
-  if (!CASES[kind]) throw new Error(`unknown D-Bus self-test: ${kind}`);
+  if (!CASES[kind]) {
+    throw new Error(`unknown D-Bus self-test: ${kind}`);
+  }
   if (!containerExists(manifest.container)) {
     throw new Error("run dbus-up before the self-test");
   }
@@ -233,14 +269,16 @@ function validate() {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const command = process.argv[2];
+  const [, , command] = process.argv;
   const actions = {
-    validate,
-    provision,
-    up,
     down,
+    provision,
     "self-test": () => selfTest(process.argv[3]),
+    up,
+    validate,
   };
-  if (!actions[command]) throw new Error(`unknown D-Bus command: ${command}`);
+  if (!actions[command]) {
+    throw new Error(`unknown D-Bus command: ${command}`);
+  }
   actions[command]();
 }

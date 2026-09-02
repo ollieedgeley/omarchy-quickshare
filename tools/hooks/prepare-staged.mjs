@@ -15,15 +15,16 @@ const CACHE = join(ROOT, ".cache", "gates");
 const MIRROR = join(CACHE, "pre-commit-tree");
 const METADATA = join(CACHE, "staged.json");
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const RENAME_FIELD_COUNT = 3;
 const CODEGRAPH =
   process.env.CODEGRAPH ?? join(ROOT, "node_modules", ".bin", "codegraph");
 
 function rawGit(args, allowFailure = false) {
   return run("git", args, {
-    cwd: ROOT,
-    capture: true,
-    quiet: true,
     allowFailure,
+    capture: true,
+    cwd: ROOT,
+    quiet: true,
   });
 }
 
@@ -34,13 +35,20 @@ function nulFields(args) {
 
 export function parseNameStatus(fields) {
   const changes = [];
-  for (let index = 0; index < fields.length; index += 1) {
-    const status = fields[index];
-    const code = status[0];
+  let index = 0;
+  while (index < fields.length) {
+    const status = fields.at(index);
+    const code = status.charAt(0);
     if (code === "R" || code === "C") {
-      changes.push({ status, oldPath: fields[++index], path: fields[++index] });
+      changes.push({
+        oldPath: fields.at(index + 1),
+        path: fields.at(index + 2),
+        status,
+      });
+      index += RENAME_FIELD_COUNT;
     } else {
-      changes.push({ status, path: fields[++index] });
+      changes.push({ path: fields.at(index + 1), status });
+      index += 2;
     }
   }
   return changes;
@@ -70,8 +78,9 @@ function verifyMirror(paths) {
   for (const path of paths) {
     const stagedHash = output("git", ["rev-parse", `:${path}`], { cwd: ROOT });
     const mirrorPath = join(MIRROR, path);
-    if (!existsSync(mirrorPath))
+    if (!existsSync(mirrorPath)) {
       throw new Error(`staged mirror is missing ${path}`);
+    }
     const mirrorHash = output("git", ["hash-object", mirrorPath], {
       cwd: ROOT,
     });
@@ -93,7 +102,8 @@ function assertNoPartialRustFiles(changes) {
   const partial = [...stagedRust].filter((path) => unstaged.has(path));
   if (partial.length) {
     throw new Error(
-      `Rust files have both staged and unstaged changes: ${partial.join(", ")}. ` +
+      "Rust files have both staged and unstaged changes: " +
+        `${partial.join(", ")}. ` +
         "Stage the complete file or separate the changes before committing.",
     );
   }
@@ -120,7 +130,10 @@ function main() {
   const initialize = process.argv.includes("--initialize");
   mkdirSync(CACHE, { recursive: true });
   const head = rawGit(["rev-parse", "--verify", "HEAD"], true);
-  const base = head.status === 0 ? "HEAD" : EMPTY_TREE;
+  let base = EMPTY_TREE;
+  if (head.status === 0) {
+    base = "HEAD";
+  }
   const changes = parseNameStatus(
     nulFields([
       "diff",
@@ -148,11 +161,21 @@ function main() {
   const tree = output("git", ["write-tree"], { cwd: ROOT });
   writeFileSync(
     METADATA,
-    `${JSON.stringify({ root: ROOT, mirror: MIRROR, tree, changes }, null, 2)}\n`,
+    `${JSON.stringify(
+      { changes, mirror: MIRROR, root: ROOT, tree },
+      null,
+      2,
+    )}\n`,
   );
+  let action = "Refreshed";
+  if (initialize) {
+    action = "Initialized";
+  }
   process.stdout.write(
-    `${initialize ? "Initialized" : "Refreshed"} staged mirror for ${changes.length} change(s).\n`,
+    `${action} staged mirror for ${changes.length} change(s).\n`,
   );
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) main();
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main();
+}

@@ -69,10 +69,11 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 
 ## Fast feedback gates
 
-- `make format-check` checks Rust, Markdown, YAML, and JSON formatting without changing files.
+- `make format-app-check` checks Rust; `make format-tooling-check` checks JavaScript and repository documents. `make format-check` combines both.
 - `make lint-rust` runs compiler, rustdoc, rust-analyzer, and all enabled Clippy diagnostics as errors.
+- `make lint-javascript` runs every current non-deprecated ESLint core rule as an error with no inline overrides.
 - `make lint-ast` runs the complete error-only ast-grep scan; `make test-ast-rules` checks its rule fixtures and snapshots.
-- `make lint-docs` checks Markdown policy; `make lint-structure` checks file, directory, dependency, and configuration contracts.
+- `make lint-docs` checks Markdown policy; `make lint-structure-app` and `make lint-structure-tooling` isolate structure feedback. `make lint-structure` combines them.
 - `make lint-sources` validates immutable test-source pins; `make test-source-cache` hash-checks their prepared archives.
 - `make sources-fetch` provisions the pinned source cache; provisioning is not part of a child test's 60-second execution budget.
 - `make lint-oracle` checks the pinned oracle definition; `make oracle-provision` builds it outside the test budget.
@@ -87,6 +88,7 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make oracle-reference-provision` builds the pinned Google oracle; `make test-oracle-reference` checks UKEY2 both ways.
 - `make test-oracle-{bluetooth,ble,lan,hotspot,wifi-direct}` checks one pinned Google simulated connection family.
 - `make test-rust` runs workspace Rust tests; `make test-tooling` runs quality-gate and hook contract tests.
+- `make verify-app` gives application-only feedback; `make verify-tooling` checks development tooling without starting environments.
 - `make pre-commit` checks the staged snapshot and its affected tests; `make pre-push` verifies and builds each pushed commit.
 - `make verify` runs the complete local quality suite; `make build` performs the locked workspace build after verification.
 

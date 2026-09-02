@@ -1,15 +1,271 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { lineLimit } from "../structure.mjs";
+import {
+  codeLineFailures,
+  configurationFailures,
+  functionSpanFailures,
+  lineLimit,
+  structureScope,
+} from "../structure.mjs";
+
+const PROJECT_LINE_LIMIT = 500;
+const TEST_LINE_LIMIT = 800;
+const CODE_LINE_LIMIT = 80;
+const FUNCTION_LINE_LIMIT = 50;
+const OVER_LIMIT_FUNCTION_LINES = FUNCTION_LINE_LIMIT + 1;
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const AST_GREP =
+  process.env.AST_GREP ?? join(ROOT, "node_modules", ".bin", "ast-grep");
+
+function shellFunction(lines) {
+  return [
+    "fixture() {",
+    ...Array.from({ length: lines - 2 }, () => "  :"),
+    "}",
+  ].join("\n");
+}
+
+function bracedFunction(header, bodyLine = "  ;") {
+  return [
+    header,
+    ...Array.from({ length: FUNCTION_LINE_LIMIT - 1 }, () => bodyLine),
+    "}",
+  ].join("\n");
+}
+
+function pythonFunction() {
+  return [
+    "def fixture():",
+    ...Array.from({ length: FUNCTION_LINE_LIMIT }, () => "  pass"),
+  ].join("\n");
+}
+
+function wrappedFunction(wrapper, header, bodyLine = "  ;") {
+  return [wrapper, bracedFunction(header, bodyLine), "}"].join("\n");
+}
+
+function qmlFunctionFixture() {
+  return {
+    language: "qml",
+    path: "Fixture.qml",
+    source: wrappedFunction("Item {", "  function fixture() {", "    return 1"),
+  };
+}
+
+function longFunctionFixtures() {
+  return [
+    {
+      language: "bash",
+      path: "fixture.sh",
+      source: shellFunction(OVER_LIMIT_FUNCTION_LINES),
+    },
+    { language: "python", path: "fixture.py", source: pythonFunction() },
+    { language: "c", path: "fixture.c", source: bracedFunction("void f() {") },
+    {
+      language: "cpp",
+      path: "fixture.cpp",
+      source: bracedFunction("void f() {"),
+    },
+    {
+      language: "java",
+      path: "Fixture.java",
+      source: wrappedFunction("class Fixture {", "  void fixture() {"),
+    },
+    {
+      language: "java",
+      path: "Constructor.java",
+      source: wrappedFunction("class Constructor {", "  Constructor() {"),
+    },
+    {
+      language: "kotlin",
+      path: "Fixture.kt",
+      source: wrappedFunction(
+        "class Fixture {",
+        "  fun fixture() {",
+        "    println(1)",
+      ),
+    },
+    qmlFunctionFixture(),
+    {
+      language: "kotlin",
+      path: "Constructor.kt",
+      source: wrappedFunction(
+        "class Constructor {",
+        "  constructor() {",
+        "    println(1)",
+      ),
+    },
+  ];
+}
+
+function writeFixtures(directory, fixtures) {
+  for (const fixture of fixtures) {
+    writeFileSync(join(directory, fixture.path), fixture.source);
+  }
+}
+
+function groupedFixtures(fixtures) {
+  const grouped = new Map();
+  for (const fixture of fixtures) {
+    const files = grouped.get(fixture.language) ?? [];
+    files.push(fixture.path);
+    grouped.set(fixture.language, files);
+  }
+  return grouped;
+}
 
 test("test trees and test support receive the 800-line budget", () => {
-  assert.equal(lineLimit("tests/environments/oracle/environment.mjs"), 800);
-  assert.equal(lineLimit("crates/protocol/tests/wire.rs"), 800);
-  assert.equal(lineLimit("tools/gates/example.test.mjs"), 800);
+  assert.equal(
+    lineLimit("tests/environments/oracle/environment.mjs"),
+    TEST_LINE_LIMIT,
+  );
+  assert.equal(lineLimit("crates/protocol/tests/wire.rs"), TEST_LINE_LIMIT);
+  assert.equal(lineLimit("tools/gates/example.test.mjs"), TEST_LINE_LIMIT);
 });
 
 test("production and agent files retain the 500-line budget", () => {
-  assert.equal(lineLimit("crates/protocol/src/wire.rs"), 500);
-  assert.equal(lineLimit("AGENTS.md"), 500);
+  assert.equal(lineLimit("crates/protocol/src/wire.rs"), PROJECT_LINE_LIMIT);
+  assert.equal(lineLimit("AGENTS.md"), PROJECT_LINE_LIMIT);
+});
+
+test("code lines have an 80-column physical limit", () => {
+  assert.deepEqual(
+    codeLineFailures("fixture.rs", "x".repeat(CODE_LINE_LIMIT)),
+    [],
+  );
+  assert.deepEqual(
+    codeLineFailures("fixture.md", "x".repeat(CODE_LINE_LIMIT + 1)),
+    [],
+  );
+  assert.match(
+    codeLineFailures("fixture.mjs", "x".repeat(CODE_LINE_LIMIT + 1))[0],
+    /fixture\.mjs:1: 81 columns \(limit 80\)/u,
+  );
+});
+
+test("all supported code extensions receive the physical line limit", () => {
+  const extensions = [
+    "py",
+    "pyi",
+    "c",
+    "h",
+    "cpp",
+    "hpp",
+    "java",
+    "kt",
+    "kts",
+    "qml",
+  ];
+  for (const extension of extensions) {
+    const failures = codeLineFailures(
+      `fixture.${extension}`,
+      "x".repeat(CODE_LINE_LIMIT + 1),
+    );
+    assert.equal(failures.length, 1);
+  }
+});
+
+test("build-language files receive the physical line limit", () => {
+  const paths = [
+    "BUILD",
+    "BUILD.bazel",
+    "Dockerfile",
+    "Dockerfile.toolchain",
+    "MODULE.bazel",
+    "rules.bzl",
+  ];
+  for (const path of paths) {
+    const failures = codeLineFailures(path, "x".repeat(CODE_LINE_LIMIT + 1));
+    assert.equal(failures.length, 1);
+  }
+});
+
+test("structure scopes keep application and tooling feedback separate", () => {
+  assert.equal(structureScope("crates/core/src/lib.rs"), "app");
+  assert.equal(structureScope("packaging/omarchy-plugin/Main.qml"), "app");
+  assert.equal(
+    structureScope("tests/environments/android/driver.mjs"),
+    "tooling",
+  );
+  assert.equal(structureScope("tools/hooks/run-staged.mjs"), "tooling");
+});
+
+test("Bash function-span boundary uses the ast-grep parser", () => {
+  const directory = mkdtempSync(join(tmpdir(), "quickshare-structure-"));
+  try {
+    writeFileSync(
+      join(directory, "short.sh"),
+      shellFunction(FUNCTION_LINE_LIMIT),
+    );
+    writeFileSync(
+      join(directory, "long.sh"),
+      shellFunction(FUNCTION_LINE_LIMIT + 1),
+    );
+    const failures = functionSpanFailures(
+      new Map([["bash", ["short.sh", "long.sh"]]]),
+      { astGrep: AST_GREP, root: directory },
+    );
+    assert.deepEqual(failures, [
+      "long.sh:1: bash function has 51 lines (limit 50)",
+    ]);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("all supported parsers enforce function spans", () => {
+  const directory = mkdtempSync(join(tmpdir(), "quickshare-functions-"));
+  const fixtures = longFunctionFixtures();
+  try {
+    writeFixtures(directory, fixtures);
+    const failures = functionSpanFailures(groupedFixtures(fixtures), {
+      astGrep: AST_GREP,
+      root: directory,
+    });
+    assert.deepEqual(
+      failures.map((failure) => failure.split(":")[0]).sort(),
+      fixtures.map((fixture) => fixture.path).sort(),
+    );
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("parseable files without functions remain valid", () => {
+  const directory = mkdtempSync(join(tmpdir(), "quickshare-no-functions-"));
+  try {
+    writeFileSync(join(directory, "constants.py"), "VALUE = 1\n");
+    const failures = functionSpanFailures(
+      new Map([["python", ["constants.py"]]]),
+      { astGrep: AST_GREP, root: directory },
+    );
+    assert.deepEqual(failures, []);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("function scans reject missing parser inputs", () => {
+  const directory = mkdtempSync(join(tmpdir(), "quickshare-missing-input-"));
+  try {
+    assert.throws(
+      () =>
+        functionSpanFailures(new Map([["python", ["missing.py"]]]), {
+          astGrep: AST_GREP,
+          root: directory,
+        }),
+      /missing\.py/u,
+    );
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test("formatter and linter metric settings agree", async () => {
+  assert.deepEqual(await configurationFailures(), []);
 });

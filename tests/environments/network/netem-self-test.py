@@ -27,7 +27,8 @@ def client(expect_reply: bool) -> None:
     result = run("ip", "netns", "exec", LEFT, SCRIPT, "client", check=False)
     if (result.returncode == 0) != expect_reply:
         raise RuntimeError(
-            f"UDP reply expectation {expect_reply} failed: {result.stdout}{result.stderr}"
+            f"UDP reply expectation {expect_reply} failed: "
+            f"{result.stdout}{result.stderr}"
         )
 
 
@@ -40,32 +41,58 @@ def client_process() -> None:
         raise RuntimeError("netem control corrupted UDP payload")
 
 
-def main() -> None:
+def configure_namespace(namespace: str, interface: str, address: str) -> None:
+    prefix = ("ip", "netns", "exec", namespace, "ip")
+    run(*prefix, "link", "set", "lo", "up")
+    run(*prefix, "link", "set", interface, "up")
+    run(*prefix, "address", "add", address, "dev", interface)
+
+
+def setup_network() -> None:
     run("ip", "netns", "add", LEFT)
     run("ip", "netns", "add", RIGHT)
+    run(
+        "ip",
+        "link",
+        "add",
+        "netem-left",
+        "type",
+        "veth",
+        "peer",
+        "name",
+        "netem-right",
+    )
+    run("ip", "link", "set", "netem-left", "netns", LEFT)
+    run("ip", "link", "set", "netem-right", "netns", RIGHT)
+    configure_namespace(LEFT, "netem-left", "10.23.0.1/24")
+    configure_namespace(RIGHT, "netem-right", "10.23.0.2/24")
+
+
+def exercise_faults() -> None:
+    client(True)
+    run(
+        "ip", "netns", "exec", LEFT, "tc", "qdisc", "add",
+        "dev", "netem-left", "root", "netem", "loss", "100%",
+    )
+    client(False)
+    run(
+        "ip", "netns", "exec", LEFT, "tc", "qdisc", "del",
+        "dev", "netem-left", "root",
+    )
+    client(True)
+
+
+def main() -> None:
     peer = None
     try:
-        run("ip", "link", "add", "netem-left", "type", "veth", "peer", "name", "netem-right")
-        run("ip", "link", "set", "netem-left", "netns", LEFT)
-        run("ip", "link", "set", "netem-right", "netns", RIGHT)
-        for namespace, interface, address in (
-            (LEFT, "netem-left", "10.23.0.1/24"),
-            (RIGHT, "netem-right", "10.23.0.2/24"),
-        ):
-            run("ip", "netns", "exec", namespace, "ip", "link", "set", "lo", "up")
-            run("ip", "netns", "exec", namespace, "ip", "link", "set", interface, "up")
-            run("ip", "netns", "exec", namespace, "ip", "address", "add", address, "dev", interface)
+        setup_network()
         peer = subprocess.Popen(
             ["ip", "netns", "exec", RIGHT, SCRIPT, "server"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
         time.sleep(0.05)
-        client(True)
-        run("ip", "netns", "exec", LEFT, "tc", "qdisc", "add", "dev", "netem-left", "root", "netem", "loss", "100%")
-        client(False)
-        run("ip", "netns", "exec", LEFT, "tc", "qdisc", "del", "dev", "netem-left", "root")
-        client(True)
+        exercise_faults()
     finally:
         if peer is not None:
             peer.terminate()

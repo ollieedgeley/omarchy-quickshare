@@ -29,7 +29,7 @@ test("D-Bus environment pins its source and real service clients", () => {
     python: "3.11.2",
   });
   assert.deepEqual(parsed.templates, ["bluez5", "networkmanager"]);
-  assert.match(environmentFingerprint(manifest, dockerfile), /^[0-9a-f]{64}$/);
+  assert.match(environmentFingerprint(manifest, dockerfile), /^[0-9a-f]{64}$/u);
 });
 
 test("D-Bus environment rejects a shortened source revision", () => {
@@ -38,5 +38,5 @@ test("D-Bus environment rejects a shortened source revision", () => {
     ...JSON.parse(manifest),
     source: { id: "python-dbusmock", revision: "45885bf" },
   });
-  assert.throws(() => validateEnvironment(changed, dockerfile), /full commit/);
+  assert.throws(() => validateEnvironment(changed, dockerfile), /full commit/u);
 });

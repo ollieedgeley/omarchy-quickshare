@@ -22,68 +22,78 @@ const CACHE = resolve(
 const REQUIRED_KEYS = ["id", "url", "revision", "sha256", "license", "purpose"];
 
 function stringValue(line, lineNumber) {
-  const match = line.match(/^([a-z0-9_]+) = "([^"\n]*)"$/);
-  if (!match) throw new Error(`invalid source manifest line ${lineNumber}`);
-  return [match[1], match[2]];
-}
-
-export function parseSources(source) {
-  const records = [];
-  let current;
-  let schema;
-  for (const [index, raw] of source.split("\n").entries()) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    if (line === "[[source]]") {
-      current = {};
-      records.push(current);
-      continue;
-    }
-    if (!current) {
-      const match = line.match(/^schema = ([0-9]+)$/);
-      if (!match || schema !== undefined) {
-        throw new Error(`invalid source manifest line ${index + 1}`);
-      }
-      schema = Number(match[1]);
-      continue;
-    }
-    const [key, value] = stringValue(line, index + 1);
-    if (!REQUIRED_KEYS.includes(key) || Object.hasOwn(current, key)) {
-      throw new Error(`unexpected source field ${key} on line ${index + 1}`);
-    }
-    current[key] = value;
+  const match = line.match(/^(?<key>[a-z0-9_]+) = "(?<value>[^"\n]*)"$/u);
+  if (!match) {
+    throw new Error(`invalid source manifest line ${lineNumber}`);
   }
-  if (schema !== 1) throw new Error(`unsupported source schema ${schema}`);
-  validateSources(records);
-  return records;
+  return [match.groups.key, match.groups.value];
 }
 
 export function validateSources(records) {
   const ids = new Set();
   for (const record of records) {
     for (const key of REQUIRED_KEYS) {
-      if (!record[key])
+      if (!record[key]) {
         throw new Error(`source ${record.id ?? "<unknown>"} lacks ${key}`);
+      }
     }
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(record.id)) {
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(record.id)) {
       throw new Error(`invalid source id ${record.id}`);
     }
-    if (ids.has(record.id)) throw new Error(`duplicate source id ${record.id}`);
+    if (ids.has(record.id)) {
+      throw new Error(`duplicate source id ${record.id}`);
+    }
     ids.add(record.id);
     if (
-      !/^https:\/\//.test(record.url) ||
+      !/^https:\/\//u.test(record.url) ||
       !record.url.includes(record.revision)
     ) {
       throw new Error(`source ${record.id} URL is not pinned to its revision`);
     }
-    if (!/^[0-9a-f]{40}$/.test(record.revision)) {
+    if (!/^[0-9a-f]{40}$/u.test(record.revision)) {
       throw new Error(`source ${record.id} has an invalid revision`);
     }
-    if (!/^[0-9a-f]{64}$/.test(record.sha256)) {
+    if (!/^[0-9a-f]{64}$/u.test(record.sha256)) {
       throw new Error(`source ${record.id} has an invalid SHA-256`);
     }
   }
-  if (records.length === 0) throw new Error("source manifest is empty");
+  if (records.length === 0) {
+    throw new Error("source manifest is empty");
+  }
+}
+
+export function parseSources(source) {
+  const records = [];
+  let current = null;
+  let schema = null;
+  for (const [index, raw] of source.split("\n").entries()) {
+    const line = raw.trim();
+    if (line && !line.startsWith("#")) {
+      if (line === "[[source]]") {
+        current = {};
+        records.push(current);
+      } else if (current) {
+        const [key, value] = stringValue(line, index + 1);
+        if (!REQUIRED_KEYS.includes(key) || Object.hasOwn(current, key)) {
+          throw new Error(
+            `unexpected source field ${key} on line ${index + 1}`,
+          );
+        }
+        current[key] = value;
+      } else {
+        const match = line.match(/^schema = (?<schema>[0-9]+)$/u);
+        if (!match || schema !== null) {
+          throw new Error(`invalid source manifest line ${index + 1}`);
+        }
+        schema = Number(match.groups.schema);
+      }
+    }
+  }
+  if (schema !== 1) {
+    throw new Error(`unsupported source schema ${schema}`);
+  }
+  validateSources(records);
+  return records;
 }
 
 function sources() {
@@ -96,7 +106,9 @@ function archivePath(record) {
 
 async function sha256(path) {
   const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  for await (const chunk of createReadStream(path)) {
+    hash.update(chunk);
+  }
   return hash.digest("hex");
 }
 
@@ -108,7 +120,8 @@ async function assertArchive(record) {
   const actual = await sha256(path);
   if (actual !== record.sha256) {
     throw new Error(
-      `${record.id} SHA-256 mismatch: expected ${record.sha256}, received ${actual}`,
+      `${record.id} SHA-256 mismatch: expected ${record.sha256}, ` +
+        `received ${actual}`,
     );
   }
 }
@@ -134,7 +147,8 @@ async function fetchSource(record) {
       const actual = await sha256(download);
       if (actual !== record.sha256) {
         throw new Error(
-          `${record.id} SHA-256 mismatch: expected ${record.sha256}, received ${actual}`,
+          `${record.id} SHA-256 mismatch: expected ${record.sha256}, ` +
+            `received ${actual}`,
         );
       }
       renameSync(download, destination);
@@ -161,6 +175,13 @@ async function fetchSource(record) {
   }
 }
 
+function applySequentially(records, action) {
+  return records.reduce(
+    (pending, record) => pending.then(() => action(record)),
+    Promise.resolve(),
+  );
+}
+
 async function main() {
   const mode = process.argv[2] ?? "check";
   const records = sources();
@@ -171,14 +192,14 @@ async function main() {
     return;
   }
   if (mode === "fetch") {
-    for (const record of records) await fetchSource(record);
+    await applySequentially(records, fetchSource);
     process.stdout.write(
       `Fetched and verified ${records.length} pinned source trees.\n`,
     );
     return;
   }
   if (mode === "verify-cache") {
-    for (const record of records) await assertArchive(record);
+    await applySequentially(records, assertArchive);
     process.stdout.write(
       `Verified ${records.length} cached source archives.\n`,
     );
@@ -187,4 +208,6 @@ async function main() {
   throw new Error(`unknown source gate: ${mode}`);
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) await main();
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  await main();
+}

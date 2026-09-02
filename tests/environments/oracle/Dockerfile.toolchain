@@ -1,14 +1,20 @@
-FROM debian@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+ARG BASE_IMAGE=\
+debian@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+FROM ${BASE_IMAGE}
 
 ARG DEBIAN_SNAPSHOT=20260901T000000Z
-ARG BAZEL_URL=https://releases.bazel.build/9.2.0/release/bazel-9.2.0-linux-x86_64
-ARG BAZEL_SHA256=7668a95db1250f12c40407251e4e203b4ec8bf39bc495d2f485b2d8c99048694
+ARG BAZEL_URL=\
+https://releases.bazel.build/9.2.0/release/bazel-9.2.0-linux-x86_64
+ARG BAZEL_SHA256=\
+7668a95db1250f12c40407251e4e203b4ec8bf39bc495d2f485b2d8c99048694
 ARG ENVIRONMENT_FINGERPRINT
 
 RUN rm -f /etc/apt/sources.list.d/* \
     && printf '%s\n' \
-      "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/ bookworm main" \
-      "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/ bookworm-security main" \
+      "deb [check-valid-until=no] http://snapshot.debian.org/archive/"\
+"debian/${DEBIAN_SNAPSHOT}/ bookworm main" \
+      "deb [check-valid-until=no] http://snapshot.debian.org/archive/"\
+"debian-security/${DEBIAN_SNAPSHOT}/ bookworm-security main" \
       > /etc/apt/sources.list \
     && apt-get -o Acquire::Check-Valid-Until=false update \
     && apt-get install --yes --no-install-recommends \
@@ -26,12 +32,15 @@ RUN rm -f /etc/apt/sources.list.d/* \
       unzip \
       zip \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --fail --location --output /usr/local/bin/bazel "${BAZEL_URL}" \
-    && printf '%s  %s\n' "${BAZEL_SHA256}" /usr/local/bin/bazel | sha256sum --check --strict \
+    && curl --fail --location --output /usr/local/bin/bazel \
+      "${BAZEL_URL}" \
+    && printf '%s  %s\n' "${BAZEL_SHA256}" /usr/local/bin/bazel \
+      | sha256sum --check --strict \
     && chmod 0755 /usr/local/bin/bazel
 
 LABEL org.opencontainers.image.title="omarchy-quickshare oracle toolchain" \
-      org.opencontainers.image.source="https://github.com/ollieedgeley/omarchy-quickshare" \
+      org.opencontainers.image.source=\
+"https://github.com/ollieedgeley/omarchy-quickshare" \
       io.omarchy-quickshare.environment="${ENVIRONMENT_FINGERPRINT}"
 
 ENV CC=/usr/bin/clang \

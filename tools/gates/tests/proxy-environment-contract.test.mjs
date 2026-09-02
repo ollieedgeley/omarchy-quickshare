@@ -22,11 +22,11 @@ function inputs() {
 test("proxy environment pins its image, snapshot, and source", () => {
   const { manifest, dockerfile } = inputs();
   const parsed = validateEnvironment(manifest, dockerfile);
-  assert.match(parsed.base, /^debian@sha256:/);
+  assert.match(parsed.base, /^debian@sha256:/u);
   assert.equal(parsed.go.version, "1.27.1");
-  assert.match(parsed.go.sha256, /^[0-9a-f]{64}$/);
-  assert.match(parsed.source.revision, /^[0-9a-f]{40}$/);
-  assert.match(environmentFingerprint(manifest, dockerfile), /^[0-9a-f]{64}$/);
+  assert.match(parsed.go.sha256, /^[0-9a-f]{64}$/u);
+  assert.match(parsed.source.revision, /^[0-9a-f]{40}$/u);
+  assert.match(environmentFingerprint(manifest, dockerfile), /^[0-9a-f]{64}$/u);
 });
 
 test("proxy environment rejects a mutable base image", () => {
@@ -37,6 +37,6 @@ test("proxy environment rejects a mutable base image", () => {
   });
   assert.throws(
     () => validateEnvironment(changed, dockerfile),
-    /SHA-256 digest/,
+    /SHA-256 digest/u,
   );
 });

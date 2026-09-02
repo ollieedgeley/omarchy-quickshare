@@ -7,22 +7,45 @@ TIMEOUT ?= timeout --foreground 60s
 NODE_BIN ?= $(CURDIR)/node_modules/.bin
 AST_GREP ?= $(NODE_BIN)/ast-grep
 CODEGRAPH ?= $(NODE_BIN)/codegraph
+ESLINT ?= $(NODE_BIN)/eslint
 PRETTIER ?= $(NODE_BIN)/prettier
 MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 
-.PHONY: help setup hooks-install sources-fetch oracle-provision oracle-reference-provision oracle-up oracle-down
-.PHONY: proxy-provision proxy-up proxy-down dbus-provision dbus-up dbus-down bluetooth-radio-provision bluetooth-radio-up bluetooth-radio-down network-provision network-up network-down format format-check check lint-rust lint-ast lint-docs lint-structure lint-sources lint-oracle lint-proxies lint-dbus lint-bluetooth-radio lint-network
-.PHONY: test test-rust test-tooling test-ast-rules test-source-cache test-oracle-toolchain test-oracle-reference
-.PHONY: test-oracle-bluetooth test-oracle-ble test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct test-proxy-toxiproxy test-dbus-bluez test-dbus-networkmanager test-bluetooth-controller test-bluetooth-ble test-bluetooth-classic test-network-wmediumd test-network-netem test-network-lan test-network-hotspot-client test-network-hotspot-owner test-network-wifi-direct-client verify build commit-msg
-.PHONY: pre-commit pre-commit-prepare pre-commit-structure pre-commit-format pre-commit-ast
+.PHONY: help setup hooks-install sources-fetch
+.PHONY: oracle-provision oracle-reference-provision oracle-up oracle-down
+.PHONY: proxy-provision proxy-up proxy-down
+.PHONY: dbus-provision dbus-up dbus-down
+.PHONY: bluetooth-radio-provision bluetooth-radio-up bluetooth-radio-down
+.PHONY: network-provision network-up network-down
+.PHONY: format format-app format-tooling
+.PHONY: format-check format-app-check format-tooling-check check
+.PHONY: lint-rust lint-javascript lint-ast lint-docs
+.PHONY: lint-structure lint-structure-app lint-structure-tooling
+.PHONY: lint-sources lint-oracle lint-proxies lint-dbus
+.PHONY: lint-bluetooth-radio lint-network
+.PHONY: test test-rust test-tooling test-ast-rules test-source-cache
+.PHONY: test-oracle-toolchain test-oracle-reference
+.PHONY: test-oracle-bluetooth test-oracle-ble test-oracle-lan
+.PHONY: test-oracle-hotspot test-oracle-wifi-direct
+.PHONY: test-proxy-toxiproxy test-dbus-bluez test-dbus-networkmanager
+.PHONY: test-bluetooth-controller test-bluetooth-ble
+.PHONY: test-bluetooth-classic test-network-wmediumd test-network-netem
+.PHONY: test-network-lan test-network-hotspot-client
+.PHONY: test-network-hotspot-owner test-network-wifi-direct-client
+.PHONY: verify-app verify-tooling verify build commit-msg
+.PHONY: pre-commit pre-commit-prepare pre-commit-structure
+.PHONY: pre-commit-format pre-commit-javascript pre-commit-ast
 .PHONY: pre-commit-rust pre-commit-test pre-push
 
 help: ## List public and targeted gates.
-	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_.-]+:.*## / {printf "%-28s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*## "} \
+		/^[a-zA-Z0-9_.-]+:.*## / {printf "%-28s %s\n", $$1, $$2}' \
+		$(MAKEFILE_LIST)
 
 setup: ## Install pinned development tools and activate repository hooks.
 	@npm ci
-	@rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy --component rust-analyzer
+	@rustup toolchain install 1.98.0 --profile minimal \
+		--component rustfmt --component clippy --component rust-analyzer
 	@$(MAKE) hooks-install
 	@$(MAKE) sources-fetch
 	@$(MAKE) oracle-provision
@@ -32,20 +55,21 @@ setup: ## Install pinned development tools and activate repository hooks.
 	@$(MAKE) bluetooth-radio-provision
 	@$(MAKE) network-provision
 
-hooks-install: ## Activate Husky and initialize the reusable staged CodeGraph mirror.
+hooks-install: ## Activate Husky and initialize the staged CodeGraph mirror.
 	@$(NODE_BIN)/husky
-	@CODEGRAPH=$(CODEGRAPH) $(TIMEOUT) node tools/hooks/prepare-staged.mjs --initialize
+	@CODEGRAPH=$(CODEGRAPH) $(TIMEOUT) \
+		node tools/hooks/prepare-staged.mjs --initialize
 
 sources-fetch: ## Download, hash-check, and extract every pinned test source.
 	@node tools/gates/sources.mjs fetch
 
-oracle-provision: ## Build the pinned oracle toolchain image; one-time provisioning may exceed 60 seconds.
+oracle-provision: ## Build the pinned oracle toolchain image.
 	@node tests/environments/oracle/environment.mjs provision
 
-oracle-reference-provision: ## Compile pinned Google UKEY2 artifacts and prove an offline rebuild.
+oracle-reference-provision: ## Build the pinned Google UKEY2 artifacts.
 	@node tests/environments/oracle/environment.mjs reference-provision
 
-oracle-up: ## Start and readiness-check the prepared oracle environment within 60 seconds.
+oracle-up: ## Start and readiness-check the prepared oracle environment.
 	@node tests/environments/oracle/environment.mjs up
 
 oracle-down: ## Stop the prepared oracle environment within 60 seconds.
@@ -72,10 +96,10 @@ dbus-down: ## Stop the private D-Bus environment outside test time.
 bluetooth-radio-provision: ## Build the pinned BlueZ and Bumble radio image.
 	@node tests/environments/bluez/radio-environment.mjs provision
 
-bluetooth-radio-up: ## Boot the isolated KVM radio guest and report readiness time.
+bluetooth-radio-up: ## Boot and readiness-check the isolated radio guest.
 	@node tests/environments/bluez/radio-environment.mjs up
 
-bluetooth-radio-down: ## Stop the isolated KVM radio guest and report teardown time.
+bluetooth-radio-down: ## Stop the isolated radio guest and report teardown.
 	@node tests/environments/bluez/radio-environment.mjs down
 
 network-provision: ## Build pinned Wi-Fi tools and deterministic wmediumd.
@@ -87,12 +111,20 @@ network-up: ## Start isolated hwsim radios and report readiness time.
 network-down: ## Remove isolated radios and report teardown time.
 	@node tests/environments/network/environment.mjs down
 
-format: ## Deliberately rewrite supported files with pinned formatters.
+format: format-app format-tooling ## Rewrite files with pinned formatters.
+
+format-app: ## Rewrite Rust application files with rustfmt.
 	@cargo fmt --all
+
+format-tooling: ## Rewrite JavaScript, Markdown, YAML, and JSON files.
 	@$(PRETTIER) --write . --ignore-unknown
 
-format-check: ## Check Rust, Markdown, YAML, and JSON formatting.
+format-check: format-app-check format-tooling-check ## Check formatted files.
+
+format-app-check: ## Check only Rust application formatting.
 	@$(TIMEOUT) cargo fmt --all -- --check
+
+format-tooling-check: ## Check JavaScript and repository-document formatting.
 	@$(TIMEOUT) $(PRETTIER) --check . --ignore-unknown
 
 check: ## Compiler-check the complete Cargo workspace.
@@ -101,17 +133,27 @@ check: ## Compiler-check the complete Cargo workspace.
 lint-rust: ## Run compiler, rustdoc, rust-analyzer, and strict Clippy checks.
 	@$(TIMEOUT) node tools/gates/rust-lints.mjs
 
+lint-javascript: ## Run every current ESLint core rule as an error.
+	@$(TIMEOUT) $(ESLINT) . --max-warnings 0 --no-warn-ignored
+
 lint-ast: ## Run the full error-only ast-grep scan.
 	@$(TIMEOUT) node tools/gates/ast-schema.mjs
-	@$(TIMEOUT) $(AST_GREP) scan --config sgconfig.yml --error --min-severity=error --max-results=1 --inspect=summary .
+	@$(TIMEOUT) $(AST_GREP) scan --config sgconfig.yml --error \
+		--min-severity=error --max-results=1 --inspect=summary .
 
 lint-docs: ## Run Markdown policy checks.
 	@$(TIMEOUT) $(MARKDOWNLINT) '**/*.md' '#node_modules' '#target' '#.cache'
 
-lint-structure: ## Check line, directory, dependency, and configuration contracts.
-	@$(TIMEOUT) node tools/gates/structure.mjs
+lint-structure: lint-structure-app lint-structure-tooling
+lint-structure: ## Check all structure contracts.
 
-lint-sources: ## Validate immutable source revisions, hashes, licenses, and purposes.
+lint-structure-app: ## Check application structure contracts.
+	@$(TIMEOUT) node tools/gates/structure.mjs app
+
+lint-structure-tooling: ## Check tooling structure contracts.
+	@$(TIMEOUT) node tools/gates/structure.mjs tooling
+
+lint-sources: ## Validate immutable source definitions.
 	@$(TIMEOUT) node tools/gates/sources.mjs check
 
 lint-oracle: ## Validate pinned oracle image inputs without starting Docker.
@@ -139,19 +181,20 @@ test-tooling: ## Run quality-gate and hook contract tests.
 test-ast-rules: ## Run ast-grep rule fixtures and committed snapshots.
 	@$(TIMEOUT) $(AST_GREP) test --config sgconfig.yml
 
-test-source-cache: ## Hash-check the prepared reference and simulator source archives.
+test-source-cache: ## Hash-check prepared source archives.
 	@$(TIMEOUT) node tools/gates/sources.mjs verify-cache
 
-test-oracle-toolchain: ## Warm-start, test, and stop the prepared oracle toolchain.
+test-oracle-toolchain: ## Test the prepared oracle toolchain.
 	@trap 'node tests/environments/oracle/environment.mjs down' EXIT; \
 		node tests/environments/oracle/environment.mjs up; \
 		$(TIMEOUT) node tests/environments/oracle/environment.mjs self-test
 
-test-oracle-reference: ## Run Google's UKEY2 tests and a bidirectional secure-session exchange.
+test-oracle-reference: ## Test UKEY2 and a secure-session exchange.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs reference-self-test
 
 test-oracle-bluetooth: ## Check Google's simulated Bluetooth Classic medium.
-	@$(TIMEOUT) node tests/environments/oracle/environment.mjs medium-self-test bluetooth
+	@$(TIMEOUT) node tests/environments/oracle/environment.mjs \
+		medium-self-test bluetooth
 
 test-oracle-ble: ## Check Google's simulated BLE medium.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs medium-self-test ble
@@ -160,12 +203,14 @@ test-oracle-lan: ## Check Google's simulated Wi-Fi LAN medium.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs medium-self-test lan
 
 test-oracle-hotspot: ## Check Google's simulated Wi-Fi hotspot medium.
-	@$(TIMEOUT) node tests/environments/oracle/environment.mjs medium-self-test hotspot
+	@$(TIMEOUT) node tests/environments/oracle/environment.mjs \
+		medium-self-test hotspot
 
 test-oracle-wifi-direct: ## Check Google's simulated Wi-Fi Direct medium.
-	@$(TIMEOUT) node tests/environments/oracle/environment.mjs medium-self-test wifi-direct
+	@$(TIMEOUT) node tests/environments/oracle/environment.mjs \
+		medium-self-test wifi-direct
 
-test-proxy-toxiproxy: ## Prove bidirectional TCP cutoff and recovery through Toxiproxy.
+test-proxy-toxiproxy: ## Test bidirectional TCP cutoff and recovery.
 	@trap 'node tests/environments/proxies/environment.mjs down' EXIT; \
 		node tests/environments/proxies/environment.mjs up; \
 		$(TIMEOUT) node tests/environments/proxies/environment.mjs self-test
@@ -178,12 +223,14 @@ test-dbus-bluez: ## Check the BlueZ mock through the real bluetoothctl client.
 test-dbus-networkmanager: ## Check the NetworkManager mock through real nmcli.
 	@trap 'node tests/environments/bluez/dbus-environment.mjs down' EXIT; \
 		node tests/environments/bluez/dbus-environment.mjs up; \
-		$(TIMEOUT) node tests/environments/bluez/dbus-environment.mjs self-test networkmanager
+		$(TIMEOUT) node tests/environments/bluez/dbus-environment.mjs \
+		self-test networkmanager
 
-test-bluetooth-controller: ## Check two isolated virtual controllers through real BlueZ.
+test-bluetooth-controller: ## Check isolated controllers through real BlueZ.
 	@trap 'node tests/environments/bluez/radio-environment.mjs down' EXIT; \
 		node tests/environments/bluez/radio-environment.mjs up; \
-		$(TIMEOUT) node tests/environments/bluez/radio-environment.mjs self-test controller
+		$(TIMEOUT) node tests/environments/bluez/radio-environment.mjs \
+		self-test controller
 
 test-bluetooth-ble: ## Exchange exact bytes both ways over virtual BLE GATT.
 	@trap 'node tests/environments/bluez/radio-environment.mjs down' EXIT; \
@@ -193,7 +240,8 @@ test-bluetooth-ble: ## Exchange exact bytes both ways over virtual BLE GATT.
 test-bluetooth-classic: ## Exchange exact bytes both ways over virtual RFCOMM.
 	@trap 'node tests/environments/bluez/radio-environment.mjs down' EXIT; \
 		node tests/environments/bluez/radio-environment.mjs up; \
-		$(TIMEOUT) node tests/environments/bluez/radio-environment.mjs self-test classic
+		$(TIMEOUT) node tests/environments/bluez/radio-environment.mjs \
+		self-test classic
 
 test-network-wmediumd: ## Prove hwsim 802.11 delivery, isolation, and recovery.
 	@trap 'node tests/environments/network/environment.mjs down' EXIT; \
@@ -210,24 +258,46 @@ test-network-lan: ## Associate two hwsim clients and transfer TCP both ways.
 		node tests/environments/network/environment.mjs up; \
 		$(TIMEOUT) node tests/environments/network/environment.mjs self-test lan
 
-test-network-hotspot-client: ## Join a real hwsim hotspot and transfer both ways.
+test-network-hotspot-client: ## Join a hwsim hotspot and transfer both ways.
 	@trap 'node tests/environments/network/environment.mjs down' EXIT; \
 		node tests/environments/network/environment.mjs up; \
-		$(TIMEOUT) node tests/environments/network/environment.mjs self-test hotspot-client
+		$(TIMEOUT) node tests/environments/network/environment.mjs \
+		self-test hotspot-client
 
 test-network-hotspot-owner: ## Host a real hwsim hotspot and transfer both ways.
 	@trap 'node tests/environments/network/environment.mjs down' EXIT; \
 		node tests/environments/network/environment.mjs up; \
-		$(TIMEOUT) node tests/environments/network/environment.mjs self-test hotspot-owner
+		$(TIMEOUT) node tests/environments/network/environment.mjs \
+		self-test hotspot-owner
 
-test-network-wifi-direct-client: ## Join a simulated remote P2P group and transfer both ways.
+test-network-wifi-direct-client: ## Join a remote P2P group and transfer.
 	@trap 'node tests/environments/network/environment.mjs down' EXIT; \
 		node tests/environments/network/environment.mjs up; \
-		$(TIMEOUT) node tests/environments/network/environment.mjs self-test wifi-direct-client
+		$(TIMEOUT) node tests/environments/network/environment.mjs \
+		self-test wifi-direct-client
 
 test: test-rust test-tooling test-ast-rules ## Run all local tests.
 
-verify: format-check lint-docs lint-structure lint-sources lint-oracle lint-proxies lint-dbus lint-bluetooth-radio lint-network check lint-rust lint-ast test test-source-cache test-oracle-toolchain test-oracle-reference test-oracle-bluetooth test-oracle-ble test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct test-proxy-toxiproxy test-dbus-bluez test-dbus-networkmanager test-bluetooth-controller test-bluetooth-ble test-bluetooth-classic test-network-wmediumd test-network-netem test-network-lan test-network-hotspot-client test-network-hotspot-owner test-network-wifi-direct-client ## Run the complete local quality suite.
+verify-app: ## Run application gates without test environments.
+verify-app: format-app-check lint-structure-app check lint-rust
+verify-app: lint-ast test-rust
+
+verify-tooling: ## Run tooling static and fast contract gates.
+verify-tooling: format-tooling-check lint-javascript lint-docs
+verify-tooling: lint-structure-tooling lint-sources lint-oracle lint-proxies
+verify-tooling: lint-dbus lint-bluetooth-radio lint-network
+verify-tooling: test-tooling test-ast-rules
+
+verify: ## Run the complete local quality suite.
+verify: verify-app verify-tooling test-source-cache
+verify: test-oracle-toolchain test-oracle-reference
+verify: test-oracle-bluetooth test-oracle-ble test-oracle-lan
+verify: test-oracle-hotspot test-oracle-wifi-direct test-proxy-toxiproxy
+verify: test-dbus-bluez test-dbus-networkmanager
+verify: test-bluetooth-controller test-bluetooth-ble
+verify: test-bluetooth-classic test-network-wmediumd test-network-netem
+verify: test-network-lan test-network-hotspot-client
+verify: test-network-hotspot-owner test-network-wifi-direct-client
 
 build: ## Build the complete locked workspace after verification.
 	@$(TIMEOUT) cargo build --workspace --all-targets --all-features --locked
@@ -239,11 +309,12 @@ pre-commit: ## Check the staged snapshot and its conservatively affected tests.
 	@$(MAKE) pre-commit-prepare
 	@$(MAKE) pre-commit-structure
 	@$(MAKE) pre-commit-format
+	@$(MAKE) pre-commit-javascript
 	@$(MAKE) pre-commit-ast
 	@$(MAKE) pre-commit-rust
 	@$(MAKE) pre-commit-test
 
-pre-commit-prepare: ## Materialize, validate, and CodeGraph-sync the staged snapshot.
+pre-commit-prepare: ## Prepare and CodeGraph-sync the staged snapshot.
 	@CODEGRAPH=$(CODEGRAPH) $(TIMEOUT) node tools/hooks/prepare-staged.mjs
 
 pre-commit-structure: ## Check staged file and repository structure contracts.
@@ -251,6 +322,9 @@ pre-commit-structure: ## Check staged file and repository structure contracts.
 
 pre-commit-format: ## Check formatter output for staged files only.
 	@$(TIMEOUT) node tools/hooks/run-staged.mjs format
+
+pre-commit-javascript: ## Run strict ESLint against staged JavaScript only.
+	@$(TIMEOUT) node tools/hooks/run-staged.mjs javascript
 
 pre-commit-ast: ## Run strict ast-grep rules against staged Rust files.
 	@$(TIMEOUT) node tools/hooks/run-staged.mjs ast

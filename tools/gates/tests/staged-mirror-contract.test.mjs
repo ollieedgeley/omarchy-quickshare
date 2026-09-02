@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -14,14 +16,17 @@ import test from "node:test";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const PREPARE = join(ROOT, "tools", "hooks", "prepare-staged.mjs");
+const RUN_STAGED = join(ROOT, "tools", "hooks", "run-staged.mjs");
 const CODEGRAPH =
   process.env.CODEGRAPH ?? join(ROOT, "node_modules", ".bin", "codegraph");
+const EXECUTABLE_MODE = 0o755;
 
-function run(command, args, cwd) {
+function runWithOptions(command, args, options) {
+  const { cwd, extraEnvironment = {} } = options;
   const result = spawnSync(command, args, {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, CODEGRAPH },
+    env: { ...process.env, CODEGRAPH, ...extraEnvironment },
   });
   if (result.status !== 0) {
     throw new Error(
@@ -29,6 +34,32 @@ function run(command, args, cwd) {
     );
   }
   return result;
+}
+
+function run(command, args, cwd) {
+  return runWithOptions(command, args, { cwd });
+}
+
+function fakeEslint(root) {
+  const bin = join(root, ".fake-bin");
+  const path = join(bin, "eslint");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(
+    path,
+    [
+      "#!/usr/bin/env node",
+      'const { readFileSync } = require("node:fs");',
+      "const paths = process.argv.slice(2)" +
+        ".filter((arg) => arg.endsWith('.mjs'));",
+      "const failed = paths.some((file) =>",
+      "  readFileSync(file, 'utf8').includes('forbidden'),",
+      ");",
+      "process.exitCode = failed ? 1 : 0;",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(path, EXECUTABLE_MODE);
+  return bin;
 }
 
 function repository() {
@@ -61,7 +92,7 @@ test("staged mirror uses index bytes and reuses its CodeGraph database", () => {
       env: { ...process.env, CODEGRAPH },
     });
     assert.notEqual(missing.status, 0);
-    assert.match(`${missing.stdout}${missing.stderr}`, /make hooks-install/);
+    assert.match(`${missing.stdout}${missing.stderr}`, /make hooks-install/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -81,8 +112,35 @@ test("staged mirror rejects partially staged Rust files", () => {
     assert.notEqual(result.status, 0);
     assert.match(
       `${result.stdout}${result.stderr}`,
-      /staged and unstaged changes/,
+      /staged and unstaged changes/u,
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("staged JavaScript gate reads index bytes and propagates failures", () => {
+  const root = repository();
+  try {
+    const nodeBin = fakeEslint(root);
+    const sample = join(root, "sample.mjs");
+    writeFileSync(sample, "export const staged = true;\n");
+    run("git", ["add", "sample.mjs"], root);
+    writeFileSync(sample, "forbidden working tree\n");
+    run("node", [PREPARE, "--initialize"], root);
+    runWithOptions("node", [RUN_STAGED, "javascript"], {
+      cwd: root,
+      extraEnvironment: { NODE_BIN: nodeBin },
+    });
+
+    run("git", ["add", "sample.mjs"], root);
+    run("node", [PREPARE], root);
+    const failed = spawnSync("node", [RUN_STAGED, "javascript"], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, NODE_BIN: nodeBin },
+    });
+    assert.notEqual(failed.status, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

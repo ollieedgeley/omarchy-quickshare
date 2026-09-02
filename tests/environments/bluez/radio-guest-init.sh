@@ -19,11 +19,15 @@ busybox ip link set lo up
 modprobe hci_vhci
 modprobe virtio_console
 /artifacts/btvirt -l2 >/run/btvirt.log 2>&1 &
+controller_count() {
+  find /sys/class/bluetooth -maxdepth 1 -name 'hci*' 2>/dev/null |
+    wc -l
+}
 for _ in {1..200}; do
-  [[ $(find /sys/class/bluetooth -maxdepth 1 -name 'hci*' 2>/dev/null | wc -l) -eq 2 ]] && break
+  [[ $(controller_count) -eq 2 ]] && break
   sleep 0.02
 done
-[[ $(find /sys/class/bluetooth -maxdepth 1 -name 'hci*' 2>/dev/null | wc -l) -eq 2 ]]
+[[ $(controller_count) -eq 2 ]]
 btmon --write /runtime/radio.btsnoop >/run/btmon.log 2>&1 &
 
 dbus-daemon --system --fork --nopidfile
@@ -68,11 +72,13 @@ run_classic() {
     >/run/bumble-rfcomm.log 2>&1 &
   local peer=$!
   for _ in {1..200}; do
-    grep -q 'Listening for RFComm connections on channel 1' /run/bumble-rfcomm.log && break
+    grep -q 'Listening for RFComm connections on channel 1' \
+      /run/bumble-rfcomm.log && break
     kill -0 "${peer}" 2>/dev/null || break
     sleep 0.02
   done
-  if ! grep -q 'Listening for RFComm connections on channel 1' /run/bumble-rfcomm.log; then
+  if ! grep -q 'Listening for RFComm connections on channel 1' \
+    /run/bumble-rfcomm.log; then
     cat /run/bumble-rfcomm.log
     kill "${peer}" 2>/dev/null || true
     wait "${peer}" 2>/dev/null || true
@@ -83,7 +89,8 @@ run_classic() {
   python3 /environment/radio-bluez-rfcomm-client.py || status=$?
   kill "${peer}" 2>/dev/null || true
   wait "${peer}" 2>/dev/null || true
-  grep -E 'Starting TCP|Listening for RFComm|RFComm session|RFCOMM Data|TCP Server' \
+  grep -E \
+    'Starting TCP|Listening for RFComm|RFComm session|RFCOMM Data|TCP Server' \
     /run/bumble-rfcomm.log || true
   [[ ${status} -eq 0 ]]
 }
@@ -107,7 +114,9 @@ while true; do
         output=$(bluetoothctl list 2>&1)
         status=$?
         set -e
-        while IFS= read -r line; do printf 'OUT %s\n' "${line}" >&3; done <<<"${output}"
+        while IFS= read -r line; do
+          printf 'OUT %s\n' "${line}" >&3
+        done <<<"${output}"
         printf 'STATUS %s\n' "${status}" >&3
         ;;
       RUN_BLE)
@@ -115,7 +124,9 @@ while true; do
         output=$(run_ble 2>&1)
         status=$?
         set -e
-        while IFS= read -r line; do printf 'OUT %s\n' "${line}" >&3; done <<<"${output}"
+        while IFS= read -r line; do
+          printf 'OUT %s\n' "${line}" >&3
+        done <<<"${output}"
         printf 'STATUS %s\n' "${status}" >&3
         ;;
       RUN_CLASSIC)
@@ -123,7 +134,9 @@ while true; do
         output=$(run_classic 2>&1)
         status=$?
         set -e
-        while IFS= read -r line; do printf 'OUT %s\n' "${line}" >&3; done <<<"${output}"
+        while IFS= read -r line; do
+          printf 'OUT %s\n' "${line}" >&3
+        done <<<"${output}"
         printf 'STATUS %s\n' "${status}" >&3
         ;;
       STOP)

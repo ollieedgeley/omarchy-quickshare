@@ -10,30 +10,47 @@ import { parseNameStatus } from "../../hooks/prepare-staged.mjs";
 import { pushedCommits } from "../../hooks/pre-push.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const OVERLONG_SUBJECT_LENGTH = 70;
+const SHA_LENGTH = 40;
+const MALFORMED_COMMIT_TEST =
+  "Conventional Commit validation rejects vague or malformed subjects";
+const CARGO_SELECTION_TEST =
+  "Cargo selection includes owners and transitive downstream packages";
+const PRE_PUSH_ENVIRONMENT_TEST =
+  "pre-push shares only the prepared test environment with exact worktrees";
+
+function cargoPackage(id, name, manifestPath) {
+  return Object.fromEntries([
+    ["id", id],
+    ["name", name],
+    ["manifest_path", manifestPath],
+  ]);
+}
 
 test("Conventional Commit validation accepts the project types", () => {
   assert.equal(
-    validateCommitMessage("build(hooks): install staged checks\n"),
-    undefined,
+    typeof validateCommitMessage("build(hooks): install staged checks\n"),
+    "undefined",
   );
   assert.equal(
-    validateCommitMessage("feat(transfer)!: change frame version\n"),
-    undefined,
+    typeof validateCommitMessage("feat(transfer)!: change frame version\n"),
+    "undefined",
   );
 });
 
-test("Conventional Commit validation rejects vague or malformed subjects", () => {
+test(MALFORMED_COMMIT_TEST, () => {
   assert.match(
     validateCommitMessage("setup hooks") ?? "",
-    /Conventional Commits/,
+    /Conventional Commits/u,
   );
   assert.match(
     validateCommitMessage("build: install hooks.") ?? "",
-    /Conventional Commits/,
+    /Conventional Commits/u,
   );
   assert.match(
-    validateCommitMessage(`build: ${"a".repeat(70)}`) ?? "",
-    /72 characters/,
+    validateCommitMessage(`build: ${"a".repeat(OVERLONG_SUBJECT_LENGTH)}`) ??
+      "",
+    /72 characters/u,
   );
 });
 
@@ -65,21 +82,17 @@ test("CodeGraph candidate parsing accepts nested JSON response shapes", () => {
   );
 });
 
-test("Cargo selection includes owners and transitive downstream packages", () => {
+test(CARGO_SELECTION_TEST, () => {
   const root = "/repo";
-  const core = {
-    id: "core 0.1.0",
-    name: "core",
-    manifest_path: "/repo/crates/core/Cargo.toml",
-  };
-  const app = {
-    id: "app 0.1.0",
-    name: "app",
-    manifest_path: "/repo/crates/app/Cargo.toml",
-  };
+  const core = cargoPackage(
+    "core 0.1.0",
+    "core",
+    "/repo/crates/core/Cargo.toml",
+  );
+  const app = cargoPackage("app 0.1.0", "app", "/repo/crates/app/Cargo.toml");
   const metadata = {
     packages: [core, app],
-    workspace_members: [core.id, app.id],
+    ...Object.fromEntries([["workspace_members", [core.id, app.id]]]),
     resolve: {
       nodes: [
         { id: core.id, dependencies: [] },
@@ -97,22 +110,23 @@ test("Cargo selection includes owners and transitive downstream packages", () =>
 });
 
 test("pre-push selects unique non-deletion tips", () => {
-  const sha = "1".repeat(40);
-  const deletion = "0".repeat(40);
+  const sha = "1".repeat(SHA_LENGTH);
+  const deletion = "0".repeat(SHA_LENGTH);
   const input = [
     `refs/heads/main ${sha} refs/heads/main ${deletion}`,
     `refs/tags/v1 ${sha} refs/tags/v1 ${deletion}`,
     `refs/heads/old ${deletion} refs/heads/old ${sha}`,
   ].join("\n");
-  assert.deepEqual(pushedCommits(input, "2".repeat(40)), [sha]);
+  assert.deepEqual(pushedCommits(input, "2".repeat(SHA_LENGTH)), [sha]);
   assert.deepEqual(pushedCommits("", sha), [sha]);
 });
 
-test("pre-push shares only the prepared test environment with exact worktrees", () => {
+test(PRE_PUSH_ENVIRONMENT_TEST, () => {
   const source = readFileSync(
     join(ROOT, "tools", "hooks", "pre-push.mjs"),
     "utf8",
   );
-  assert.match(source, /TEST_ENV_CACHE: join\(ROOT, "\.cache", "test-env"\)/);
-  assert.doesNotMatch(source, /TEST_ENV_CACHE: join\(ROOT, "\.cache"\)/);
+  assert.match(source, /AST_GREP: join\(nodeBin, "ast-grep"\)/u);
+  assert.match(source, /TEST_ENV_CACHE: join\(ROOT, "\.cache", "test-env"\)/u);
+  assert.doesNotMatch(source, /TEST_ENV_CACHE: join\(ROOT, "\.cache"\)/u);
 });

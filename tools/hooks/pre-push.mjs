@@ -5,30 +5,43 @@ import { fileURLToPath } from "node:url";
 import { output, run } from "../gates/lib/process.mjs";
 
 const ROOT = output("git", ["rev-parse", "--show-toplevel"]);
-const ZERO = /^0+$/;
+const ZERO = /^0+$/u;
+const FIELD_COUNT = 4;
+const SHORT_HASH_LENGTH = 12;
 
 export function pushedCommits(input, fallbackHead) {
   const commits = new Set();
   for (const line of input.trim().split("\n").filter(Boolean)) {
-    const fields = line.trim().split(/\s+/);
-    if (fields.length !== 4) throw new Error(`invalid pre-push input: ${line}`);
-    if (!ZERO.test(fields[1])) commits.add(fields[1]);
+    const fields = line.trim().split(/\s+/u);
+    if (fields.length !== FIELD_COUNT) {
+      throw new Error(`invalid pre-push input: ${line}`);
+    }
+    if (!ZERO.test(fields[1])) {
+      commits.add(fields[1]);
+    }
   }
-  if (!input.trim() && fallbackHead) commits.add(fallbackHead);
+  if (!input.trim() && fallbackHead) {
+    commits.add(fallbackHead);
+  }
   return [...commits];
 }
 
+function readInput() {
+  if (process.stdin.isTTY) {
+    return "";
+  }
+  return new Promise((resolveInput) => {
+    let value = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      value += chunk;
+    });
+    process.stdin.on("end", () => resolveInput(value));
+  });
+}
+
 async function main() {
-  const input = process.stdin.isTTY
-    ? ""
-    : await new Promise((resolveInput) => {
-        let value = "";
-        process.stdin.setEncoding("utf8");
-        process.stdin.on("data", (chunk) => {
-          value += chunk;
-        });
-        process.stdin.on("end", () => resolveInput(value));
-      });
+  const input = await readInput();
   const head = output("git", ["rev-parse", "HEAD"], { cwd: ROOT });
   const commits = pushedCommits(input, head);
   const cache = join(ROOT, ".cache", "gates");
@@ -40,7 +53,7 @@ async function main() {
     });
     const worktree = join(
       cache,
-      `pre-push-${process.pid}-${safeCommit.slice(0, 12)}`,
+      `pre-push-${process.pid}-${safeCommit.slice(0, SHORT_HASH_LENGTH)}`,
     );
     const expectedPrefix = `${resolve(cache)}${sep}`;
     if (!resolve(worktree).startsWith(expectedPrefix)) {
@@ -54,6 +67,7 @@ async function main() {
       const nodeBin = join(ROOT, "node_modules", ".bin");
       const env = {
         ...process.env,
+        AST_GREP: join(nodeBin, "ast-grep"),
         CODEGRAPH: join(nodeBin, "codegraph"),
         NODE_BIN: nodeBin,
         PATH: `${nodeBin}:${process.env.PATH}`,
@@ -70,4 +84,6 @@ async function main() {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) await main();
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  await main();
+}
