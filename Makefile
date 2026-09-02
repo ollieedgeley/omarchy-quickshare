@@ -15,6 +15,7 @@ RUFF ?= $(CURDIR)/.cache/tools/ruff-0.16.0/ruff
 
 .PHONY: help setup hooks-install ruff-provision sources-fetch
 .PHONY: oracle-provision oracle-reference-provision oracle-up oracle-down
+.PHONY: nearshare-provision nearshare-up nearshare-down
 .PHONY: proxy-provision proxy-up proxy-down
 .PHONY: dbus-provision dbus-up dbus-down
 .PHONY: bluetooth-radio-provision bluetooth-radio-up bluetooth-radio-down
@@ -26,11 +27,12 @@ RUFF ?= $(CURDIR)/.cache/tools/ruff-0.16.0/ruff
 .PHONY: format-check format-app-check format-tooling-check check
 .PHONY: lint-rust lint-javascript lint-python lint-ast lint-docs
 .PHONY: lint-structure lint-structure-app lint-structure-tooling
-.PHONY: lint-sources lint-oracle lint-proxies lint-dbus
+.PHONY: lint-sources lint-oracle lint-nearshare lint-proxies lint-dbus
 .PHONY: lint-bluetooth-radio lint-network lint-android
 .PHONY: test test-rust test-contracts test-tooling test-ast-rules
 .PHONY: test-source-cache
 .PHONY: test-oracle-toolchain test-oracle-reference
+.PHONY: test-nearshare-reference
 .PHONY: test-oracle-bluetooth test-oracle-ble test-oracle-lan
 .PHONY: test-oracle-hotspot test-oracle-wifi-direct
 .PHONY: test-proxy-toxiproxy test-dbus-bluez test-dbus-networkmanager
@@ -58,6 +60,7 @@ setup: ## Install pinned development tools and activate repository hooks.
 	@$(MAKE) sources-fetch
 	@$(MAKE) oracle-provision
 	@$(MAKE) oracle-reference-provision
+	@$(MAKE) nearshare-provision
 	@$(MAKE) proxy-provision
 	@$(MAKE) dbus-provision
 	@$(MAKE) bluetooth-radio-provision
@@ -85,6 +88,15 @@ oracle-up: ## Start and readiness-check the prepared oracle environment.
 
 oracle-down: ## Stop the prepared oracle environment within 60 seconds.
 	@node tests/environments/oracle/environment.mjs down
+
+nearshare-provision: ## Build the pinned implementation-diverse LAN peer.
+	@node tests/environments/nearshare/environment.mjs provision
+
+nearshare-up: ## Start and prepare the pinned NearShare peer.
+	@node tests/environments/nearshare/environment.mjs up
+
+nearshare-down: ## Stop the prepared NearShare peer.
+	@node tests/environments/nearshare/environment.mjs down
 
 proxy-provision: ## Build pinned Toxiproxy and prove its offline rebuild.
 	@node tests/environments/proxies/environment.mjs provision
@@ -199,6 +211,9 @@ lint-sources: ## Validate immutable source definitions.
 lint-oracle: ## Validate pinned oracle image inputs without starting Docker.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs validate
 
+lint-nearshare: ## Validate the pinned diverse peer without starting Docker.
+	@$(TIMEOUT) node tests/environments/nearshare/environment.mjs validate
+
 lint-proxies: ## Validate pinned proxy environment inputs without starting it.
 	@$(TIMEOUT) node tests/environments/proxies/environment.mjs validate
 
@@ -237,6 +252,11 @@ test-oracle-toolchain: ## Test the prepared oracle toolchain.
 
 test-oracle-reference: ## Test UKEY2 and a secure-session exchange.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs reference-self-test
+
+test-nearshare-reference: ## Test full LAN Sharing in both peer roles.
+	@trap 'node tests/environments/nearshare/environment.mjs down' EXIT; \
+		node tests/environments/nearshare/environment.mjs up; \
+		$(TIMEOUT) node tests/environments/nearshare/environment.mjs self-test
 
 test-oracle-bluetooth: ## Check Google's simulated Bluetooth Classic medium.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs \
@@ -336,13 +356,14 @@ verify-app: lint-ast test-rust
 
 verify-tooling: ## Run tooling static and fast contract gates.
 verify-tooling: format-tooling-check lint-javascript lint-python lint-docs
-verify-tooling: lint-structure-tooling lint-sources lint-oracle lint-proxies
+verify-tooling: lint-structure-tooling lint-sources lint-oracle lint-nearshare
+verify-tooling: lint-proxies
 verify-tooling: lint-dbus lint-bluetooth-radio lint-network lint-android
 verify-tooling: test-tooling test-ast-rules
 
 verify: ## Run the complete local quality suite.
 verify: verify-app verify-tooling test-source-cache
-verify: test-oracle-toolchain test-oracle-reference
+verify: test-oracle-toolchain test-oracle-reference test-nearshare-reference
 verify: test-oracle-bluetooth test-oracle-ble test-oracle-lan
 verify: test-oracle-hotspot test-oracle-wifi-direct test-proxy-toxiproxy
 verify: test-dbus-bluez test-dbus-networkmanager

@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "image": "omarchy-quickshare/nearshare-peer:2026-09-02",
+  "container": "omarchy-quickshare-nearshare",
+  "base": "debian@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171",
+  "debianSnapshot": "20260901T000000Z",
+  "source": {
+    "id": "nearshare",
+    "revision": "66eea15c5799ea317b195bedba465fb89ff5da7b"
+  },
+  "packages": {
+    "python3": "3.11.2-1+b1",
+    "python3-cryptography": "38.0.4-3+deb12u1",
+    "python3-grpc-tools": "1.14.1-6",
+    "python3-pkg-resources": "66.1.1-1+deb12u2",
+    "python3-protobuf": "3.21.12-3+deb12u1",
+    "python3-zeroconf": "0.47.3-1"
+  }
+}
