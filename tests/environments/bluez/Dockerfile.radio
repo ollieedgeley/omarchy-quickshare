@@ -1,0 +1,41 @@
+FROM debian@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+
+ARG DEBIAN_SNAPSHOT=20260901T000000Z
+RUN rm -f /etc/apt/sources.list.d/* \
+    && printf '%s\n' \
+      "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/ bookworm main" \
+      > /etc/apt/sources.list \
+    && apt-get -o Acquire::Check-Valid-Until=false update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+      autoconf \
+      automake \
+      bluez \
+      build-essential \
+      busybox \
+      dbus \
+      libdbus-1-dev \
+      libglib2.0-dev \
+      libtool \
+      libudev-dev \
+      linux-image-amd64 \
+      pkg-config \
+      python3 \
+      python3-cryptography \
+      python3-dbus \
+      python3-pyee \
+      python3-platformdirs \
+      python3-typing-extensions \
+      qemu-system-x86 \
+    && printf '%s\n' 9p 9pnet 9pnet_virtio virtio_pci >> /etc/initramfs-tools/modules \
+    && update-initramfs -u -k all \
+    && kernel_path="$(find /boot -maxdepth 1 -name 'vmlinuz-*' -print -quit)" \
+    && initrd_path="$(find /boot -maxdepth 1 -name 'initrd.img-*' -print -quit)" \
+    && test -n "${kernel_path}" \
+    && test -n "${initrd_path}" \
+    && ln -s "${kernel_path}" /boot/vmlinuz-oqs \
+    && ln -s "${initrd_path}" /boot/initrd-oqs \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG ENVIRONMENT_FINGERPRINT
+LABEL org.omarchy-quickshare.environment="bluetooth-radio" \
+      org.omarchy-quickshare.fingerprint="${ENVIRONMENT_FINGERPRINT}"

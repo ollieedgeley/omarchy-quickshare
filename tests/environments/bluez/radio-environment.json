@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "image": "omarchy-quickshare/bluetooth-radio:2026-09-02",
+  "container": "omarchy-quickshare-bluetooth-radio",
+  "base": "debian@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171",
+  "debianSnapshot": "20260901T000000Z",
+  "sources": {
+    "bluez": "3a2d543c4c21d9c1dab246d46d76a11996a69bf2",
+    "bumble": "452ccdb8f2649ff086f24f939f2ad020d91b4a15",
+    "typing-extensions": "9d1637e264b5c1a6b7acee3e907015f89b20c2c9"
+  },
+  "packages": [
+    "autoconf",
+    "automake",
+    "bluez",
+    "build-essential",
+    "busybox",
+    "dbus",
+    "libdbus-1-dev",
+    "libglib2.0-dev",
+    "libtool",
+    "libudev-dev",
+    "linux-image-amd64",
+    "pkg-config",
+    "python3",
+    "python3-cryptography",
+    "python3-dbus",
+    "python3-pyee",
+    "python3-platformdirs",
+    "python3-typing-extensions",
+    "qemu-system-x86"
+  ],
+  "versions": {
+    "bluetoothd": "5.66",
+    "btvirt": "5.87",
+    "kernelPackage": "6.1.176-1",
+    "python": "3.11.2",
+    "qemu": "7.2.22",
+    "typingExtensions": "4.15.0"
+  }
+}

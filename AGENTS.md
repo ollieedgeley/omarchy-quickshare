@@ -79,6 +79,8 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make oracle-up` and `make oracle-down` measure lifecycle time; `make test-oracle-toolchain` tests the warm environment.
 - `make proxy-up` and `make proxy-down` measure proxy lifecycle time; `make test-proxy-toxiproxy` checks TCP cutoff and recovery in both directions.
 - `make dbus-up` and `make dbus-down` measure private-bus lifecycle; `make test-dbus-bluez` and `make test-dbus-networkmanager` check service templates through real clients.
+- `make lint-bluetooth-radio` checks the pinned real-radio definition; `make bluetooth-radio-provision` builds it outside test time.
+- `make bluetooth-radio-{up,down}` measures lifecycle; `make test-bluetooth-{controller,ble,classic}` checks isolated BlueZ radio paths.
 - `make network-up` and `make network-down` measure virtual-radio lifecycle; `make test-network-wmediumd` and `make test-network-netem` check 802.11 and UDP fault recovery.
 - `make test-network-lan`, `make test-network-hotspot-client`, and `make test-network-hotspot-owner` check real Wi-Fi association and bidirectional TCP paths.
 - `make test-network-wifi-direct-client` checks the supported Linux-client P2P role against a simulated remote group owner.

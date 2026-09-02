@@ -354,7 +354,9 @@ Two first-party projects cover different levels of the Bluetooth path.
 
 BlueZ includes the `btvirt` Bluetooth controller emulator and `hciemu` test library. Its [`test-runner`](https://github.com/bluez/bluez/blob/3a2d543c4c21d9c1dab246d46d76a11996a69bf2/doc/test-runner.rst) can boot a small QEMU guest, start D-Bus, `bluetoothd`, `btmon`, and `btvirt`, then run a test. BlueZ itself uses `hciemu` to test real kernel RFCOMM and L2CAP sockets in [`rfcomm-tester.c`](https://github.com/bluez/bluez/blob/3a2d543c4c21d9c1dab246d46d76a11996a69bf2/tools/rfcomm-tester.c) and [`l2cap-tester.c`](https://github.com/bluez/bluez/blob/3a2d543c4c21d9c1dab246d46d76a11996a69bf2/tools/l2cap-tester.c).
 
-Use this for a required pre-push child gate in a prepared local VM. Run the Rust daemon against a real `bluetoothd` connected to a virtual controller. A small scripted peer should assert:
+The prepared radio environment boots a pinned Debian kernel, D-Bus, real `bluetoothd`, and two pinned `btvirt` controllers inside a KVM guest. Keeping VHCI inside the guest prevents the host `bluetoothd` from claiming test controllers or disrupting a user's live Bluetooth devices. `make bluetooth-radio-up` and `make bluetooth-radio-down` measure lifecycle separately from test time.
+
+`make test-bluetooth-controller` checks both isolated controllers through BlueZ. `make test-bluetooth-ble` exchanges exact bytes in both directions between BlueZ D-Bus GATT and a pinned Bumble peer. `make test-bluetooth-classic` does the same through Linux RFCOMM and Bumble. When the Rust adapter exists, extend these gates to assert:
 
 - BLE advertisement registration and cleanup
 - scan and adapter-loss signals

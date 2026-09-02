@@ -161,6 +161,14 @@ license = "Apache-2.0"
 purpose = "Programmable BLE and Bluetooth Classic peer"
 
 [[source]]
+id = "typing-extensions"
+url = "https://github.com/python/typing_extensions/archive/9d1637e264b5c1a6b7acee3e907015f89b20c2c9.tar.gz"
+revision = "9d1637e264b5c1a6b7acee3e907015f89b20c2c9"
+sha256 = "727154c365bb7a630afe4c97906081e018cd3b8ed78248e2a625715cf99e9479"
+license = "PSF-2.0"
+purpose = "Pinned TypeIs runtime required by the Bumble reference peer"
+
+[[source]]
 id = "mobly"
 url = "https://github.com/google/mobly/archive/561991306680bc54061e15a2e32706cf9930f24d.tar.gz"
 revision = "561991306680bc54061e15a2e32706cf9930f24d"

@@ -11,9 +11,9 @@ PRETTIER ?= $(NODE_BIN)/prettier
 MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 
 .PHONY: help setup hooks-install sources-fetch oracle-provision oracle-reference-provision oracle-up oracle-down
-.PHONY: proxy-provision proxy-up proxy-down dbus-provision dbus-up dbus-down network-provision network-up network-down format format-check check lint-rust lint-ast lint-docs lint-structure lint-sources lint-oracle lint-proxies lint-dbus lint-network
+.PHONY: proxy-provision proxy-up proxy-down dbus-provision dbus-up dbus-down bluetooth-radio-provision bluetooth-radio-up bluetooth-radio-down network-provision network-up network-down format format-check check lint-rust lint-ast lint-docs lint-structure lint-sources lint-oracle lint-proxies lint-dbus lint-bluetooth-radio lint-network
 .PHONY: test test-rust test-tooling test-ast-rules test-source-cache test-oracle-toolchain test-oracle-reference
-.PHONY: test-oracle-bluetooth test-oracle-ble test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct test-proxy-toxiproxy test-dbus-bluez test-dbus-networkmanager test-network-wmediumd test-network-netem test-network-lan test-network-hotspot-client test-network-hotspot-owner test-network-wifi-direct-client verify build commit-msg
+.PHONY: test-oracle-bluetooth test-oracle-ble test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct test-proxy-toxiproxy test-dbus-bluez test-dbus-networkmanager test-bluetooth-controller test-bluetooth-ble test-bluetooth-classic test-network-wmediumd test-network-netem test-network-lan test-network-hotspot-client test-network-hotspot-owner test-network-wifi-direct-client verify build commit-msg
 .PHONY: pre-commit pre-commit-prepare pre-commit-structure pre-commit-format pre-commit-ast
 .PHONY: pre-commit-rust pre-commit-test pre-push
 
@@ -29,6 +29,7 @@ setup: ## Install pinned development tools and activate repository hooks.
 	@$(MAKE) oracle-reference-provision
 	@$(MAKE) proxy-provision
 	@$(MAKE) dbus-provision
+	@$(MAKE) bluetooth-radio-provision
 	@$(MAKE) network-provision
 
 hooks-install: ## Activate Husky and initialize the reusable staged CodeGraph mirror.
@@ -67,6 +68,15 @@ dbus-up: ## Start and readiness-check the private D-Bus environment.
 
 dbus-down: ## Stop the private D-Bus environment outside test time.
 	@node tests/environments/bluez/dbus-environment.mjs down
+
+bluetooth-radio-provision: ## Build the pinned BlueZ and Bumble radio image.
+	@node tests/environments/bluez/radio-environment.mjs provision
+
+bluetooth-radio-up: ## Boot the isolated KVM radio guest and report readiness time.
+	@node tests/environments/bluez/radio-environment.mjs up
+
+bluetooth-radio-down: ## Stop the isolated KVM radio guest and report teardown time.
+	@node tests/environments/bluez/radio-environment.mjs down
 
 network-provision: ## Build pinned Wi-Fi tools and deterministic wmediumd.
 	@node tests/environments/network/environment.mjs provision
@@ -112,6 +122,9 @@ lint-proxies: ## Validate pinned proxy environment inputs without starting it.
 
 lint-dbus: ## Validate pinned private D-Bus environment inputs.
 	@$(TIMEOUT) node tests/environments/bluez/dbus-environment.mjs validate
+
+lint-bluetooth-radio: ## Validate the pinned BlueZ and Bumble radio image.
+	@$(TIMEOUT) node tests/environments/bluez/radio-environment.mjs validate
 
 lint-network: ## Validate pinned virtual Wi-Fi environment inputs.
 	@$(TIMEOUT) node tests/environments/network/environment.mjs validate
@@ -167,6 +180,21 @@ test-dbus-networkmanager: ## Check the NetworkManager mock through real nmcli.
 		node tests/environments/bluez/dbus-environment.mjs up; \
 		$(TIMEOUT) node tests/environments/bluez/dbus-environment.mjs self-test networkmanager
 
+test-bluetooth-controller: ## Check two isolated virtual controllers through real BlueZ.
+	@trap 'node tests/environments/bluez/radio-environment.mjs down' EXIT; \
+		node tests/environments/bluez/radio-environment.mjs up; \
+		$(TIMEOUT) node tests/environments/bluez/radio-environment.mjs self-test controller
+
+test-bluetooth-ble: ## Exchange exact bytes both ways over virtual BLE GATT.
+	@trap 'node tests/environments/bluez/radio-environment.mjs down' EXIT; \
+		node tests/environments/bluez/radio-environment.mjs up; \
+		$(TIMEOUT) node tests/environments/bluez/radio-environment.mjs self-test ble
+
+test-bluetooth-classic: ## Exchange exact bytes both ways over virtual RFCOMM.
+	@trap 'node tests/environments/bluez/radio-environment.mjs down' EXIT; \
+		node tests/environments/bluez/radio-environment.mjs up; \
+		$(TIMEOUT) node tests/environments/bluez/radio-environment.mjs self-test classic
+
 test-network-wmediumd: ## Prove hwsim 802.11 delivery, isolation, and recovery.
 	@trap 'node tests/environments/network/environment.mjs down' EXIT; \
 		node tests/environments/network/environment.mjs up; \
@@ -199,7 +227,7 @@ test-network-wifi-direct-client: ## Join a simulated remote P2P group and transf
 
 test: test-rust test-tooling test-ast-rules ## Run all local tests.
 
-verify: format-check lint-docs lint-structure lint-sources lint-oracle lint-proxies lint-dbus lint-network check lint-rust lint-ast test test-source-cache test-oracle-toolchain test-oracle-reference test-oracle-bluetooth test-oracle-ble test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct test-proxy-toxiproxy test-dbus-bluez test-dbus-networkmanager test-network-wmediumd test-network-netem test-network-lan test-network-hotspot-client test-network-hotspot-owner test-network-wifi-direct-client ## Run the complete local quality suite.
+verify: format-check lint-docs lint-structure lint-sources lint-oracle lint-proxies lint-dbus lint-bluetooth-radio lint-network check lint-rust lint-ast test test-source-cache test-oracle-toolchain test-oracle-reference test-oracle-bluetooth test-oracle-ble test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct test-proxy-toxiproxy test-dbus-bluez test-dbus-networkmanager test-bluetooth-controller test-bluetooth-ble test-bluetooth-classic test-network-wmediumd test-network-netem test-network-lan test-network-hotspot-client test-network-hotspot-owner test-network-wifi-direct-client ## Run the complete local quality suite.
 
 build: ## Build the complete locked workspace after verification.
 	@$(TIMEOUT) cargo build --workspace --all-targets --all-features --locked

@@ -8,7 +8,6 @@ import {
   renameSync,
   rmSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -118,7 +117,9 @@ async function fetchSource(record) {
   mkdirSync(join(CACHE, "archives"), { recursive: true });
   const destination = archivePath(record);
   if (!existsSync(destination)) {
-    const temporary = mkdtempSync(join(tmpdir(), `quickshare-${record.id}-`));
+    const temporary = mkdtempSync(
+      join(CACHE, "archives", `.quickshare-${record.id}-`),
+    );
     const download = join(temporary, basename(destination));
     try {
       run("curl", [
