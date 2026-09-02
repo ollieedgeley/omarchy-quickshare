@@ -8,6 +8,8 @@ import { parseSources } from "../sources.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const MINIMUM_SOURCE_COUNT = 18;
+const MUTABLE_URL_PATTERN = /URL is not pinned/u;
+const DUPLICATE_SOURCE_PATTERN = /duplicate source id/u;
 
 test("source manifest pins every archive by revision and SHA-256", () => {
   const records = parseSources(
@@ -31,13 +33,13 @@ sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 license = "Apache-2.0"
 purpose = "Contract fixture"
 `;
-  assert.throws(() => parseSources(record), /URL is not pinned/u);
+  assert.throws(() => parseSources(record), MUTABLE_URL_PATTERN);
   const pinned = record.replace(
     "main.tar.gz",
     "0123456789abcdef0123456789abcdef01234567.tar.gz",
   );
   assert.throws(
     () => parseSources(`${pinned}\n${pinned.replace("schema = 1", "")}`),
-    /duplicate source id/u,
+    DUPLICATE_SOURCE_PATTERN,
   );
 });

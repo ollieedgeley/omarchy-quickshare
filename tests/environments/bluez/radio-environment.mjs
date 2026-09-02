@@ -33,6 +33,10 @@ const GUEST_RETRY_MS = 25;
 const STOP_TIMEOUT_MS = 10_000;
 const LIFECYCLE_TIMEOUT_MS = 60_000;
 const EXPECTED_CONTROLLER_COUNT = 2;
+const BASE_IMAGE_PATTERN = /^debian@sha256:[0-9a-f]{64}$/u;
+const SNAPSHOT_PATTERN = /^\d{8}T\d{6}Z$/u;
+const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
+const CONTROLLER_TRANSCRIPT_PATTERN = /^OUT Controller /gmu;
 const GUEST_KERNEL_ARGUMENTS =
   "console=ttyS0,115200 earlyprintk=serial root=oqs-root " +
   "rootfstype=9p rootflags=trans=virtio,version=9p2000.u ro " +
@@ -156,14 +160,14 @@ export function validateRadioEnvironment(manifestSource, dockerfile) {
   if (manifest.schema !== 1) {
     throw new Error("unsupported Bluetooth radio schema");
   }
-  if (!/^debian@sha256:[0-9a-f]{64}$/u.test(manifest.base)) {
+  if (!BASE_IMAGE_PATTERN.test(manifest.base)) {
     throw new Error("Bluetooth radio base must use a SHA-256 digest");
   }
-  if (!/^\d{8}T\d{6}Z$/u.test(manifest.debianSnapshot)) {
+  if (!SNAPSHOT_PATTERN.test(manifest.debianSnapshot)) {
     throw new Error("Bluetooth radio Debian snapshot must be timestamped");
   }
   for (const [name, revision] of Object.entries(manifest.sources)) {
-    if (!/^[0-9a-f]{40}$/u.test(revision)) {
+    if (!REVISION_PATTERN.test(revision)) {
       throw new Error(`${name} revision must be a full commit`);
     }
   }
@@ -478,7 +482,7 @@ function proveClassic(kind, result) {
 
 function proveControllers(kind, result) {
   const controllerCount =
-    result.transcript.match(/^OUT Controller /gmu)?.length ?? 0;
+    result.transcript.match(CONTROLLER_TRANSCRIPT_PATTERN)?.length ?? 0;
   if (controllerCount !== EXPECTED_CONTROLLER_COUNT) {
     preserveFailure(kind, result.transcript);
     throw new Error(`guest reported ${controllerCount} controllers`);

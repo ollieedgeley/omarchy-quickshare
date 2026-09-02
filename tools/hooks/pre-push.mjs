@@ -6,13 +6,14 @@ import { output, run } from "../gates/lib/process.mjs";
 
 const ROOT = output("git", ["rev-parse", "--show-toplevel"]);
 const ZERO = /^0+$/u;
+const WHITESPACE_PATTERN = /\s+/u;
 const FIELD_COUNT = 4;
 const SHORT_HASH_LENGTH = 12;
 
 export function pushedCommits(input, fallbackHead) {
   const commits = new Set();
   for (const line of input.trim().split("\n").filter(Boolean)) {
-    const fields = line.trim().split(/\s+/u);
+    const fields = line.trim().split(WHITESPACE_PATTERN);
     if (fields.length !== FIELD_COUNT) {
       throw new Error(`invalid pre-push input: ${line}`);
     }

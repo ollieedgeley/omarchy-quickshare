@@ -11,6 +11,10 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const DIRECTORY = join(ROOT, "tests", "environments", "proxies");
+const BASE_IMAGE_PATTERN = /^debian@sha256:/u;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
+const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
+const SHA256_ERROR_PATTERN = /SHA-256 digest/u;
 
 function inputs() {
   return {
@@ -22,11 +26,11 @@ function inputs() {
 test("proxy environment pins its image, snapshot, and source", () => {
   const { manifest, dockerfile } = inputs();
   const parsed = validateEnvironment(manifest, dockerfile);
-  assert.match(parsed.base, /^debian@sha256:/u);
+  assert.match(parsed.base, BASE_IMAGE_PATTERN);
   assert.equal(parsed.go.version, "1.27.1");
-  assert.match(parsed.go.sha256, /^[0-9a-f]{64}$/u);
-  assert.match(parsed.source.revision, /^[0-9a-f]{40}$/u);
-  assert.match(environmentFingerprint(manifest, dockerfile), /^[0-9a-f]{64}$/u);
+  assert.match(parsed.go.sha256, SHA256_PATTERN);
+  assert.match(parsed.source.revision, REVISION_PATTERN);
+  assert.match(environmentFingerprint(manifest, dockerfile), SHA256_PATTERN);
 });
 
 test("proxy environment rejects a mutable base image", () => {
@@ -37,6 +41,6 @@ test("proxy environment rejects a mutable base image", () => {
   });
   assert.throws(
     () => validateEnvironment(changed, dockerfile),
-    /SHA-256 digest/u,
+    SHA256_ERROR_PATTERN,
   );
 });

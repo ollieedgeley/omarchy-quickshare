@@ -6,6 +6,7 @@ import { output, run } from "./lib/process.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const MINIMUM_EXCEPTION_REASON_LENGTH = 20;
+const ALLOWED_RUSTC_LINT_PATTERN = /^\s+(?<lint>[a-z0-9-]+)\s+allow\s+/gmu;
 const exceptions = JSON.parse(
   readFileSync(join(ROOT, "tools/gates/clippy-exceptions.json"), "utf8"),
 );
@@ -47,15 +48,16 @@ if (!analyzerVersion.includes("1.98.0")) {
 
 const rustcHelp = output("rustc", ["-W", "help"], { cwd: ROOT });
 const allowedRustcLints = [
-  ...rustcHelp.matchAll(/^\s+(?<lint>[a-z0-9-]+)\s+allow\s+/gmu),
+  ...rustcHelp.matchAll(ALLOWED_RUSTC_LINT_PATTERN),
 ].map((match) => match.groups.lint);
 const cargoManifest = readFileSync(join(ROOT, "Cargo.toml"), "utf8");
 const missingRustcLints = allowedRustcLints.filter((lint) => {
   const manifestName = lint.replaceAll("-", "_");
-  const enabled = new RegExp(
+  const manifestPattern = new RegExp(
     `^${manifestName} = "(?:deny|forbid)"$`,
     "mu",
-  ).test(cargoManifest);
+  );
+  const enabled = manifestPattern.test(cargoManifest);
   return !enabled && !Object.hasOwn(rustcExceptions, lint);
 });
 if (missingRustcLints.length) {

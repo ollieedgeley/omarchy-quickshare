@@ -20,6 +20,8 @@ const RUN_STAGED = join(ROOT, "tools", "hooks", "run-staged.mjs");
 const CODEGRAPH =
   process.env.CODEGRAPH ?? join(ROOT, "node_modules", ".bin", "codegraph");
 const EXECUTABLE_MODE = 0o755;
+const HOOK_SETUP_PATTERN = /make hooks-install/u;
+const PARTIAL_STAGING_PATTERN = /staged and unstaged changes/u;
 
 function runWithOptions(command, args, options) {
   const { cwd, extraEnvironment = {} } = options;
@@ -92,7 +94,7 @@ test("staged mirror uses index bytes and reuses its CodeGraph database", () => {
       env: { ...process.env, CODEGRAPH },
     });
     assert.notEqual(missing.status, 0);
-    assert.match(`${missing.stdout}${missing.stderr}`, /make hooks-install/u);
+    assert.match(`${missing.stdout}${missing.stderr}`, HOOK_SETUP_PATTERN);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -110,10 +112,7 @@ test("staged mirror rejects partially staged Rust files", () => {
       env: { ...process.env, CODEGRAPH },
     });
     assert.notEqual(result.status, 0);
-    assert.match(
-      `${result.stdout}${result.stderr}`,
-      /staged and unstaged changes/u,
-    );
+    assert.match(`${result.stdout}${result.stderr}`, PARTIAL_STAGING_PATTERN);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

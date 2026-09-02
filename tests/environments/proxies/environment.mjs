@@ -31,6 +31,12 @@ const PROCESS_POLL_DELAY_MS = 25;
 const LIFECYCLE_TIMEOUT_MS = 60_000;
 const TRANSFER_TIMEOUT_MS = 5_000;
 const CUTOFF_BYTES = 7;
+const BASE_IMAGE_PATTERN = /^debian@sha256:[0-9a-f]{64}$/u;
+const SNAPSHOT_PATTERN = /^\d{8}T\d{6}Z$/u;
+const VERSION_PATTERN = /^\d+\.\d+\.\d+$/u;
+const GO_DOWNLOAD_PATTERN = /^https:\/\/go\.dev\/dl\//u;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
+const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
 
 function runOptions(options) {
   const result = {
@@ -75,22 +81,22 @@ export function validateEnvironment(manifestSource, dockerfile) {
   if (manifest.schema !== 1) {
     throw new Error("unsupported proxy schema");
   }
-  if (!/^debian@sha256:[0-9a-f]{64}$/u.test(manifest.base)) {
+  if (!BASE_IMAGE_PATTERN.test(manifest.base)) {
     throw new Error("proxy base image must use a SHA-256 digest");
   }
-  if (!/^\d{8}T\d{6}Z$/u.test(manifest.debianSnapshot)) {
+  if (!SNAPSHOT_PATTERN.test(manifest.debianSnapshot)) {
     throw new Error("proxy Debian snapshot must be timestamped");
   }
-  if (!/^\d+\.\d+\.\d+$/u.test(manifest.go.version)) {
+  if (!VERSION_PATTERN.test(manifest.go.version)) {
     throw new Error("proxy Go toolchain must use an exact version");
   }
-  if (!/^https:\/\/go\.dev\/dl\//u.test(manifest.go.url)) {
+  if (!GO_DOWNLOAD_PATTERN.test(manifest.go.url)) {
     throw new Error("proxy Go toolchain must use the official download host");
   }
-  if (!/^[0-9a-f]{64}$/u.test(manifest.go.sha256)) {
+  if (!SHA256_PATTERN.test(manifest.go.sha256)) {
     throw new Error("proxy Go toolchain must include a SHA-256 digest");
   }
-  if (!/^[0-9a-f]{40}$/u.test(manifest.source.revision)) {
+  if (!REVISION_PATTERN.test(manifest.source.revision)) {
     throw new Error("Toxiproxy revision must be a full commit");
   }
   for (const value of [

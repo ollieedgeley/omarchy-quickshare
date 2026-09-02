@@ -18,6 +18,11 @@ const CARGO_SELECTION_TEST =
   "Cargo selection includes owners and transitive downstream packages";
 const PRE_PUSH_ENVIRONMENT_TEST =
   "pre-push shares only the prepared test environment with exact worktrees";
+const CONVENTIONAL_COMMIT_PATTERN = /Conventional Commits/u;
+const SUBJECT_LENGTH_PATTERN = /72 characters/u;
+const AST_GREP_ENV_PATTERN = /AST_GREP: join\(nodeBin, "ast-grep"\)/u;
+const TEST_ENV_PATTERN = /TEST_ENV_CACHE: join\(ROOT, "\.cache", "test-env"\)/u;
+const BROAD_CACHE_PATTERN = /TEST_ENV_CACHE: join\(ROOT, "\.cache"\)/u;
 
 function cargoPackage(id, name, manifestPath) {
   return Object.fromEntries([
@@ -41,16 +46,16 @@ test("Conventional Commit validation accepts the project types", () => {
 test(MALFORMED_COMMIT_TEST, () => {
   assert.match(
     validateCommitMessage("setup hooks") ?? "",
-    /Conventional Commits/u,
+    CONVENTIONAL_COMMIT_PATTERN,
   );
   assert.match(
     validateCommitMessage("build: install hooks.") ?? "",
-    /Conventional Commits/u,
+    CONVENTIONAL_COMMIT_PATTERN,
   );
   assert.match(
     validateCommitMessage(`build: ${"a".repeat(OVERLONG_SUBJECT_LENGTH)}`) ??
       "",
-    /72 characters/u,
+    SUBJECT_LENGTH_PATTERN,
   );
 });
 
@@ -126,7 +131,7 @@ test(PRE_PUSH_ENVIRONMENT_TEST, () => {
     join(ROOT, "tools", "hooks", "pre-push.mjs"),
     "utf8",
   );
-  assert.match(source, /AST_GREP: join\(nodeBin, "ast-grep"\)/u);
-  assert.match(source, /TEST_ENV_CACHE: join\(ROOT, "\.cache", "test-env"\)/u);
-  assert.doesNotMatch(source, /TEST_ENV_CACHE: join\(ROOT, "\.cache"\)/u);
+  assert.match(source, AST_GREP_ENV_PATTERN);
+  assert.match(source, TEST_ENV_PATTERN);
+  assert.doesNotMatch(source, BROAD_CACHE_PATTERN);
 });

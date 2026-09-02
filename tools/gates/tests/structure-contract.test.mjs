@@ -18,6 +18,8 @@ const TEST_LINE_LIMIT = 800;
 const CODE_LINE_LIMIT = 80;
 const FUNCTION_LINE_LIMIT = 50;
 const OVER_LIMIT_FUNCTION_LINES = FUNCTION_LINE_LIMIT + 1;
+const LONG_LINE_FAILURE_PATTERN = /fixture\.mjs:1: 81 columns \(limit 80\)/u;
+const MISSING_PYTHON_PATTERN = /missing\.py/u;
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const AST_GREP =
   process.env.AST_GREP ?? join(ROOT, "node_modules", ".bin", "ast-grep");
@@ -144,7 +146,7 @@ test("code lines have an 80-column physical limit", () => {
   );
   assert.match(
     codeLineFailures("fixture.mjs", "x".repeat(CODE_LINE_LIMIT + 1))[0],
-    /fixture\.mjs:1: 81 columns \(limit 80\)/u,
+    LONG_LINE_FAILURE_PATTERN,
   );
 });
 
@@ -259,7 +261,7 @@ test("function scans reject missing parser inputs", () => {
           astGrep: AST_GREP,
           root: directory,
         }),
-      /missing\.py/u,
+      MISSING_PYTHON_PATTERN,
     );
   } finally {
     rmSync(directory, { force: true, recursive: true });

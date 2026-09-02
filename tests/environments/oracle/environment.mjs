@@ -34,6 +34,13 @@ const START_GOAL_MS = 30_000;
 const REFERENCE_TARGET_COUNT = 3;
 const REFERENCE_LOCK_VERSION = 28;
 const EXECUTABLE_MODE = 0o755;
+const IMAGE_TAG_PATTERN = /^[a-z0-9./-]+:\d{4}-\d{2}-\d{2}$/u;
+const BASE_IMAGE_PATTERN = /^debian@sha256:[0-9a-f]{64}$/u;
+const SNAPSHOT_PATTERN = /^20\d{6}T000000Z$/u;
+const VERSION_PATTERN = /^\d+\.\d+\.\d+$/u;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
+const LOCK_FILE_PATTERN = /^[a-z0-9-]+\.json\.gz$/u;
+const LINE_CONTINUATION_PATTERN = /\\\n/gu;
 
 function digest(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -55,16 +62,16 @@ function validateImagePins(manifest) {
   if (manifest.schema !== 1) {
     throw new Error("unsupported oracle schema");
   }
-  if (!/^[a-z0-9./-]+:[0-9]{4}-[0-9]{2}-[0-9]{2}$/u.test(manifest.image)) {
+  if (!IMAGE_TAG_PATTERN.test(manifest.image)) {
     throw new Error("oracle image must use a dated immutable tag");
   }
-  if (!/^debian@sha256:[0-9a-f]{64}$/u.test(manifest.base)) {
+  if (!BASE_IMAGE_PATTERN.test(manifest.base)) {
     throw new Error("oracle base image must use a SHA-256 digest");
   }
-  if (!/^20[0-9]{6}T000000Z$/u.test(manifest.debianSnapshot)) {
+  if (!SNAPSHOT_PATTERN.test(manifest.debianSnapshot)) {
     throw new Error("oracle Debian snapshot must identify a UTC day");
   }
-  if (!/^[0-9]+\.[0-9]+\.[0-9]+$/u.test(manifest.bazel?.version)) {
+  if (!VERSION_PATTERN.test(manifest.bazel?.version)) {
     throw new Error("oracle Bazel version must be exact");
   }
   if (
@@ -73,15 +80,15 @@ function validateImagePins(manifest) {
   ) {
     throw new Error("oracle Bazel URL does not match its version");
   }
-  if (!/^[0-9a-f]{64}$/u.test(manifest.bazel.sha256)) {
+  if (!SHA256_PATTERN.test(manifest.bazel.sha256)) {
     throw new Error("oracle Bazel binary must have a SHA-256");
   }
 }
 
 function validateReferenceDefinition(manifest) {
   if (
-    !/^[a-z0-9-]+\.json\.gz$/u.test(manifest.reference?.lockFile) ||
-    !/^[0-9a-f]{64}$/u.test(manifest.reference?.lockSha256)
+    !LOCK_FILE_PATTERN.test(manifest.reference?.lockFile) ||
+    !SHA256_PATTERN.test(manifest.reference?.lockSha256)
   ) {
     throw new Error("oracle reference lock must be a hashed gzip file");
   }
@@ -118,7 +125,7 @@ function validatePackages(manifest) {
 
 function validateDockerfile(manifest, dockerfileSource) {
   const fingerprintVariable = "ENVIRONMENT_FINGERPRINT";
-  const logicalSource = dockerfileSource.replace(/\\\n/gu, "");
+  const logicalSource = dockerfileSource.replace(LINE_CONTINUATION_PATTERN, "");
   const requiredFragments = [
     `ARG BASE_IMAGE=${manifest.base}`,
     ["FROM $", "{BASE_IMAGE}"].join(""),

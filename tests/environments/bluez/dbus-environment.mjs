@@ -11,6 +11,10 @@ const SOURCE = join(CACHE, "sources", "trees", "python-dbusmock");
 const MANIFEST_PATH = join(DIRECTORY, "dbus-environment.json");
 const DOCKERFILE_PATH = join(DIRECTORY, "Dockerfile.dbus");
 const LIFECYCLE_TIMEOUT_MS = 60_000;
+const BASE_IMAGE_PATTERN = /^debian@sha256:[0-9a-f]{64}$/u;
+const SNAPSHOT_PATTERN = /^\d{8}T\d{6}Z$/u;
+const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
+const VERSION_PATTERN = /^\d+\.\d+(?:\.\d+)?$/u;
 
 function runOptions(options) {
   const result = {
@@ -50,20 +54,20 @@ export function validateEnvironment(manifestSource, dockerfile) {
   if (manifest.schema !== 1) {
     throw new Error("unsupported D-Bus schema");
   }
-  if (!/^debian@sha256:[0-9a-f]{64}$/u.test(manifest.base)) {
+  if (!BASE_IMAGE_PATTERN.test(manifest.base)) {
     throw new Error("D-Bus base image must use a SHA-256 digest");
   }
-  if (!/^\d{8}T\d{6}Z$/u.test(manifest.debianSnapshot)) {
+  if (!SNAPSHOT_PATTERN.test(manifest.debianSnapshot)) {
     throw new Error("D-Bus Debian snapshot must be timestamped");
   }
-  if (!/^[0-9a-f]{40}$/u.test(manifest.source.revision)) {
+  if (!REVISION_PATTERN.test(manifest.source.revision)) {
     throw new Error("python-dbusmock revision must be a full commit");
   }
   if (new Set(manifest.clients).size !== manifest.clients.length) {
     throw new Error("D-Bus client list contains duplicates");
   }
   for (const client of [...manifest.clients, "python"]) {
-    if (!/^\d+\.\d+(?:\.\d+)?$/u.test(manifest.versions[client])) {
+    if (!VERSION_PATTERN.test(manifest.versions[client])) {
       throw new Error(`D-Bus client ${client} needs an exact version`);
     }
   }

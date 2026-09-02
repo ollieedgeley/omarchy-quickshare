@@ -1,6 +1,7 @@
 import js from "@eslint/js";
 import stylistic from "@stylistic/eslint-plugin";
 import { defineConfig, globalIgnores } from "eslint/config";
+import regexp from "eslint-plugin-regexp";
 import globals from "globals";
 
 const APPLICATION_FILE_LIMIT = 500;
@@ -10,6 +11,29 @@ const MAXIMUM_LINE_LENGTH = 80;
 const MAXIMUM_STATEMENTS = 40;
 const TEST_FILE_LIMIT = 800;
 const TEST_MAXIMUM_STATEMENTS = 60;
+const regexpRules = Object.fromEntries(
+  Object.entries(regexp.configs["flat/recommended"].rules)
+    .filter(([, severity]) => severity !== "off")
+    .map(([name]) => [name, "error"]),
+);
+const regexNamingRestrictions = [
+  {
+    message: "Assign this regular expression to a named variable.",
+    selector: "Literal[regex]:not(VariableDeclarator > Literal[regex])",
+  },
+  {
+    message: "Assign this RegExp construction to a named variable.",
+    selector:
+      "CallExpression[callee.name='RegExp']:not(" +
+      "VariableDeclarator > CallExpression[callee.name='RegExp'])",
+  },
+  {
+    message: "Assign this RegExp construction to a named variable.",
+    selector:
+      "NewExpression[callee.name='RegExp']:not(" +
+      "VariableDeclarator > NewExpression[callee.name='RegExp'])",
+  },
+];
 const javascriptFiles = ["**/*.js", "**/*.mjs", "**/*.cjs"];
 const testFiles = [
   "tests/**/*.js",
@@ -43,8 +67,9 @@ export default defineConfig([
       reportUnusedInlineConfigs: "error",
     },
     name: "omarchy-quickshare/all-core-javascript-rules",
-    plugins: { "@stylistic": stylistic, js },
+    plugins: { "@stylistic": stylistic, js, regexp },
     rules: {
+      ...regexpRules,
       "@stylistic/max-len": [
         "error",
         { code: MAXIMUM_LINE_LENGTH, comments: MAXIMUM_LINE_LENGTH },
@@ -78,6 +103,7 @@ export default defineConfig([
           ignoreDefaultValues: true,
         },
       ],
+      "no-restricted-syntax": ["error", ...regexNamingRestrictions],
       "one-var": ["error", "never"],
       "sort-imports": [
         "error",

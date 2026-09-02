@@ -11,6 +11,8 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const DIRECTORY = join(ROOT, "tests", "environments", "bluez");
+const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
+const FULL_COMMIT_PATTERN = /full commit/u;
 
 function inputs() {
   return {
@@ -29,7 +31,7 @@ test("D-Bus environment pins its source and real service clients", () => {
     python: "3.11.2",
   });
   assert.deepEqual(parsed.templates, ["bluez5", "networkmanager"]);
-  assert.match(environmentFingerprint(manifest, dockerfile), /^[0-9a-f]{64}$/u);
+  assert.match(environmentFingerprint(manifest, dockerfile), SHA256_PATTERN);
 });
 
 test("D-Bus environment rejects a shortened source revision", () => {
@@ -38,5 +40,8 @@ test("D-Bus environment rejects a shortened source revision", () => {
     ...JSON.parse(manifest),
     source: { id: "python-dbusmock", revision: "45885bf" },
   });
-  assert.throws(() => validateEnvironment(changed, dockerfile), /full commit/u);
+  assert.throws(
+    () => validateEnvironment(changed, dockerfile),
+    FULL_COMMIT_PATTERN,
+  );
 });

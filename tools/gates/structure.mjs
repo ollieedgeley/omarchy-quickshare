@@ -49,6 +49,11 @@ const BUILD_EXTENSION = /\.(?:bazel|bzl|dockerfile)$/u;
 const BUILD_FILE =
   /(?:^|\/)(?:BUILD(?:\.bazel)?|Dockerfile(?:\.[^/]+)?|MODULE\.bazel)$/u;
 const BASH_SHEBANG = /^#!.*(?:\/|\s)bash(?:\s|$)/u;
+const LINE_BREAK_PATTERN = /\n/gu;
+const TEST_FILE_PATTERN = /(?:^|\.)test\.[^.]+$/u;
+const PYTHON_EXTENSION_PATTERN = /\.pyi?$/u;
+const CPP_EXTENSION_PATTERN = /\.(?:cc|cpp|cxx|h|hh|hpp|hxx|inl|ipp)$/u;
+const KOTLIN_EXTENSION_PATTERN = /\.kts?$/u;
 const FUNCTION_KINDS = new Map([
   ["bash", ["function_definition"]],
   ["c", ["function_definition"]],
@@ -95,7 +100,7 @@ function physicalLines(path) {
   if (!source) {
     return 0;
   }
-  const lineBreaks = source.match(/\n/gu)?.length ?? 0;
+  const lineBreaks = source.match(LINE_BREAK_PATTERN)?.length ?? 0;
   let finalLine = 1;
   if (source.endsWith("\n")) {
     finalLine = 0;
@@ -107,7 +112,7 @@ export function lineLimit(path) {
   const isTest =
     path.startsWith("tests/") ||
     path.includes("/tests/") ||
-    /(?:^|\.)test\.[^.]+$/u.test(path);
+    TEST_FILE_PATTERN.test(path);
   if (isTest) {
     return TEST_LINE_LIMIT;
   }
@@ -167,19 +172,19 @@ function functionLanguage(path, source) {
   if (isBashFile(path, source)) {
     return "bash";
   }
-  if (/\.pyi?$/u.test(path)) {
+  if (PYTHON_EXTENSION_PATTERN.test(path)) {
     return "python";
   }
   if (path.endsWith(".c")) {
     return "c";
   }
-  if (/\.(?:cc|cpp|cxx|h|hh|hpp|hxx|inl|ipp)$/u.test(path)) {
+  if (CPP_EXTENSION_PATTERN.test(path)) {
     return "cpp";
   }
   if (path.endsWith(".java")) {
     return "java";
   }
-  if (/\.kts?$/u.test(path)) {
+  if (KOTLIN_EXTENSION_PATTERN.test(path)) {
     return "kotlin";
   }
   if (path.endsWith(".qml")) {

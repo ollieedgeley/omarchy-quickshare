@@ -14,6 +14,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const DIRECTORY = join(ROOT, "tests", "environments", "oracle");
 const EXPECTED_FINGERPRINT =
   "1fdde58717bb5c17b54c16c4176ab5445194181296a1eee32c795bc9be943afa";
+const BASE_IMAGE_PATTERN = /^debian@sha256:/u;
+const SHA256_MISMATCH_PATTERN = /SHA-256 mismatch/u;
+const DOCKERFILE_DRIFT_PATTERN = /Dockerfile lacks manifest value/u;
 
 function inputs() {
   return {
@@ -26,7 +29,7 @@ test("oracle environment pins every reproducibility input", () => {
   const { manifest, dockerfile } = inputs();
   const parsed = validateEnvironment(manifest, dockerfile);
   assert.equal(parsed.bazel.version, "9.2.0");
-  assert.match(parsed.base, /^debian@sha256:/u);
+  assert.match(parsed.base, BASE_IMAGE_PATTERN);
   assert.deepEqual(parsed.reference.sources, [
     "google-nearby",
     "google-ukey2",
@@ -55,7 +58,7 @@ test("oracle environment rejects a changed reference lock", () => {
   const parsed = validateEnvironment(manifest, dockerfile);
   assert.throws(
     () => validateReferenceLock(parsed, Buffer.from("not the lock")),
-    /SHA-256 mismatch/u,
+    SHA256_MISMATCH_PATTERN,
   );
 });
 
@@ -67,6 +70,6 @@ test("oracle environment rejects drift between manifest and Dockerfile", () => {
   });
   assert.throws(
     () => validateEnvironment(changed, dockerfile),
-    /Dockerfile lacks manifest value/u,
+    DOCKERFILE_DRIFT_PATTERN,
   );
 });

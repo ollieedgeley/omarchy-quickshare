@@ -12,6 +12,12 @@ if (!existsSync(metadataPath)) {
 }
 const staged = JSON.parse(readFileSync(metadataPath, "utf8"));
 const currentTree = output("git", ["write-tree"], { cwd: ROOT });
+const JAVASCRIPT_EXTENSION_PATTERN = /\.(?:c|m)?js$/u;
+const FORMATTED_EXTENSION_PATTERN =
+  /(?:\.(?:c|m)?js|\.json|\.jsonc|\.md|\.ya?ml)$/u;
+const CARGO_MANIFEST_PATTERN = /(?:^|\/)Cargo\.(?:lock|toml)$/u;
+const SHARED_RUST_INPUT_PATTERN =
+  /(?:^|\/)(?:build\.rs|Cargo\.(?:lock|toml)|rust-toolchain\.toml)$/u;
 if (currentTree !== staged.tree) {
   throw new Error("the Git index changed; rerun `make pre-commit-prepare`");
 }
@@ -25,14 +31,16 @@ const existing = [
 ];
 const rustFiles = existing.filter((path) => path.endsWith(".rs"));
 const markdownFiles = existing.filter((path) => path.endsWith(".md"));
-const javascriptFiles = existing.filter((path) => /\.(?:c|m)?js$/u.test(path));
+const javascriptFiles = existing.filter((path) =>
+  JAVASCRIPT_EXTENSION_PATTERN.test(path),
+);
 const formattedFiles = existing.filter((path) =>
-  /(?:\.(?:c|m)?js|\.md|\.json|\.jsonc|\.ya?ml)$/u.test(path),
+  FORMATTED_EXTENSION_PATTERN.test(path),
 );
 const rustInputs = paths.filter(
   (path) =>
     path.endsWith(".rs") ||
-    /(?:^|\/)Cargo\.(?:toml|lock)$/u.test(path) ||
+    CARGO_MANIFEST_PATTERN.test(path) ||
     ["clippy.toml", "rust-toolchain.toml", "rustfmt.toml"].includes(path),
 );
 const nodeBin = process.env.NODE_BIN ?? join(ROOT, "node_modules", ".bin");
@@ -204,9 +212,7 @@ function workspacePackages(cargo) {
 
 function selectPackages(cargo, graph) {
   const sharedInput = paths.some((path) =>
-    /(?:^|\/)(?:Cargo\.(?:toml|lock)|rust-toolchain\.toml|build\.rs)$/u.test(
-      path,
-    ),
+    SHARED_RUST_INPUT_PATTERN.test(path),
   );
   if (sharedInput) {
     return workspacePackages(cargo);

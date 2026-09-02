@@ -20,9 +20,15 @@ const CACHE = resolve(
   "sources",
 );
 const REQUIRED_KEYS = ["id", "url", "revision", "sha256", "license", "purpose"];
+const MANIFEST_VALUE_PATTERN = /^(?<key>[a-z0-9_]+) = "(?<value>[^"\n]*)"$/u;
+const SOURCE_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const HTTPS_PATTERN = /^https:\/\//u;
+const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
+const SCHEMA_PATTERN = /^schema = (?<schema>\d+)$/u;
 
 function stringValue(line, lineNumber) {
-  const match = line.match(/^(?<key>[a-z0-9_]+) = "(?<value>[^"\n]*)"$/u);
+  const match = line.match(MANIFEST_VALUE_PATTERN);
   if (!match) {
     throw new Error(`invalid source manifest line ${lineNumber}`);
   }
@@ -37,7 +43,7 @@ export function validateSources(records) {
         throw new Error(`source ${record.id ?? "<unknown>"} lacks ${key}`);
       }
     }
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(record.id)) {
+    if (!SOURCE_ID_PATTERN.test(record.id)) {
       throw new Error(`invalid source id ${record.id}`);
     }
     if (ids.has(record.id)) {
@@ -45,15 +51,15 @@ export function validateSources(records) {
     }
     ids.add(record.id);
     if (
-      !/^https:\/\//u.test(record.url) ||
+      !HTTPS_PATTERN.test(record.url) ||
       !record.url.includes(record.revision)
     ) {
       throw new Error(`source ${record.id} URL is not pinned to its revision`);
     }
-    if (!/^[0-9a-f]{40}$/u.test(record.revision)) {
+    if (!REVISION_PATTERN.test(record.revision)) {
       throw new Error(`source ${record.id} has an invalid revision`);
     }
-    if (!/^[0-9a-f]{64}$/u.test(record.sha256)) {
+    if (!SHA256_PATTERN.test(record.sha256)) {
       throw new Error(`source ${record.id} has an invalid SHA-256`);
     }
   }
@@ -81,7 +87,7 @@ export function parseSources(source) {
         }
         current[key] = value;
       } else {
-        const match = line.match(/^schema = (?<schema>[0-9]+)$/u);
+        const match = line.match(SCHEMA_PATTERN);
         if (!match || schema !== null) {
           throw new Error(`invalid source manifest line ${index + 1}`);
         }

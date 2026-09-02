@@ -12,6 +12,9 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const DIRECTORY = join(ROOT, "tests", "environments", "network");
 const EXPECTED_RADIO_COUNT = 3;
+const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
+const SHA256_ERROR_PATTERN = /SHA-256 digest/u;
 
 function inputs() {
   return {
@@ -25,8 +28,8 @@ test("network environment pins radio tools and enough virtual radios", () => {
   const parsed = validateEnvironment(manifest, dockerfile);
   assert.equal(parsed.kernelModule, "mac80211_hwsim");
   assert.equal(parsed.radios, EXPECTED_RADIO_COUNT);
-  assert.match(parsed.source.revision, /^[0-9a-f]{40}$/u);
-  assert.match(environmentFingerprint(manifest, dockerfile), /^[0-9a-f]{64}$/u);
+  assert.match(parsed.source.revision, REVISION_PATTERN);
+  assert.match(environmentFingerprint(manifest, dockerfile), SHA256_PATTERN);
 });
 
 test("network environment rejects a mutable base", () => {
@@ -37,6 +40,6 @@ test("network environment rejects a mutable base", () => {
   });
   assert.throws(
     () => validateEnvironment(changed, dockerfile),
-    /SHA-256 digest/u,
+    SHA256_ERROR_PATTERN,
   );
 });

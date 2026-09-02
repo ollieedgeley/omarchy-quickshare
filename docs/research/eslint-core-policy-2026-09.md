@@ -8,6 +8,8 @@ Pin ESLint, `@eslint/js`, and the Node globals catalogue in the development mani
 
 Keep Prettier as the single JavaScript formatter. ESLint owns semantic and structural policy; it does not duplicate deprecated formatting rules. Full checks are divided into application and tooling aggregates. Staged checks select by file type, while `make verify` remains the authoritative complete suite.
 
+Use the maintained `eslint-plugin-regexp` recommended configuration for regular-expression correctness and promote every enabled diagnostic to an error. Regular expressions must be assigned to descriptive variables before use. The plugin does not provide that naming rule, so enforce the shape with ESLint's declarative `no-restricted-syntax` selectors rather than project-owned lint code. Exact rules and selector details belong in the executable configuration and its contract test. [`eslint-plugin-regexp` user guide](https://ota-meshi.github.io/eslint-plugin-regexp/user-guide/), [ESLint syntax selectors](https://eslint.org/docs/latest/extend/selectors)
+
 The former ESLint core `max-len` rule is deprecated. Use the pinned ESLint Stylistic replacement for the repository's line-length policy. [ESLint Stylistic `max-len`](https://eslint.style/rules/max-len), [ESLint Stylistic installation](https://eslint.style/rules)
 
 ## Evidence

@@ -19,6 +19,10 @@ const LIFECYCLE_TIMEOUT_MS = 60_000;
 const MEDIUM_POLL_ATTEMPTS = 50;
 const MEDIUM_POLL_DELAY_MS = 20;
 const WAIT_BUFFER_BYTES = 4;
+const BASE_IMAGE_PATTERN = /^debian@sha256:[0-9a-f]{64}$/u;
+const SNAPSHOT_PATTERN = /^\d{8}T\d{6}Z$/u;
+const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
+const VERSION_PATTERN = /^\d+\.\d+(?:\.\d+)?$/u;
 
 function runOptions(options) {
   const result = {
@@ -66,20 +70,20 @@ export function validateEnvironment(manifestSource, dockerfile) {
   if (manifest.schema !== 1) {
     throw new Error("unsupported network schema");
   }
-  if (!/^debian@sha256:[0-9a-f]{64}$/u.test(manifest.base)) {
+  if (!BASE_IMAGE_PATTERN.test(manifest.base)) {
     throw new Error("network base image must use a SHA-256 digest");
   }
-  if (!/^\d{8}T\d{6}Z$/u.test(manifest.debianSnapshot)) {
+  if (!SNAPSHOT_PATTERN.test(manifest.debianSnapshot)) {
     throw new Error("network Debian snapshot must be timestamped");
   }
-  if (!/^[0-9a-f]{40}$/u.test(manifest.source.revision)) {
+  if (!REVISION_PATTERN.test(manifest.source.revision)) {
     throw new Error("wmediumd revision must be a full commit");
   }
   if (!Number.isInteger(manifest.radios) || manifest.radios < 2) {
     throw new Error("network environment requires at least two radios");
   }
   for (const version of Object.values(manifest.clients)) {
-    if (!/^\d+\.\d+(?:\.\d+)?$/u.test(version)) {
+    if (!VERSION_PATTERN.test(version)) {
       throw new Error("network clients need exact versions");
     }
   }
