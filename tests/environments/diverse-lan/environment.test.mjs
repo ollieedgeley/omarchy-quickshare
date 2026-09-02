@@ -29,6 +29,10 @@ const INVALID_SHA256_PATTERN = /invalid SHA-256/u;
 const GOOGLE_TO_NEARSHARE_PATTERN = /"google-to-nearshare"/u;
 const NEARSHARE_TO_GOOGLE_PATTERN = /"nearshare-to-google"/u;
 const REPEATED_RUN_PATTERN = /repeatedGoogleToNearshare/u;
+const RECEIVER_READY_PATTERN =
+  /await waitForReceiver\(receiver, googleSends\)/u;
+const FIXED_RECEIVER_DELAY_PATTERN =
+  /await delay\(RECEIVER_START_DELAY_MS\);\n\s{2}const sender/u;
 const PIN_EVIDENCE_PATTERN = /pins\.length < 2/u;
 const PIN_MATCH_PATTERN = /new Set\(pins\)\.size !== 1/u;
 const SHA256_DIGEST_LENGTH = 64;
@@ -129,4 +133,6 @@ test("interop gate covers both roles and a clean repeated control", () => {
   assert.match(environment, PIN_EVIDENCE_PATTERN);
   assert.match(environment, PIN_MATCH_PATTERN);
   assert.match(environment, SHA256_MISMATCH_PATTERN);
+  assert.match(environment, RECEIVER_READY_PATTERN);
+  assert.doesNotMatch(environment, FIXED_RECEIVER_DELAY_PATTERN);
 });
