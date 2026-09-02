@@ -431,9 +431,10 @@ function fakeContext() {
 
 function transferLog({ bytes, status, token = "1234", transferred = bytes }) {
   return [
+    `QS_EVENT event=paired-key-token token_fingerprint=${token}`,
     "QS_EVENT event=transfer status=" +
       `${status} target_id=1 progress=100 transferred_bytes=${transferred} ` +
-      `total_bytes=${bytes} token=${token}`,
+      `total_bytes=${bytes}`,
     "ENCRYPTED_WIFI_LAN",
   ].join("\n");
 }
@@ -714,12 +715,9 @@ test(SHARING_TRANSFER_TEST, async (context) => {
     assert.ok(
       fake.calls.every(
         ({ variables }) =>
-          variables.XDG_CONFIG_HOME === "/run/quickshare/config",
-      ),
-    );
-    assert.ok(
-      fake.calls.every(
-        ({ variables }) => variables.XDG_STATE_HOME === "/run/quickshare/state",
+          variables.XDG_CONFIG_HOME === "/run/quickshare/config" &&
+          variables.XDG_STATE_HOME === "/run/quickshare/state" &&
+          variables.QUICKSHARE_PIN_SALT === "nearby-linux-sharing-self-test",
       ),
     );
   } finally {

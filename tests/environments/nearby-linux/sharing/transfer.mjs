@@ -8,6 +8,7 @@ const EVENT_PATTERN = /^QS_EVENT (?<fields>.+)$/mu;
 const RECEIVER_WAIT_MS = 2_000;
 const TRANSFER_TIMEOUT_MS = 20_000;
 const TRANSFER_COMPLETE_PERCENT = 100;
+const PIN_SALT = "nearby-linux-sharing-self-test";
 const WIFI_LAN_CHANNEL = "ENCRYPTED_WIFI_LAN";
 
 function digest(path) {
@@ -36,9 +37,12 @@ export function parseEvents(log) {
 }
 
 function transferFacts(log) {
-  const events = parseEvents(log).filter(({ event }) => event === "transfer");
+  const allEvents = parseEvents(log);
+  const events = allEvents.filter(({ event }) => event === "transfer");
   const completed = events.some(({ status }) => status === "kComplete");
-  const token = events.find((event) => event.token)?.token;
+  const token = allEvents.find(
+    (event) => event.token_fingerprint,
+  )?.token_fingerprint;
   const progress = Math.max(
     ...events.map((event) => Number(event.progress ?? 0)),
   );
@@ -46,7 +50,16 @@ function transferFacts(log) {
     ...events.map((event) => Number(event.total_bytes ?? 0)),
   );
   if (!completed || !token || !Number.isFinite(total)) {
-    throw new Error("Nearby Sharing completion evidence is incomplete");
+    const facts = [
+      `complete=${completed}`,
+      `token=${Boolean(token)}`,
+      `total=${Number.isFinite(total)}`,
+    ].join(",");
+    const message = [
+      "Nearby Sharing completion evidence is incomplete ",
+      `(${facts})`,
+    ].join("");
+    throw new Error(message);
   }
   return { progress, token, total };
 }
@@ -93,6 +106,7 @@ function prepareCase(senderDirectory, receiverDirectory, name) {
 
 function variables() {
   return {
+    QUICKSHARE_PIN_SALT: PIN_SALT,
     XDG_CONFIG_HOME: "/run/quickshare/config",
     XDG_DOWNLOAD_DIR: "/cases/received",
     XDG_RUNTIME_DIR: "/run/quickshare",
