@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "image": "omarchy-quickshare/network-toolchain:2026-09-02",
+  "container": "omarchy-quickshare-network",
+  "base": "debian@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171",
+  "debianSnapshot": "20260901T000000Z",
+  "source": {
+    "id": "wmediumd",
+    "revision": "717e5d7fcc23eecbc8e32bd897a8fd4b1e3ba640"
+  },
+  "radios": 3,
+  "kernelModule": "mac80211_hwsim",
+  "clients": {
+    "hostapd": "2.10",
+    "wpaSupplicant": "2.10",
+    "iw": "5.19",
+    "iproute2": "6.1.0"
+  }
+}

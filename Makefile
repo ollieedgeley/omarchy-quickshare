@@ -11,9 +11,9 @@ PRETTIER ?= $(NODE_BIN)/prettier
 MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 
 .PHONY: help setup hooks-install sources-fetch oracle-provision oracle-reference-provision oracle-up oracle-down
-.PHONY: proxy-provision proxy-up proxy-down dbus-provision dbus-up dbus-down format format-check check lint-rust lint-ast lint-docs lint-structure lint-sources lint-oracle lint-proxies lint-dbus
+.PHONY: proxy-provision proxy-up proxy-down dbus-provision dbus-up dbus-down network-provision network-up network-down format format-check check lint-rust lint-ast lint-docs lint-structure lint-sources lint-oracle lint-proxies lint-dbus lint-network
 .PHONY: test test-rust test-tooling test-ast-rules test-source-cache test-oracle-toolchain test-oracle-reference
-.PHONY: test-oracle-bluetooth test-oracle-ble test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct test-proxy-toxiproxy test-dbus-bluez test-dbus-networkmanager verify build commit-msg
+.PHONY: test-oracle-bluetooth test-oracle-ble test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct test-proxy-toxiproxy test-dbus-bluez test-dbus-networkmanager test-network-wmediumd test-network-netem test-network-lan test-network-hotspot-client test-network-hotspot-owner test-network-wifi-direct-client verify build commit-msg
 .PHONY: pre-commit pre-commit-prepare pre-commit-structure pre-commit-format pre-commit-ast
 .PHONY: pre-commit-rust pre-commit-test pre-push
 
@@ -29,6 +29,7 @@ setup: ## Install pinned development tools and activate repository hooks.
 	@$(MAKE) oracle-reference-provision
 	@$(MAKE) proxy-provision
 	@$(MAKE) dbus-provision
+	@$(MAKE) network-provision
 
 hooks-install: ## Activate Husky and initialize the reusable staged CodeGraph mirror.
 	@$(NODE_BIN)/husky
@@ -67,6 +68,15 @@ dbus-up: ## Start and readiness-check the private D-Bus environment.
 dbus-down: ## Stop the private D-Bus environment outside test time.
 	@node tests/environments/bluez/dbus-environment.mjs down
 
+network-provision: ## Build pinned Wi-Fi tools and deterministic wmediumd.
+	@node tests/environments/network/environment.mjs provision
+
+network-up: ## Start isolated hwsim radios and report readiness time.
+	@node tests/environments/network/environment.mjs up
+
+network-down: ## Remove isolated radios and report teardown time.
+	@node tests/environments/network/environment.mjs down
+
 format: ## Deliberately rewrite supported files with pinned formatters.
 	@cargo fmt --all
 	@$(PRETTIER) --write . --ignore-unknown
@@ -102,6 +112,9 @@ lint-proxies: ## Validate pinned proxy environment inputs without starting it.
 
 lint-dbus: ## Validate pinned private D-Bus environment inputs.
 	@$(TIMEOUT) node tests/environments/bluez/dbus-environment.mjs validate
+
+lint-network: ## Validate pinned virtual Wi-Fi environment inputs.
+	@$(TIMEOUT) node tests/environments/network/environment.mjs validate
 
 test-rust: ## Run complete workspace Rust tests and doc tests.
 	@$(TIMEOUT) cargo test --workspace --all-targets --all-features --locked
@@ -154,9 +167,39 @@ test-dbus-networkmanager: ## Check the NetworkManager mock through real nmcli.
 		node tests/environments/bluez/dbus-environment.mjs up; \
 		$(TIMEOUT) node tests/environments/bluez/dbus-environment.mjs self-test networkmanager
 
+test-network-wmediumd: ## Prove hwsim 802.11 delivery, isolation, and recovery.
+	@trap 'node tests/environments/network/environment.mjs down' EXIT; \
+		node tests/environments/network/environment.mjs up; \
+		$(TIMEOUT) node tests/environments/network/environment.mjs self-test medium
+
+test-network-netem: ## Prove deterministic UDP loss and recovery through netem.
+	@trap 'node tests/environments/network/environment.mjs down' EXIT; \
+		node tests/environments/network/environment.mjs up; \
+		$(TIMEOUT) node tests/environments/network/environment.mjs self-test netem
+
+test-network-lan: ## Associate two hwsim clients and transfer TCP both ways.
+	@trap 'node tests/environments/network/environment.mjs down' EXIT; \
+		node tests/environments/network/environment.mjs up; \
+		$(TIMEOUT) node tests/environments/network/environment.mjs self-test lan
+
+test-network-hotspot-client: ## Join a real hwsim hotspot and transfer both ways.
+	@trap 'node tests/environments/network/environment.mjs down' EXIT; \
+		node tests/environments/network/environment.mjs up; \
+		$(TIMEOUT) node tests/environments/network/environment.mjs self-test hotspot-client
+
+test-network-hotspot-owner: ## Host a real hwsim hotspot and transfer both ways.
+	@trap 'node tests/environments/network/environment.mjs down' EXIT; \
+		node tests/environments/network/environment.mjs up; \
+		$(TIMEOUT) node tests/environments/network/environment.mjs self-test hotspot-owner
+
+test-network-wifi-direct-client: ## Join a simulated remote P2P group and transfer both ways.
+	@trap 'node tests/environments/network/environment.mjs down' EXIT; \
+		node tests/environments/network/environment.mjs up; \
+		$(TIMEOUT) node tests/environments/network/environment.mjs self-test wifi-direct-client
+
 test: test-rust test-tooling test-ast-rules ## Run all local tests.
 
-verify: format-check lint-docs lint-structure lint-sources lint-oracle lint-proxies lint-dbus check lint-rust lint-ast test test-source-cache test-oracle-toolchain test-oracle-reference test-oracle-bluetooth test-oracle-ble test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct test-proxy-toxiproxy test-dbus-bluez test-dbus-networkmanager ## Run the complete local quality suite.
+verify: format-check lint-docs lint-structure lint-sources lint-oracle lint-proxies lint-dbus lint-network check lint-rust lint-ast test test-source-cache test-oracle-toolchain test-oracle-reference test-oracle-bluetooth test-oracle-ble test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct test-proxy-toxiproxy test-dbus-bluez test-dbus-networkmanager test-network-wmediumd test-network-netem test-network-lan test-network-hotspot-client test-network-hotspot-owner test-network-wifi-direct-client ## Run the complete local quality suite.
 
 build: ## Build the complete locked workspace after verification.
 	@$(TIMEOUT) cargo build --workspace --all-targets --all-features --locked
