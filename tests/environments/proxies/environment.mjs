@@ -1,10 +1,8 @@
 import { createHash } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
-  closeSync,
   existsSync,
   mkdirSync,
-  openSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -13,13 +11,19 @@ import { connect, createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const { recordFailureArtifact } = await import(
+  new URL("../../../tools/gates/lib/failure-artifact.mjs", import.meta.url)
+);
+const { run } = await import(
+  new URL("../../../tools/gates/lib/process.mjs", import.meta.url)
+);
+
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(DIRECTORY, "../../..");
 const CACHE = process.env.TEST_ENV_CACHE ?? join(ROOT, ".cache", "test-env");
 const PROXY_CACHE = join(CACHE, "proxies");
 const ARTIFACTS = join(PROXY_CACHE, "artifacts");
 const STATE = join(PROXY_CACHE, "state.json");
-const LOG = join(PROXY_CACHE, "toxiproxy.log");
 const SOURCE = join(CACHE, "sources", "trees", "toxiproxy");
 const MANIFEST_PATH = join(DIRECTORY, "environment.json");
 const DOCKERFILE_PATH = join(DIRECTORY, "Dockerfile.toolchain");
@@ -37,40 +41,6 @@ const VERSION_PATTERN = /^\d+\.\d+\.\d+$/u;
 const GO_DOWNLOAD_PATTERN = /^https:\/\/go\.dev\/dl\//u;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
-
-function runOptions(options) {
-  const result = {
-    cwd: options.cwd,
-    encoding: "utf8",
-    env: process.env,
-    stdio: "inherit",
-  };
-  if (options.env) {
-    result.env = options.env;
-  }
-  if (options.capture) {
-    result.stdio = "pipe";
-  }
-  return result;
-}
-
-function run(command, args, options = {}) {
-  if (!options.quiet) {
-    process.stdout.write(`+ ${command} ${args.join(" ")}\n`);
-  }
-  const result = spawnSync(command, args, runOptions(options));
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    let detail = "";
-    if (options.capture) {
-      detail = `\n${result.stdout ?? ""}${result.stderr ?? ""}`;
-    }
-    throw new Error(`${command} exited with ${result.status}${detail}`);
-  }
-  return result;
-}
 
 function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -274,17 +244,15 @@ async function up() {
   }
   mkdirSync(PROXY_CACHE, { recursive: true });
   const port = await unusedPort();
-  const logFd = openSync(LOG, "a");
   const child = spawn(
     binary,
     ["-host", "127.0.0.1", "-port", `${port}`, "-seed", "1"],
     {
       detached: true,
-      stdio: ["ignore", logFd, logFd],
+      stdio: "ignore",
     },
   );
   child.unref();
-  closeSync(logFd);
   try {
     await waitForApi(port);
     writeFileSync(
@@ -383,12 +351,21 @@ function transfer(port, payload) {
   });
 }
 
-async function startUpstream(received) {
+export function trackUpstreamSocket(socket, received, failures) {
+  socket.on("error", (error) => {
+    if (error.code !== "ECONNRESET") {
+      failures.push(error.code ?? "UNKNOWN");
+    }
+  });
+  socket.once("data", (chunk) => {
+    received.push(chunk.length);
+    socket.end(chunk);
+  });
+}
+
+async function startUpstream(received, failures) {
   const upstream = createServer((socket) => {
-    socket.once("data", (chunk) => {
-      received.push(chunk.length);
-      socket.end(chunk);
-    });
+    trackUpstreamSocket(socket, received, failures);
   });
   await new Promise((accept, reject) => {
     upstream.once("error", reject);
@@ -411,6 +388,12 @@ async function createProxy(apiPort, proxyPort, upstreamPort) {
   });
 }
 
+function assertUpstreamHealthy(context) {
+  if (context.upstreamFailures.length > 0) {
+    throw new Error("proxy upstream echo encountered a socket failure");
+  }
+}
+
 async function testStream(context, stream) {
   await request({
     body: {
@@ -425,6 +408,7 @@ async function testStream(context, stream) {
     port: context.apiPort,
   });
   const cut = await transfer(context.proxyPort, context.payload);
+  assertUpstreamHealthy(context);
   let observed = cut.length;
   if (stream === "upstream") {
     observed = context.received.at(-1);
@@ -443,6 +427,7 @@ async function testStream(context, stream) {
   ) {
     throw new Error(`${stream} recovery control corrupted data`);
   }
+  assertUpstreamHealthy(context);
 }
 
 async function runProxyProof(context) {
@@ -452,6 +437,7 @@ async function runProxyProof(context) {
     context.upstream.address().port,
   );
   const initial = await transfer(context.proxyPort, context.payload);
+  assertUpstreamHealthy(context);
   if (!initial.equals(context.payload)) {
     throw new Error(
       `initial proxy control returned ${initial.length} bytes, ` +
@@ -463,25 +449,37 @@ async function runProxyProof(context) {
 }
 
 async function selfTest() {
-  if (!existsSync(STATE)) {
-    throw new Error("run proxy-up before the self-test");
-  }
-  const { port: apiPort } = JSON.parse(readFileSync(STATE, "utf8"));
-  const received = [];
-  const upstream = await startUpstream(received);
-  const context = {
-    apiPort,
-    payload: Buffer.from("quickshare-proxy-control-payload"),
-    proxyPort: await unusedPort(),
-    received,
-    upstream,
-  };
   try {
-    await runProxyProof(context);
-  } finally {
-    await new Promise((accept) => {
-      upstream.close(accept);
+    if (!existsSync(STATE)) {
+      throw new Error("run proxy-up before the self-test");
+    }
+    const { port: apiPort } = JSON.parse(readFileSync(STATE, "utf8"));
+    const received = [];
+    const upstreamFailures = [];
+    const upstream = await startUpstream(received, upstreamFailures);
+    const context = {
+      apiPort,
+      payload: Buffer.from("quickshare-proxy-control-payload"),
+      proxyPort: await unusedPort(),
+      received,
+      upstream,
+      upstreamFailures,
+    };
+    try {
+      await runProxyProof(context);
+    } finally {
+      await new Promise((accept) => {
+        upstream.close(accept);
+      });
+    }
+  } catch (error) {
+    recordFailureArtifact(join(ROOT, "reports", "failures"), {
+      events: [{ event: "toxiproxy", status: "failed" }],
+      gate: "toxiproxy",
+      outcome: { kind: "failed" },
+      stage: "proxy-proof",
     });
+    throw error;
   }
   process.stdout.write(
     "Toxiproxy control-fault-control self-test passed in both directions.\n",

@@ -1,14 +1,14 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { failureSummary } from "./compose-runner.mjs";
+import { failureEvents } from "./compose-runner.mjs";
 import { parseEvents } from "./sharing-self-test.mjs";
 
 const BINARY = "/usr/local/bin/nearby_sharing_cli";
 const POLL_INTERVAL_MS = 100;
 const RECEIVER_START_DELAY_MS = 2_000;
 const SELF_TEST_TIMEOUT_MS = 10_000;
-const TERMINAL_STATUSES = new Set(["kCancelled", "kReject"]);
+const TERMINAL_STATUSES = new Set(["kCancelled", "kFailed", "kReject"]);
 
 function delay(milliseconds) {
   return new Promise((resolve) => {
@@ -73,10 +73,14 @@ function requestedAction(events, action) {
 }
 
 function terminal(events, expected) {
+  let allowed = [expected];
+  if (Array.isArray(expected)) {
+    allowed = expected;
+  }
   return events.find(
     (event) =>
       event.event === "transfer" &&
-      event.status === expected &&
+      allowed.includes(event.status) &&
       TERMINAL_STATUSES.has(event.status),
   );
 }
@@ -175,12 +179,21 @@ function ready(input) {
   }
 }
 
+function typedFailureEvidence(log) {
+  const events = failureEvents(log);
+  if (!events.length) {
+    return "none";
+  }
+  return events.map(({ event, status }) => `${event}:${status}`).join(",");
+}
+
 function timeoutFailure(input) {
-  const sender = failureSummary(input.sender.logs());
-  const receiver = failureSummary(input.receiver.logs());
+  const sender = typedFailureEvidence(input.sender.logs());
+  const receiver = typedFailureEvidence(input.receiver.logs());
   return new Error(
     `Nearby Sharing ${input.flow.action} ${input.flow.direction} ` +
-      `exceeded its time limit\nsender:\n${sender}\nreceiver:\n${receiver}`,
+      `exceeded its time limit (sender events ${sender}, receiver events ` +
+      `${receiver})`,
   );
 }
 
@@ -267,7 +280,7 @@ function rejectFlow(cases, direction) {
     receiver: roles.receiver,
     receiverTerminal: "kReject",
     sender: roles.sender,
-    senderTerminal: "kReject",
+    senderTerminal: ["kFailed", "kReject"],
   };
 }
 

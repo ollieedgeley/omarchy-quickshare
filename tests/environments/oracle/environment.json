@@ -20,7 +20,9 @@
       "smhasher"
     ],
     "targets": [
+      "//connections/implementation:bwu_test",
       "//connections/implementation/mediums:core_internal_mediums_test",
+      "//connections/implementation/mediums:bwu_handler_test",
       "@com_google_ukey2//src/main/cpp:cpp_tests",
       "@com_google_ukey2//src/main/cpp:ukey2_shell"
     ]

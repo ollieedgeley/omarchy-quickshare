@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { failureSummary } from "./compose-runner.mjs";
+import { failureEvents } from "./compose-runner.mjs";
 
 const EVENT_PATTERN = /^QS_EVENT (?<fields>.+)$/mu;
 const RECEIVER_WAIT_MS = 2_000;
@@ -134,16 +134,20 @@ function sendCommand(flow) {
 }
 
 function transferFailure(error, sender, receiver) {
-  let senderSummary = "not started";
+  let senderEvents = 0;
   if (sender) {
-    senderSummary = failureSummary(sender.logs());
+    senderEvents = failureEvents(sender.logs()).length;
   }
-  const receiverSummary = failureSummary(receiver.logs());
+  const receiverEvents = failureEvents(receiver.logs()).length;
   return new Error(
-    `Nearby Sharing transfer failed\nsender:\n${senderSummary}` +
-      `\nreceiver:\n${receiverSummary}`,
+    "Nearby Sharing transfer failed " +
+      `(sender events ${senderEvents}, receiver events ${receiverEvents})`,
     { cause: error },
   );
+}
+
+export async function stopPeers(peers) {
+  await Promise.all(peers.filter(Boolean).map((peer) => peer.stop()));
 }
 
 async function transfer(options, flow) {
@@ -168,7 +172,7 @@ async function transfer(options, flow) {
   } catch (error) {
     throw transferFailure(error, sender, receiver);
   } finally {
-    await Promise.allSettled([receiver.stop(), sender?.stop()]);
+    await stopPeers([receiver, sender]);
     rmSync(files.payload, { force: true });
     rmSync(files.received, { force: true });
   }

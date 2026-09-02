@@ -1,17 +1,10 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import {
-  copyFileSync,
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { createConnection } from "node:net";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { guestTransaction, runBluetoothRadioSelfTest } from "./radio-test.mjs";
 
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(DIRECTORY, "../../..");
@@ -23,20 +16,15 @@ const ARTIFACTS = join(RADIO_CACHE, "artifacts");
 const BTVIRT = join(ARTIFACTS, "btvirt");
 const RUNTIME = join(RADIO_CACHE, "runtime");
 const CONTROL = join(RUNTIME, "control.sock");
-const CONSOLE = join(RUNTIME, "console.log");
 const TRACE = join(RUNTIME, "radio.btsnoop");
-const REPORTS = join(ROOT, "reports", "bluetooth-radio");
+const REPORTS = join(ROOT, "reports", "failures");
 const MANIFEST_PATH = join(DIRECTORY, "radio-environment.json");
 const DOCKERFILE_PATH = join(DIRECTORY, "Dockerfile.radio");
-const GUEST_TIMEOUT_MS = 60_000;
-const GUEST_RETRY_MS = 25;
 const STOP_TIMEOUT_MS = 10_000;
 const LIFECYCLE_TIMEOUT_MS = 60_000;
-const EXPECTED_CONTROLLER_COUNT = 2;
 const BASE_IMAGE_PATTERN = /^debian@sha256:[0-9a-f]{64}$/u;
 const SNAPSHOT_PATTERN = /^\d{8}T\d{6}Z$/u;
 const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
-const CONTROLLER_TRANSCRIPT_PATTERN = /^OUT Controller /gmu;
 const GUEST_KERNEL_ARGUMENTS =
   "console=ttyS0,115200 earlyprintk=serial root=oqs-root " +
   "rootfstype=9p rootflags=trans=virtio,version=9p2000.u ro " +
@@ -106,53 +94,6 @@ function assertPrepared(manifest, fingerprint) {
       "Bluetooth radio inputs changed; rerun bluetooth-radio-provision",
     );
   }
-}
-
-function guestTransaction(command, expected, timeoutMs = GUEST_TIMEOUT_MS) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const started = performance.now();
-    let transcript = "";
-    let socket = null;
-    let retry = null;
-    let sent = false;
-    const deadline = setTimeout(() => {
-      socket?.destroy();
-      rejectPromise(new Error(`guest control timed out\n${transcript}`));
-    }, timeoutMs);
-    const finish = (error) => {
-      clearTimeout(deadline);
-      clearTimeout(retry);
-      socket?.destroy();
-      if (error) {
-        rejectPromise(error);
-      } else {
-        resolvePromise({ elapsed: performance.now() - started, transcript });
-      }
-    };
-    const connect = () => {
-      socket = createConnection(CONTROL);
-      socket.setEncoding("utf8");
-      socket.once("error", (error) => {
-        socket.destroy();
-        if (performance.now() - started < timeoutMs) {
-          retry = setTimeout(connect, GUEST_RETRY_MS);
-        } else {
-          finish(error);
-        }
-      });
-      socket.on("data", (chunk) => {
-        transcript += chunk;
-        if (command && transcript.includes("READY\n") && !sent) {
-          sent = true;
-          socket.write(`${command}\n`);
-        }
-        if (transcript.includes(expected)) {
-          finish();
-        }
-      });
-    };
-    connect();
-  });
 }
 
 export function validateRadioEnvironment(manifestSource, dockerfile) {
@@ -409,14 +350,10 @@ async function up() {
   mkdirSync(RUNTIME, { recursive: true });
   try {
     startRadioContainer(manifest);
-    await guestTransaction(null, "READY\n");
-  } catch (error) {
-    let consoleOutput = "";
-    if (existsSync(CONSOLE)) {
-      consoleOutput = readFileSync(CONSOLE, "utf8");
-    }
+    await guestTransaction({ control: CONTROL, expected: "READY\n" });
+  } catch {
     cleanup(manifest);
-    throw new Error(`${error.message}\n${consoleOutput}`, { cause: error });
+    throw new Error("Bluetooth radio startup failed");
   }
   const elapsed = performance.now() - started;
   if (elapsed > LIFECYCLE_TIMEOUT_MS) {
@@ -431,9 +368,12 @@ async function down() {
   const started = performance.now();
   const { manifest } = inputs();
   if (containerExists(manifest.container)) {
-    await guestTransaction("STOP", "STOPPING\n", STOP_TIMEOUT_MS).catch(
-      () => null,
-    );
+    await guestTransaction({
+      command: "STOP",
+      control: CONTROL,
+      expected: "STOPPING\n",
+      timeoutMs: STOP_TIMEOUT_MS,
+    }).catch(() => null);
     run("docker", ["container", "rm", "--force", manifest.container]);
   }
   rmSync(RUNTIME, { recursive: true, force: true });
@@ -446,88 +386,6 @@ async function down() {
   );
 }
 
-function preserveFailure(kind, transcript) {
-  mkdirSync(REPORTS, { recursive: true });
-  writeFileSync(
-    join(REPORTS, `${kind}-failure.json`),
-    `${JSON.stringify({ kind, transcript }, null, 2)}\n`,
-  );
-  if (existsSync(TRACE)) {
-    copyFileSync(TRACE, join(REPORTS, `${kind}-failure.btsnoop`));
-  }
-}
-
-function proveBle(kind, result) {
-  if (!result.transcript.includes("OUT BLUEZ_GATT_BIDIRECTIONAL_OK")) {
-    preserveFailure(kind, result.transcript);
-    throw new Error(`Bluetooth LE proof is incomplete\n${result.transcript}`);
-  }
-  process.stdout.write(
-    "BlueZ and Bumble exchanged exact bytes bidirectionally over BLE GATT.\n",
-  );
-}
-
-function proveClassic(kind, result) {
-  if (!result.transcript.includes("OUT BLUEZ_RFCOMM_BIDIRECTIONAL_OK")) {
-    preserveFailure(kind, result.transcript);
-    throw new Error(
-      `Bluetooth Classic proof is incomplete\n${result.transcript}`,
-    );
-  }
-  process.stdout.write(
-    "Linux BlueZ and Bumble exchanged exact bytes bidirectionally " +
-      "over RFCOMM.\n",
-  );
-}
-
-function proveControllers(kind, result) {
-  const controllerCount =
-    result.transcript.match(CONTROLLER_TRANSCRIPT_PATTERN)?.length ?? 0;
-  if (controllerCount !== EXPECTED_CONTROLLER_COUNT) {
-    preserveFailure(kind, result.transcript);
-    throw new Error(`guest reported ${controllerCount} controllers`);
-  }
-  process.stdout.write("Pinned BlueZ sees two isolated btvirt controllers.\n");
-}
-
-async function runRadioCommand(kind, command) {
-  try {
-    return await guestTransaction(command, "STATUS ");
-  } catch (error) {
-    preserveFailure(kind, error.message);
-    throw error;
-  }
-}
-
-async function selfTest(kind) {
-  const commands = {
-    ble: "RUN_BLE",
-    classic: "RUN_CLASSIC",
-    controller: "RUN_CONTROLLER",
-  };
-  if (!commands[kind]) {
-    throw new Error(`unknown radio self-test: ${kind}`);
-  }
-  const report = join(REPORTS, `${kind}-failure.json`);
-  const trace = join(REPORTS, `${kind}-failure.btsnoop`);
-  rmSync(report, { force: true });
-  rmSync(trace, { force: true });
-  const result = await runRadioCommand(kind, commands[kind]);
-  if (!result.transcript.includes("STATUS 0")) {
-    preserveFailure(kind, result.transcript);
-    throw new Error(`Bluetooth ${kind} self-test failed\n${result.transcript}`);
-  }
-  if (kind === "ble") {
-    proveBle(kind, result);
-    return;
-  }
-  if (kind === "classic") {
-    proveClassic(kind, result);
-    return;
-  }
-  proveControllers(kind, result);
-}
-
 function validate() {
   inputs();
   process.stdout.write("Pinned Bluetooth radio configuration passed.\n");
@@ -537,7 +395,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const actions = {
     down,
     provision,
-    "self-test": () => selfTest(process.argv[3]),
+    "self-test": () =>
+      runBluetoothRadioSelfTest(
+        { control: CONTROL, reports: REPORTS, trace: TRACE },
+        process.argv[3],
+      ),
     up,
     validate,
   };

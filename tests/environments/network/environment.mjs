@@ -4,6 +4,10 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const { recordFailureArtifact } = await import(
+  new URL("../../../tools/gates/lib/failure-artifact.mjs", import.meta.url)
+);
+
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(DIRECTORY, "../../..");
 const CACHE = process.env.TEST_ENV_CACHE ?? join(ROOT, ".cache", "test-env");
@@ -394,31 +398,41 @@ function mediumSelfTest(manifest) {
 }
 
 function selfTest(kind) {
-  const { manifest } = inputs();
-  if (!containerExists(manifest.container)) {
-    throw new Error("run network-up first");
+  try {
+    const { manifest } = inputs();
+    if (!containerExists(manifest.container)) {
+      throw new Error("run network-up first");
+    }
+    const scripts = {
+      netem: "/environment/netem-self-test.py",
+      "wifi-direct-client": "/environment/wifi-direct-self-test.sh",
+    };
+    if (scripts[kind]) {
+      run("docker", ["exec", manifest.container, scripts[kind]]);
+      return;
+    }
+    if (["hotspot-client", "hotspot-owner", "lan"].includes(kind)) {
+      run("docker", [
+        "exec",
+        manifest.container,
+        "/environment/wifi-self-test.sh",
+        kind,
+      ]);
+      return;
+    }
+    if (kind !== "medium") {
+      throw new Error(`unknown network self-test: ${kind}`);
+    }
+    mediumSelfTest(manifest);
+  } catch (error) {
+    recordFailureArtifact(join(ROOT, "reports", "failures"), {
+      events: [{ event: "network", status: "failed" }],
+      gate: "virtual-network",
+      outcome: { kind: "failed" },
+      stage: "network-self-test",
+    });
+    throw error;
   }
-  const scripts = {
-    netem: "/environment/netem-self-test.py",
-    "wifi-direct-client": "/environment/wifi-direct-self-test.sh",
-  };
-  if (scripts[kind]) {
-    run("docker", ["exec", manifest.container, scripts[kind]]);
-    return;
-  }
-  if (["hotspot-client", "hotspot-owner", "lan"].includes(kind)) {
-    run("docker", [
-      "exec",
-      manifest.container,
-      "/environment/wifi-self-test.sh",
-      kind,
-    ]);
-    return;
-  }
-  if (kind !== "medium") {
-    throw new Error(`unknown network self-test: ${kind}`);
-  }
-  mediumSelfTest(manifest);
 }
 
 function validate() {

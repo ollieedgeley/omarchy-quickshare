@@ -4,6 +4,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const { recordFailureArtifact } = await import(
+  new URL("../../../tools/gates/lib/failure-artifact.mjs", import.meta.url)
+);
+
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(DIRECTORY, "../../..");
 const CACHE = process.env.TEST_ENV_CACHE ?? join(ROOT, ".cache", "test-env");
@@ -240,29 +244,39 @@ const CASES = {
 };
 
 function selfTest(kind) {
-  const { manifest } = inputs();
-  if (!CASES[kind]) {
-    throw new Error(`unknown D-Bus self-test: ${kind}`);
+  try {
+    const { manifest } = inputs();
+    if (!CASES[kind]) {
+      throw new Error(`unknown D-Bus self-test: ${kind}`);
+    }
+    if (!containerExists(manifest.container)) {
+      throw new Error("run dbus-up before the self-test");
+    }
+    run("docker", [
+      "exec",
+      "--workdir",
+      "/source",
+      "--env",
+      "PYTHONPATH=/source",
+      "--env",
+      "LC_ALL=C.UTF-8",
+      manifest.container,
+      "python3",
+      "-m",
+      "unittest",
+      "--verbose",
+      ...CASES[kind],
+    ]);
+    process.stdout.write(`Private ${kind} D-Bus reference self-test passed.\n`);
+  } catch (error) {
+    recordFailureArtifact(join(ROOT, "reports", "failures"), {
+      events: [{ event: "service", status: "failed" }],
+      gate: "private-dbus",
+      outcome: { kind: "failed" },
+      stage: "service-self-test",
+    });
+    throw error;
   }
-  if (!containerExists(manifest.container)) {
-    throw new Error("run dbus-up before the self-test");
-  }
-  run("docker", [
-    "exec",
-    "--workdir",
-    "/source",
-    "--env",
-    "PYTHONPATH=/source",
-    "--env",
-    "LC_ALL=C.UTF-8",
-    manifest.container,
-    "python3",
-    "-m",
-    "unittest",
-    "--verbose",
-    ...CASES[kind],
-  ]);
-  process.stdout.write(`Private ${kind} D-Bus reference self-test passed.\n`);
 }
 
 function validate() {

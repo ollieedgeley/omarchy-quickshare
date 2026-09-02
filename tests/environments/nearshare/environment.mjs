@@ -5,6 +5,10 @@ import { fileURLToPath } from "node:url";
 
 import { output, run } from "../../../tools/gates/lib/process.mjs";
 
+const { recordFailureArtifact } = await import(
+  new URL("../../../tools/gates/lib/failure-artifact.mjs", import.meta.url)
+);
+
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(DIRECTORY, "../../..");
 const CACHE = process.env.TEST_ENV_CACHE ?? join(ROOT, ".cache", "test-env");
@@ -172,27 +176,37 @@ function up() {
 }
 
 function selfTest() {
-  const { manifest } = inputs();
-  const result = docker(
-    ["exec", manifest.container, "python3", "-m", "tests.test_loopback"],
-    { capture: true, quiet: true },
-  );
-  const evidence = [
-    "PIN matched on both sides:",
-    "2 files received byte-identical",
-    "mDNS: discovered own advertisement",
-    "LOOPBACK TEST PASSED",
-  ];
-  if (evidence.some((marker) => !result.stdout.includes(marker))) {
-    throw new Error("NearShare self-test lacks required transfer evidence");
+  try {
+    const { manifest } = inputs();
+    const result = docker(
+      ["exec", manifest.container, "python3", "-m", "tests.test_loopback"],
+      { capture: true, quiet: true },
+    );
+    const evidence = [
+      "PIN matched on both sides:",
+      "2 files received byte-identical",
+      "mDNS: discovered own advertisement",
+      "LOOPBACK TEST PASSED",
+    ];
+    if (evidence.some((marker) => !result.stdout.includes(marker))) {
+      throw new Error("NearShare self-test lacks required transfer evidence");
+    }
+    if (result.stdout.includes("mDNS skipped")) {
+      throw new Error("NearShare self-test skipped mDNS discovery");
+    }
+    process.stdout.write(
+      '{"schema":1,"peer":"nearshare","roles":["sender","receiver"],' +
+        '"pinMatch":true,"payloadMatch":true,"mdns":true}\n',
+    );
+  } catch (error) {
+    recordFailureArtifact(join(ROOT, "reports", "failures"), {
+      events: [{ event: "loopback", status: "failed" }],
+      gate: "nearshare",
+      outcome: { kind: "failed" },
+      stage: "loopback-evidence",
+    });
+    throw error;
   }
-  if (result.stdout.includes("mDNS skipped")) {
-    throw new Error("NearShare self-test skipped mDNS discovery");
-  }
-  process.stdout.write(
-    '{"schema":1,"peer":"nearshare","roles":["sender","receiver"],' +
-      '"pinMatch":true,"payloadMatch":true,"mdns":true}\n',
-  );
 }
 
 function down() {

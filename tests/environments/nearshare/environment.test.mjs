@@ -10,6 +10,9 @@ const DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const SHA256_ERROR_PATTERN = /SHA-256 digest/u;
+const ARTIFACT_WRITER_PATTERN = /recordFailureArtifact/u;
+const NEARSHARE_GATE_PATTERN = /nearshare/u;
+const LOOPBACK_STAGE_PATTERN = /loopback-evidence/u;
 
 function inputs() {
   return {
@@ -36,4 +39,11 @@ test("NearShare peer rejects a mutable base image", () => {
     () => validateEnvironment(changed, dockerfile),
     SHA256_ERROR_PATTERN,
   );
+});
+
+test("NearShare failures retain only typed artifact metadata", () => {
+  const runner = readFileSync(join(DIRECTORY, "environment.mjs"), "utf8");
+  assert.match(runner, ARTIFACT_WRITER_PATTERN);
+  assert.match(runner, NEARSHARE_GATE_PATTERN);
+  assert.match(runner, LOOPBACK_STAGE_PATTERN);
 });

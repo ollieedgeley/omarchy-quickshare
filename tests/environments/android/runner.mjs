@@ -1,12 +1,17 @@
-import { accessSync, constants, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { accessSync, constants } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { output, run } from "../../../tools/gates/lib/process.mjs";
+
+const { recordFailureArtifact } = await import(
+  new URL("../../../tools/gates/lib/failure-artifact.mjs", import.meta.url)
+);
 import { orchestratorFingerprint } from "./orchestrator.mjs";
 import { environmentPaths } from "./paths.mjs";
 
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
+const ROOT = resolve(DIRECTORY, "../../..");
 const RUNNER = join(DIRECTORY, "probe", "runner");
 const CONFIGURATION = join(RUNNER, "mobly-config.yml");
 const TEST = join(RUNNER, "nearby_connections_test.py");
@@ -41,7 +46,6 @@ function assertImage(manifest) {
 }
 
 export function orchestratorRunArguments(manifest, paths, ids) {
-  const logs = join(paths.diagnostics, "mobly");
   return [
     "run",
     "--rm",
@@ -59,12 +63,12 @@ export function orchestratorRunArguments(manifest, paths, ids) {
     `PATH=${CONTAINER_PATH}`,
     "--tmpfs",
     "/tmp:rw,noexec,nosuid,size=64m",
+    "--tmpfs",
+    "/logs:rw,noexec,nosuid,size=64m",
     "--volume",
     `${join(paths.sdk, "platform-tools")}:/android-platform-tools:ro`,
     "--volume",
     `${RUNNER}:/work:ro`,
-    "--volume",
-    `${logs}:/logs`,
     "--workdir",
     "/work",
     manifest.probe.orchestrator.image,
@@ -75,15 +79,24 @@ export function orchestratorRunArguments(manifest, paths, ids) {
 }
 
 export function selfTest(manifest) {
-  const paths = environmentPaths();
-  accessSync(CONFIGURATION, constants.R_OK);
-  accessSync(TEST, constants.R_OK);
-  accessSync(join(paths.sdk, "platform-tools", "adb"), constants.X_OK);
-  assertImage(manifest);
-  mkdirSync(join(paths.diagnostics, "mobly"), { recursive: true });
-  const ids = {
-    gid: process.getgid?.() ?? DEFAULT_USER_ID,
-    uid: process.getuid?.() ?? DEFAULT_USER_ID,
-  };
-  run(docker(), orchestratorRunArguments(manifest, paths, ids));
+  try {
+    const paths = environmentPaths();
+    accessSync(CONFIGURATION, constants.R_OK);
+    accessSync(TEST, constants.R_OK);
+    accessSync(join(paths.sdk, "platform-tools", "adb"), constants.X_OK);
+    assertImage(manifest);
+    const ids = {
+      gid: process.getgid?.() ?? DEFAULT_USER_ID,
+      uid: process.getuid?.() ?? DEFAULT_USER_ID,
+    };
+    run(docker(), orchestratorRunArguments(manifest, paths, ids));
+  } catch (error) {
+    recordFailureArtifact(join(ROOT, "reports", "failures"), {
+      events: [{ event: "mobly", status: "failed" }],
+      gate: "android-nearby",
+      outcome: { kind: "failed" },
+      stage: "mobly-runner",
+    });
+    throw error;
+  }
 }

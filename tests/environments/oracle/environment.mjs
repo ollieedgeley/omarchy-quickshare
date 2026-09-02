@@ -13,6 +13,14 @@ import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 
 import { run } from "../../../tools/gates/lib/process.mjs";
+import { patchGoogleOverlay } from "./google-overlay.mjs";
+import { runSelectedGtest } from "./selected-gtest.mjs";
+
+export { assertGtestEvidence } from "./selected-gtest.mjs";
+
+const { recordFailureArtifact } = await import(
+  new URL("../../../tools/gates/lib/failure-artifact.mjs", import.meta.url)
+);
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const DIRECTORY = join(ROOT, "tests", "environments", "oracle");
@@ -31,7 +39,7 @@ const STATE_PATH = join(REFERENCE, "image.json");
 const CONTAINER = "omarchy-quickshare-oracle";
 const START_LIMIT_MS = 60_000;
 const START_GOAL_MS = 30_000;
-const REFERENCE_TARGET_COUNT = 3;
+const REFERENCE_TARGET_COUNT = 5;
 const REFERENCE_LOCK_VERSION = 28;
 const EXECUTABLE_MODE = 0o755;
 const IMAGE_TAG_PATTERN = /^[a-z0-9./-]+:\d{4}-\d{2}-\d{2}$/u;
@@ -105,6 +113,12 @@ function validateReferenceDefinition(manifest) {
     !Array.isArray(manifest.reference.targets) ||
     !manifest.reference.targets.includes(
       "//connections/implementation/mediums:core_internal_mediums_test",
+    ) ||
+    !manifest.reference.targets.includes(
+      "//connections/implementation/mediums:bwu_handler_test",
+    ) ||
+    !manifest.reference.targets.includes(
+      "//connections/implementation:bwu_test",
     ) ||
     manifest.reference.targets.length !== REFERENCE_TARGET_COUNT
   ) {
@@ -329,122 +343,9 @@ function stripUnsupportedGoogleTargets() {
   writeFileSync(buildPath, build);
 }
 
-function patchGooglePlatform() {
-  const platformBuildPath = googlePath(
-    "internal",
-    "platform",
-    "implementation",
-    "BUILD",
-  );
-  const platformBuild = replaceExpected(
-    readFileSync(platformBuildPath, "utf8"),
-    ['    compatible_with = ["//buildenv/target:non_prod"],\n', ""],
-  );
-  writeFileSync(platformBuildPath, platformBuild);
-
-  const preferencesPath = googlePath(
-    "internal",
-    "platform",
-    "implementation",
-    "g3",
-    "preferences_manager.cc",
-  );
-  const preferences = replaceExpected(
-    readFileSync(preferencesPath, "utf8"),
-    ["proto2::json::", "google::protobuf::json::"],
-    2,
-  );
-  writeFileSync(preferencesPath, preferences);
-}
-
-function patchGoogleHeaders() {
-  const utfHeaderPath = googlePath(
-    "sharing",
-    "internal",
-    "base",
-    "utf_string_conversions.h",
-  );
-  const utfHeader = replaceExpected(readFileSync(utfHeaderPath, "utf8"), [
-    "#if defined(GITHUB_BUILD)\n",
-    "#if 1  // Public GitHub oracle build.\n",
-  ]);
-  writeFileSync(utfHeaderPath, utfHeader);
-
-  const hotspotHeaderPath = googlePath(
-    "internal",
-    "platform",
-    "implementation",
-    "g3",
-    "wifi_hotspot.h",
-  );
-  const hotspotHeader = replaceExpected(
-    readFileSync(hotspotHeaderPath, "utf8"),
-    [
-      '#include "absl/base/thread_annotations.h"\n',
-      '#include "absl/base/thread_annotations.h"\n' +
-        '#include "absl/container/flat_hash_map.h"\n',
-    ],
-  );
-  writeFileSync(hotspotHeaderPath, hotspotHeader);
-}
-
-function patchGoogleCredentials() {
-  const credentialsPath = googlePath(
-    "internal",
-    "platform",
-    "implementation",
-    "g3",
-    "credential_storage_impl.h",
-  );
-  const credentials = replaceExpected(readFileSync(credentialsPath, "utf8"), [
-    "    return std::make_tuple(std::string(manager_app_id),\n" +
-      "                           std::string(account_name));\n",
-    "    return std::make_pair(std::string(manager_app_id),\n" +
-      "                          std::string(account_name));\n",
-  ]);
-  writeFileSync(credentialsPath, credentials);
-}
-
-function patchGoogleMediumTests() {
-  const hotspotTestPath = googlePath(
-    "connections",
-    "implementation",
-    "mediums",
-    "wifi_hotspot_test.cc",
-  );
-  const hotspotTest = replaceExpected(readFileSync(hotspotTestPath, "utf8"), [
-    "    .address = {123, 234, 23, 1},\n",
-    "    .address = {123, static_cast<char>(234), 23, 1},\n",
-  ]);
-  writeFileSync(hotspotTestPath, hotspotTest);
-
-  const mediumsBuildPath = googlePath(
-    "connections",
-    "implementation",
-    "mediums",
-    "BUILD",
-  );
-  let mediumsBuild = readFileSync(mediumsBuildPath, "utf8");
-  for (const source of [
-    "awdl_test.cc",
-    "bluetooth_radio_test.cc",
-    "lost_entity_tracker_test.cc",
-    "wifi_test.cc",
-  ]) {
-    mediumsBuild = replaceExpected(mediumsBuild, [
-      `        "${source}",\n`,
-      "",
-    ]);
-  }
-  writeFileSync(mediumsBuildPath, mediumsBuild);
-}
-
 function prepareGoogleLinuxOverlay() {
   stripUnsupportedGoogleTargets();
-  patchGooglePlatform();
-  patchGoogleHeaders();
-  patchGoogleCredentials();
-  patchGoogleMediumTests();
+  patchGoogleOverlay(googlePath, replaceExpected);
 }
 
 function copyGoogleSource() {
@@ -647,39 +548,122 @@ function selfTestReference(manifest) {
   });
 }
 
+function recordSelectedGtestFailure(gate, selectedCount) {
+  recordFailureArtifact(join(REFERENCE, "failures"), {
+    events: [{ event: `selected-${selectedCount}`, status: "failed" }],
+    gate,
+    outcome: { code: 1, kind: "failed" },
+    stage: "selected-gtest",
+  });
+}
+
+function testSelectedGtest(manifest, configuration) {
+  const { expectedCount, failure, filter, label, target } = configuration;
+  try {
+    runSelectedGtest(
+      docker,
+      [
+        ...referenceContainerArgs(manifest, "none"),
+        "bazel",
+        "--output_user_root=/bazel/user",
+        "test",
+        "--repository_cache=/bazel/repository",
+        "--disk_cache=/bazel/disk",
+        "--lockfile_mode=error",
+        ...REPOSITORY_OVERRIDES,
+        "--cxxopt=-std=c++20",
+        "--jobs=2",
+        "--nofetch",
+        "--test_output=all",
+        "--cache_test_results=no",
+        "--test_sharding_strategy=disabled",
+        `--test_arg=--gtest_filter=${filter}`,
+        target,
+      ],
+      { expectedCount, label },
+    );
+  } catch (error) {
+    if (failure) {
+      recordSelectedGtestFailure(failure.gate, failure.selectedCount);
+    }
+    throw error;
+  }
+}
+
+const BLE_SELECTED_CASES = 41;
+const BLUETOOTH_SELECTED_CASES = 28;
+const HOTSPOT_SELECTED_CASES = 8;
+const LAN_SELECTED_CASES = 17;
+const WIFI_DIRECT_SELECTED_CASES = 12;
 const MEDIUM_FILTERS = {
-  ble: "*BleTest.*",
-  bluetooth: "*BluetoothClassicTest.*",
-  hotspot: "*WifiHotspotTest.*",
-  lan: "*WifiLanTest.*",
-  "wifi-direct": "*WifiDirectTest.*",
+  ble: { expectedCount: BLE_SELECTED_CASES, filter: "*BleTest.*" },
+  bluetooth: {
+    expectedCount: BLUETOOTH_SELECTED_CASES,
+    filter: "*BluetoothClassicTest.*",
+  },
+  hotspot: {
+    expectedCount: HOTSPOT_SELECTED_CASES,
+    filter: "*WifiHotspotTest.*",
+  },
+  lan: { expectedCount: LAN_SELECTED_CASES, filter: "*WifiLanTest.*" },
+  "wifi-direct": {
+    expectedCount: WIFI_DIRECT_SELECTED_CASES,
+    filter: "*WifiDirectTest.*",
+  },
 };
 
 function selfTestMedium(manifest, medium) {
-  const filter = MEDIUM_FILTERS[medium];
-  if (!filter) {
+  const selection = MEDIUM_FILTERS[medium];
+  if (!selection) {
     throw new Error(`unknown oracle medium: ${medium}`);
   }
-  docker([
-    ...referenceContainerArgs(manifest, "none"),
-    "bazel",
-    "--output_user_root=/bazel/user",
-    "test",
-    "--repository_cache=/bazel/repository",
-    "--disk_cache=/bazel/disk",
-    "--lockfile_mode=error",
-    ...REPOSITORY_OVERRIDES,
-    "--cxxopt=-std=c++20",
-    "--jobs=2",
-    "--nofetch",
-    "--test_output=errors",
-    "--cache_test_results=no",
-    "--test_sharding_strategy=disabled",
-    "--test_arg=--gtest_fail_if_no_test_selected",
-    `--test_filter=${filter}`,
-    "//connections/implementation/mediums:core_internal_mediums_test",
-  ]);
-  process.stdout.write(`Google ${medium} medium self-test passed.\n`);
+  testSelectedGtest(manifest, {
+    ...selection,
+    label: `Google ${medium} medium self-test`,
+    target: "//connections/implementation/mediums:core_internal_mediums_test",
+  });
+}
+
+const BWU_HANDLER_FILTER =
+  "BluetoothBwuTest.*:WifiDirectTest.*:WifiLanBwuHandlerTest.*";
+const BWU_HANDLER_SELECTED_CASES = 17;
+const BWU_FALLBACK_SELECTED_CASES = 7;
+const BWU_FALLBACK_FILTER = [
+  "BwuManagerTest.InitiateBwu_Revert_OnUpgradeFailure_FlagEnabled",
+  "BwuManagerTest.InitiateBwu_Revert_OnUpgradeFailure_FlagDisabled",
+  "BwuManagerTest.InitiateBwu_Revert_OnDisconnect_WifiDirect",
+  "BwuManagerTest.InitiateBwu_Revert_OnDisconnect_Hotspot",
+  "BwuManagerTest.InitiateBwu_Revert_OnDisconnect_Wlan",
+  "BwuManagerTest.InitiateBwu_Revert_OnDisconnect_" +
+    "MultipleEndpoints_FlagEnabled",
+  "BwuManagerTest.InitiateBwu_Revert_OnDisconnect_" +
+    "MultipleEndpoints_FlagDisabled",
+].join(":");
+
+function selfTestBwuHandler(manifest) {
+  testSelectedGtest(manifest, {
+    expectedCount: BWU_HANDLER_SELECTED_CASES,
+    failure: {
+      gate: "oracle-bwu-handler",
+      selectedCount: BWU_HANDLER_SELECTED_CASES,
+    },
+    filter: BWU_HANDLER_FILTER,
+    label: "Google simulated BWU handler reference self-test",
+    target: "//connections/implementation/mediums:bwu_handler_test",
+  });
+}
+
+function selfTestBwuFallback(manifest) {
+  testSelectedGtest(manifest, {
+    expectedCount: BWU_FALLBACK_SELECTED_CASES,
+    failure: {
+      gate: "oracle-bwu-fallback",
+      selectedCount: BWU_FALLBACK_SELECTED_CASES,
+    },
+    filter: BWU_FALLBACK_FILTER,
+    label: "Google simulated BWU fallback reference self-test",
+    target: "//connections/implementation:bwu_test",
+  });
 }
 
 function enforceLifecycle(name, started) {
@@ -768,6 +752,10 @@ function main() {
     selfTestReference(manifest);
   } else if (mode === "medium-self-test") {
     selfTestMedium(manifest, process.argv[3]);
+  } else if (mode === "bwu-handler-self-test") {
+    selfTestBwuHandler(manifest);
+  } else if (mode === "bwu-fallback-self-test") {
+    selfTestBwuFallback(manifest);
   } else {
     throw new Error(`unknown oracle environment action: ${mode}`);
   }

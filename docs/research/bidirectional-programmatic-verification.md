@@ -118,6 +118,8 @@ For every supported initial-to-upgrade pair, force and observe both endpoints as
 
 Google's internal bandwidth-upgrade handler tests are useful semantic references for Bluetooth, Wi-Fi LAN, hotspot, and Wi-Fi Direct, but they do not constitute Rust interoperability. Live forced-medium tests must cross the Linux operating-system interfaces or approved virtual radios. [Bandwidth-upgrade test sources](https://github.com/google/nearby/tree/588531995decf09500870ed4d2e1ac6740a3e338/connections/implementation)
 
+`make test-oracle-bwu-handler` retains selected passing Bluetooth, Wi-Fi Direct, and LAN Google cases; the pinned hotspot case fails upstream. `make test-oracle-bwu-fallback` retains selected fallback cases. Both are simulated/reference semantics and neither proves a two-peer payload after upgrade or a role-swapped cross-peer transfer.
+
 ## Decisions and failure injection
 
 Every full Sharing peer must support these deterministic commands or fixtures:

@@ -40,6 +40,7 @@ REPOSITORY_FILES = git ls-files --cached --others --exclude-standard -z
 .PHONY: test-nearby-linux-sharing-actions
 .PHONY: test-oracle-bluetooth test-oracle-ble test-oracle-lan
 .PHONY: test-oracle-hotspot test-oracle-wifi-direct
+.PHONY: test-oracle-bwu-handler test-oracle-bwu-fallback
 .PHONY: test-proxy-toxiproxy test-dbus-bluez test-dbus-networkmanager
 .PHONY: test-bluetooth-controller test-bluetooth-ble
 .PHONY: test-bluetooth-classic test-network-wmediumd test-network-netem
@@ -318,6 +319,14 @@ test-oracle-wifi-direct: ## Check Google's simulated Wi-Fi Direct medium.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs \
 		medium-self-test wifi-direct
 
+test-oracle-bwu-handler: ## Check simulated BT, Direct, and LAN BWU handlers.
+	@$(TIMEOUT) node tests/environments/oracle/environment.mjs \
+		bwu-handler-self-test
+
+test-oracle-bwu-fallback: ## Check selected simulated Google BWU fallback.
+	@$(TIMEOUT) node tests/environments/oracle/environment.mjs \
+		bwu-fallback-self-test
+
 test-proxy-toxiproxy: ## Test bidirectional TCP cutoff and recovery.
 	@trap 'node tests/environments/proxies/environment.mjs down' EXIT; \
 		node tests/environments/proxies/environment.mjs up; \
@@ -409,7 +418,8 @@ verify: test-oracle-toolchain test-oracle-reference test-nearshare-reference
 verify: test-nearby-linux-connections test-nearby-linux-sharing
 verify: test-nearby-linux-sharing-actions
 verify: test-oracle-bluetooth test-oracle-ble test-oracle-lan
-verify: test-oracle-hotspot test-oracle-wifi-direct test-proxy-toxiproxy
+verify: test-oracle-hotspot test-oracle-wifi-direct test-oracle-bwu-handler
+verify: test-oracle-bwu-fallback test-proxy-toxiproxy
 verify: test-dbus-bluez test-dbus-networkmanager
 verify: test-bluetooth-controller test-bluetooth-ble
 verify: test-bluetooth-classic test-network-wmediumd test-network-netem

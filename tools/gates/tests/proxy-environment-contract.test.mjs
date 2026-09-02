@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,7 @@ import test from "node:test";
 
 import {
   environmentFingerprint,
+  trackUpstreamSocket,
   validateEnvironment,
 } from "../../../tests/environments/proxies/environment.mjs";
 
@@ -15,6 +17,9 @@ const BASE_IMAGE_PATTERN = /^debian@sha256:/u;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
 const SHA256_ERROR_PATTERN = /SHA-256 digest/u;
+const ARTIFACT_WRITER_PATTERN = /recordFailureArtifact/u;
+const TOXIPROXY_GATE_PATTERN = /toxiproxy/u;
+const PROXY_PROOF_STAGE_PATTERN = /proxy-proof/u;
 
 function inputs() {
   return {
@@ -43,4 +48,38 @@ test("proxy environment rejects a mutable base image", () => {
     () => validateEnvironment(changed, dockerfile),
     SHA256_ERROR_PATTERN,
   );
+});
+
+test("proxy failures retain only typed artifact metadata", () => {
+  const runner = readFileSync(join(DIRECTORY, "environment.mjs"), "utf8");
+  assert.match(runner, ARTIFACT_WRITER_PATTERN);
+  assert.match(runner, TOXIPROXY_GATE_PATTERN);
+  assert.match(runner, PROXY_PROOF_STAGE_PATTERN);
+  assert.equal(runner.includes("toxiproxy.log"), false);
+});
+
+test("proxy echo sockets classify expected connection resets", () => {
+  const failures = [];
+  const received = [];
+  const socket = new EventEmitter();
+  socket.end = () => null;
+  trackUpstreamSocket(socket, received, failures);
+  socket.emit(
+    "error",
+    Object.assign(new Error("reset"), {
+      code: "ECONNRESET",
+    }),
+  );
+  assert.deepEqual(failures, []);
+
+  const broken = new EventEmitter();
+  broken.end = () => null;
+  trackUpstreamSocket(broken, received, failures);
+  broken.emit(
+    "error",
+    Object.assign(new Error("broken"), {
+      code: "EPIPE",
+    }),
+  );
+  assert.deepEqual(failures, ["EPIPE"]);
 });

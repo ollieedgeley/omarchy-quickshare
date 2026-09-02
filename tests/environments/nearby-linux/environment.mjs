@@ -13,6 +13,10 @@ import { fileURLToPath } from "node:url";
 
 import { output, run } from "../../../tools/gates/lib/process.mjs";
 import { parseSources } from "../../../tools/gates/sources.mjs";
+
+const { recordFailureArtifact } = await import(
+  new URL("../../../tools/gates/lib/failure-artifact.mjs", import.meta.url)
+);
 import { createComposeRunner } from "./compose-runner.mjs";
 import { runConnectionsSelfTest } from "./connections-self-test.mjs";
 import {
@@ -31,6 +35,7 @@ const ENVIRONMENT_ROOT = join(CACHE_ROOT, "nearby-linux");
 const SOURCE_ROOT = join(CACHE_ROOT, "sources", "trees");
 const STATE_PATH = join(ENVIRONMENT_ROOT, "state.json");
 const CASE_ROOT = join(ENVIRONMENT_ROOT, "cases");
+const FAILURE_REPORTS = join(ROOT, "reports", "failures");
 const MANIFEST_PATH = join(DIRECTORY, "environment.json");
 const DOCKERFILE_PATH = join(DIRECTORY, "Dockerfile");
 const COMPOSE_PATH = join(DIRECTORY, "compose.yaml");
@@ -417,31 +422,42 @@ function selfTestContext() {
       compose: COMPOSE_PATH,
       docker: process.env.DOCKER ?? "docker",
       environment,
+      failureDirectory: FAILURE_REPORTS,
     }),
   };
 }
 
-async function timedSelfTest(name, execute) {
+export async function runTimedSelfTest(name, execute, options = {}) {
   const started = Date.now();
-  const evidence = await execute(selfTestContext());
-  if (Date.now() - started > SELF_TEST_LIMIT_MS) {
-    throw new Error(`Nearby ${name} self-test exceeded its time limit`);
+  try {
+    const evidence = await execute(options.context ?? selfTestContext());
+    if (Date.now() - started > SELF_TEST_LIMIT_MS) {
+      throw new Error(`Nearby ${name} self-test exceeded its time limit`);
+    }
+    process.stdout.write(
+      `${JSON.stringify({ evidence, schema: 1, suite: name })}\n`,
+    );
+  } catch (error) {
+    recordFailureArtifact(options.failureDirectory ?? FAILURE_REPORTS, {
+      events: [{ event: "suite", status: "failed" }],
+      gate: "nearby-linux",
+      outcome: { kind: "failed" },
+      stage: name,
+    });
+    throw error;
   }
-  process.stdout.write(
-    `${JSON.stringify({ evidence, schema: 1, suite: name })}\n`,
-  );
 }
 
 function sharingSelfTest() {
-  return timedSelfTest("sharing", runSharingSelfTest);
+  return runTimedSelfTest("sharing", runSharingSelfTest);
 }
 
 function sharingActionsSelfTest() {
-  return timedSelfTest("sharing-actions", runSharingActionsSelfTest);
+  return runTimedSelfTest("sharing-actions", runSharingActionsSelfTest);
 }
 
 function connectionsSelfTest() {
-  return timedSelfTest("connections", runConnectionsSelfTest);
+  return runTimedSelfTest("connections", runConnectionsSelfTest);
 }
 
 async function main() {

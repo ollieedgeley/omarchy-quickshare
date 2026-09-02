@@ -92,6 +92,7 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make test-network-wifi-direct-client` checks the supported Linux-client P2P role against a simulated remote group owner.
 - `make oracle-reference-provision` builds the pinned Google oracle; `make test-oracle-reference` checks UKEY2 both ways.
 - `make test-oracle-{bluetooth,ble,lan,hotspot,wifi-direct}` checks one pinned Google simulated connection family.
+- `make test-oracle-bwu-handler` checks selected Bluetooth, Wi-Fi Direct, and LAN simulated semantics; `make test-oracle-bwu-fallback` checks selected fallback semantics, not cross-peer transfer interoperability.
 - `make test-rust` runs workspace Rust tests; `make test-tooling` runs quality-gate and hook contract tests.
 - `make test-contracts` runs shared transfer scenarios against fast doubles; simulator adapters consume the same scenarios.
 - `make test-nearshare-reference` runs the pinned diverse LAN peer through discovery, encryption, both transfer roles, and byte-integrity checks.

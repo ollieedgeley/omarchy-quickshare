@@ -66,6 +66,9 @@ const INVALID_SHA256_PATTERN = /invalid package SHA-256/u;
 const TWO_PEERS_PATTERN = /exactly two peers/u;
 const INVALID_ADB_PORT_PATTERN = /adbServerPort must be a user port/u;
 const FIXTURE_BYTES = "pinned Android archive fixture";
+const ARTIFACT_WRITER_PATTERN = /recordFailureArtifact/u;
+const ANDROID_NEARBY_GATE_PATTERN = /android-nearby/u;
+const MOBLY_RUNNER_STAGE_PATTERN = /mobly-runner/u;
 
 function source() {
   return readFileSync(MANIFEST, "utf8");
@@ -307,9 +310,21 @@ test("Mobly runner is isolated and uses the pinned Android tools", () => {
   assert.ok(argumentsList.includes("--network=host"));
   assert.ok(argumentsList.includes("--read-only"));
   assert.ok(argumentsList.includes("--cap-drop=ALL"));
+  assert.ok(argumentsList.includes("/logs:rw,noexec,nosuid,size=64m"));
+  assert.equal(argumentsList.includes("/diagnostics/mobly:/logs"), false);
   assert.ok(argumentsList.includes("ANDROID_ADB_SERVER_PORT=5038"));
   assert.ok(
     argumentsList.includes("/sdk/platform-tools:/android-platform-tools:ro"),
   );
   assert.ok(argumentsList.includes(manifest.probe.orchestrator.image));
+});
+
+test("Android runner retains only typed failure metadata", () => {
+  const runner = readFileSync(
+    join(ROOT, "tests", "environments", "android", "runner.mjs"),
+    "utf8",
+  );
+  assert.match(runner, ARTIFACT_WRITER_PATTERN);
+  assert.match(runner, ANDROID_NEARBY_GATE_PATTERN);
+  assert.match(runner, MOBLY_RUNNER_STAGE_PATTERN);
 });

@@ -13,6 +13,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const DIRECTORY = join(ROOT, "tests", "environments", "bluez");
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const FULL_COMMIT_PATTERN = /full commit/u;
+const ARTIFACT_WRITER_PATTERN = /recordFailureArtifact/u;
+const PRIVATE_DBUS_GATE_PATTERN = /private-dbus/u;
+const SERVICE_SELF_TEST_STAGE_PATTERN = /service-self-test/u;
 
 function inputs() {
   return {
@@ -44,4 +47,11 @@ test("D-Bus environment rejects a shortened source revision", () => {
     () => validateEnvironment(changed, dockerfile),
     FULL_COMMIT_PATTERN,
   );
+});
+
+test("D-Bus failures retain only typed artifact metadata", () => {
+  const runner = readFileSync(join(DIRECTORY, "dbus-environment.mjs"), "utf8");
+  assert.match(runner, ARTIFACT_WRITER_PATTERN);
+  assert.match(runner, PRIVATE_DBUS_GATE_PATTERN);
+  assert.match(runner, SERVICE_SELF_TEST_STAGE_PATTERN);
 });

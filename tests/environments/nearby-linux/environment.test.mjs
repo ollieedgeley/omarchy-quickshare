@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import {
   copyFileSync,
   existsSync,
@@ -7,9 +8,11 @@ import {
   readFileSync,
   rmSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import * as failure from "../../../tools/gates/lib/failure-artifact.mjs";
 
 import {
   contextFingerprint,
@@ -17,14 +20,19 @@ import {
   contextRelativePath,
   treeFingerprint,
 } from "./context.mjs";
-import { composeArguments, failureSummary } from "./compose-runner.mjs";
+import {
+  composeArguments,
+  createComposeRunner,
+  failureEvents,
+} from "./compose-runner.mjs";
 import { runConnectionsSelfTest } from "./connections-self-test.mjs";
 import {
   buildEnvironment,
   environmentFingerprint,
+  runTimedSelfTest,
   validateEnvironment,
 } from "./environment.mjs";
-import { parseEvents, runSharingSelfTest } from "./sharing-self-test.mjs";
+import * as sharingTest from "./sharing-self-test.mjs";
 import { runSharingActionsSelfTest } from "./sharing-actions-self-test.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -38,12 +46,73 @@ const PIN_ERROR_PATTERN = /base image must use a SHA-256 digest/u;
 const CONTEXT_CHILD_PATTERN = /context child/u;
 const FAKE_TIMEOUT_MS = 10;
 const TIMER_TICKS = 4;
+const CONTROL_ACTION_INDEX = -3;
+const PROCESS_IS_RUNNING = 0;
+const PROCESS_IS_STOPPED = 1;
+const PEER_PARSE_FAILURE = 23;
+const MARKER_OFFSET = 1;
+const MARKER_PATH_PATTERN = /^\/run\/quickshare\/commands\/.+\.pid$/u;
+const UNKNOWN_FAILURE_ARTIFACT_KEY = /unknown failure artifact key/u;
 const CONNECTION_CONTRACT_TEST =
   "Connections contracts both Wi-Fi LAN directions and cleans fixtures";
 const SHARING_TRANSFER_TEST =
   "Sharing completes transfer evidence in both directions";
 const SHARING_ACTION_TEST =
   "Sharing actions contract rejects and cancels in both directions";
+
+function fakeComposeProcess() {
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.stderr = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.kill = () => {
+    child.exitCode = 0;
+    child.emit("close", 0, null);
+  };
+  return child;
+}
+
+function fakeComposeSpawn(calls) {
+  let client = null;
+  let peerIsLive = true;
+  return (_docker, args) => {
+    calls.push(args);
+    const child = fakeComposeProcess();
+    if (args.includes("setsid")) {
+      client = child;
+      return child;
+    }
+    queueMicrotask(() => {
+      const action = args.at(CONTROL_ACTION_INDEX);
+      const signal = args.at(-1);
+      if (action === "signal" && signal === "KILL") {
+        peerIsLive = false;
+      }
+      let code = PROCESS_IS_RUNNING;
+      if (action === "probe" && !peerIsLive) {
+        code = PROCESS_IS_STOPPED;
+      }
+      child.exitCode = code;
+      child.emit("close", code, null);
+      if (!peerIsLive && client) {
+        client.kill();
+      }
+    });
+    return child;
+  };
+}
+
+function failedComposeSpawn(code) {
+  return () => {
+    const child = fakeComposeProcess();
+    queueMicrotask(() => {
+      child.exitCode = code;
+      child.emit("close", code, null);
+    });
+    return child;
+  };
+}
 
 function inputs() {
   return {
@@ -179,21 +248,140 @@ test("Compose runner drops peer commands to the test user", () => {
   assert.ok(argumentsList.includes("XDG_RUNTIME_DIR=/run/quickshare"));
 });
 
-test("Compose runner redacts peer failure evidence", () => {
-  const summary = failureSummary(
+test("Compose runner scopes peer cleanup to its started command", async () => {
+  const calls = [];
+  const runner = createComposeRunner({
+    compose: "compose.yaml",
+    docker: "docker",
+    environment: process.env,
+    spawn: fakeComposeSpawn(calls),
+    stopMs: 1,
+  });
+  const peerProcess = runner.start({
+    args: ["/usr/local/bin/file_share", "--advertise"],
+    peer: "peer-a",
+  });
+  assert.ok(calls[0].includes("setsid"));
+  assert.ok(
+    calls[0].some(
+      (argument) =>
+        typeof argument === "string" && argument.includes("umask 022"),
+    ),
+  );
+  await peerProcess.stop();
+  const marker = calls[0][calls[0].indexOf("compose-runner") + MARKER_OFFSET];
+  assert.match(marker, MARKER_PATH_PATTERN);
+  assert.ok(calls.slice(1).every((args) => args.includes(marker)));
+  assert.ok(calls.some((args) => args.includes("INT")));
+  assert.ok(calls.some((args) => args.includes("KILL")));
+  assert.ok(calls.some((args) => args.includes("probe")));
+  assert.ok(calls.some((args) => args.includes("verify")));
+});
+
+test("Compose runner keeps only typed peer failure events", () => {
+  const events = failureEvents(
     "noise\nQS_EVENT event=transfer token=1234 status=kFailed\n" +
       "connection auth_digits=ABCDE failed\nconfirmation token: 1234\n",
   );
-  assert.ok(summary.includes("status=kFailed"));
-  assert.ok(summary.includes("token=<redacted>"));
-  assert.ok(summary.includes("auth_digits=<redacted>"));
-  assert.ok(summary.includes("confirmation token: <redacted>"));
-  assert.equal(summary.includes("1234"), false);
-  assert.equal(summary.includes("ABCDE"), false);
+  assert.deepEqual(events, [{ event: "transfer", status: "failed" }]);
+});
+
+test("Compose runner drops malformed peer failure events", () => {
+  const events = failureEvents("QS_EVENT event=___ status=kFailed\n");
+  assert.deepEqual(events, []);
+});
+
+test("Compose runner retains safe terminal outcome categories", () => {
+  const events = failureEvents(
+    "QS_EVENT event=transfer status=kReject\n" +
+      "QS_EVENT event=transfer status=kCancelled\n" +
+      "QS_EVENT event=action-result status=kOk\n" +
+      "QS_EVENT event=transfer status=kAwaitingRemoteAcceptance\n",
+  );
+  assert.deepEqual(events, [
+    { event: "transfer", status: "rejected" },
+    { event: "transfer", status: "cancelled" },
+    { event: "action-result", status: "succeeded" },
+    { event: "transfer", status: "awaiting-remote-acceptance" },
+  ]);
+});
+
+test("Compose runner reports an in-container peer failure code", async () => {
+  const runner = createComposeRunner({
+    compose: "compose.yaml",
+    docker: "docker",
+    environment: process.env,
+    spawn: failedComposeSpawn(PEER_PARSE_FAILURE),
+  });
+  const peerProcess = runner.start({
+    args: ["/usr/local/bin/file_share", "--invalid"],
+    peer: "peer-a",
+  });
+  await assert.rejects(peerProcess.wait({ timeoutMs: 1 }), (error) => {
+    assert.equal(
+      error.message,
+      `Nearby Linux peer command exited with ${PEER_PARSE_FAILURE}`,
+    );
+    return true;
+  });
+});
+
+test("failure artifacts reject secret-bearing diagnostics", () => {
+  const root = mkdtempSync(join(tmpdir(), "failure-artifact-"));
+  try {
+    const artifact = failure.writeFailureArtifact(root, {
+      events: [{ event: "transfer", status: "failed" }],
+      gate: "nearby-linux",
+      outcome: { kind: "timeout" },
+      stage: "peer-command",
+    });
+    assert.deepEqual(JSON.parse(readFileSync(artifact, "utf8")), {
+      events: [{ event: "transfer", status: "failed" }],
+      gate: "nearby-linux",
+      outcome: { kind: "timeout" },
+      schema: 1,
+      stage: "peer-command",
+    });
+    assert.throws(
+      () =>
+        failure.recordFailureArtifact(root, {
+          gate: "nearby-linux",
+          outcome: { kind: "timeout", token: "1234" },
+          stage: "peer-command",
+        }),
+      UNKNOWN_FAILURE_ARTIFACT_KEY,
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("suite assertion failures retain typed evidence", async () => {
+  const root = mkdtempSync(join(tmpdir(), "nearby-suite-failure-"));
+  const expected = new Error("secret peer output");
+  try {
+    await assert.rejects(
+      runTimedSelfTest("sharing-actions", () => Promise.reject(expected), {
+        context: {},
+        failureDirectory: root,
+      }),
+      expected,
+    );
+    const artifact = join(root, "nearby-linux-failure.json");
+    assert.deepEqual(JSON.parse(readFileSync(artifact, "utf8")), {
+      events: [{ event: "suite", status: "failed" }],
+      gate: "nearby-linux",
+      outcome: { kind: "failed" },
+      schema: 1,
+      stage: "sharing-actions",
+    });
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
 });
 
 test("Sharing event parser preserves typed transfer evidence", () => {
-  const events = parseEvents(
+  const events = sharingTest.parseEvents(
     "QS_EVENT event=transfer status=kComplete target_id=1 " +
       "transferred_bytes=7 total_bytes=7 token=1234\n",
   );
@@ -360,13 +548,6 @@ function actionStatus(action) {
   return "kOk";
 }
 
-function terminalStatus(cancelled) {
-  if (cancelled) {
-    return "kCancelled";
-  }
-  return "kReject";
-}
-
 function senderActionEvents(cancelled) {
   if (!cancelled) {
     return [];
@@ -377,8 +558,15 @@ function senderActionEvents(cancelled) {
   ];
 }
 
-function actionLogs(receiver, cancelled) {
-  const terminal = terminalStatus(cancelled);
+function actionLogs(receiver, cancelled, senderPeer) {
+  const receiverTerminal = "kReject";
+  let senderTerminal = "kCancelled";
+  if (!cancelled) {
+    senderTerminal = "kReject";
+    if (senderPeer === "peer-b") {
+      senderTerminal = "kFailed";
+    }
+  }
   const token = "1234";
   const receiverEvents = [
     event({
@@ -394,12 +582,14 @@ function actionLogs(receiver, cancelled) {
     }),
   ];
   if (!cancelled) {
-    receiverEvents.push(event({ event: "transfer", status: terminal, token }));
+    receiverEvents.push(
+      event({ event: "transfer", status: receiverTerminal, token }),
+    );
   }
   const receiverLog = receiverEvents.join("\n");
   const senderLog = [
     ...senderActionEvents(cancelled),
-    event({ event: "transfer", status: terminal, token }),
+    event({ event: "transfer", status: senderTerminal, token }),
   ].join("\n");
   return { receiverLog, senderLog };
 }
@@ -426,7 +616,7 @@ function createActionRunner() {
       }
       const receiver = receivers.get(oppositePeer(input.peer));
       const cancelled = input.args.includes("cancel");
-      const logs = actionLogs(receiver, cancelled);
+      const logs = actionLogs(receiver, cancelled, input.peer);
       receiver.log = logs.receiverLog;
       process.log = logs.senderLog;
       return process;
@@ -496,7 +686,10 @@ test(SHARING_TRANSFER_TEST, async (context) => {
   context.mock.timers.enable({ apis: ["setTimeout"] });
   try {
     const fake = createTransferRunner(cases, "sharing");
-    const result = runSharingSelfTest({ cases, runner: fake.runner });
+    const result = sharingTest.runSharingSelfTest({
+      cases,
+      runner: fake.runner,
+    });
     await runFakeTimers(context.mock, TIMER_TICKS);
     const completed = await result;
     const transfers = [completed.first, completed.second];
@@ -555,7 +748,7 @@ test(SHARING_ACTION_TEST, async () => {
       })),
       [
         { receiverTerminal: "kReject", senderTerminal: "kReject" },
-        { receiverTerminal: "kReject", senderTerminal: "kReject" },
+        { receiverTerminal: "kReject", senderTerminal: "kFailed" },
         { receiverTerminal: null, senderTerminal: "kCancelled" },
         { receiverTerminal: null, senderTerminal: "kCancelled" },
       ],
@@ -574,7 +767,7 @@ test(SHARING_ACTION_TEST, async () => {
   }
 });
 
-test("Sharing action timeouts include redacted peer evidence", async () => {
+test("Sharing action timeouts report only typed peer evidence", async () => {
   const { cases, root } = createCases();
   const fake = createStalledActionRunner();
   try {
@@ -585,10 +778,10 @@ test("Sharing action timeouts include redacted peer evidence", async () => {
         runner: fake.runner,
       }),
       (error) => {
-        assert.ok(error.message.includes("sender:"));
-        assert.ok(error.message.includes("receiver:"));
-        assert.ok(error.message.includes("token=<redacted>"));
-        assert.ok(error.message.includes("auth_digits=<redacted>"));
+        assert.ok(error.message.includes("sender events transfer:failed"));
+        assert.ok(error.message.includes("receiver events transfer:failed"));
+        assert.ok(!error.message.includes("token"));
+        assert.ok(!error.message.includes("auth_digits"));
         assert.ok(!error.message.includes("1234"));
         assert.ok(!error.message.includes("ABCDE"));
         return true;
@@ -599,3 +792,9 @@ test("Sharing action timeouts include redacted peer evidence", async () => {
     rmSync(root, { force: true, recursive: true });
   }
 });
+test("Sharing cleanup failures fail the suite", () =>
+  assert.rejects(
+    sharingTest.stopPeers([
+      { stop: () => Promise.reject(new Error("cleanup failed")) },
+    ]),
+  ));

@@ -15,6 +15,9 @@ const EXPECTED_RADIO_COUNT = 3;
 const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const SHA256_ERROR_PATTERN = /SHA-256 digest/u;
+const ARTIFACT_WRITER_PATTERN = /recordFailureArtifact/u;
+const VIRTUAL_NETWORK_GATE_PATTERN = /virtual-network/u;
+const NETWORK_SELF_TEST_STAGE_PATTERN = /network-self-test/u;
 
 function inputs() {
   return {
@@ -42,4 +45,11 @@ test("network environment rejects a mutable base", () => {
     () => validateEnvironment(changed, dockerfile),
     SHA256_ERROR_PATTERN,
   );
+});
+
+test("network failures retain only typed artifact metadata", () => {
+  const runner = readFileSync(join(DIRECTORY, "environment.mjs"), "utf8");
+  assert.match(runner, ARTIFACT_WRITER_PATTERN);
+  assert.match(runner, VIRTUAL_NETWORK_GATE_PATTERN);
+  assert.match(runner, NETWORK_SELF_TEST_STAGE_PATTERN);
 });
