@@ -59,6 +59,7 @@ const SHARING_TRANSFER_TEST =
   "Sharing completes transfer evidence in both directions";
 const SHARING_ACTION_TEST =
   "Sharing actions contract rejects and cancels in both directions";
+const TOKEN_FINGERPRINT = "token_fingerprint";
 
 function fakeComposeProcess() {
   const child = new EventEmitter();
@@ -576,10 +577,10 @@ function actionLogs(receiver, cancelled, senderPeer) {
   }
   const token = "1234";
   const receiverEvents = [
+    event({ event: "paired-key-token", [TOKEN_FINGERPRINT]: token }),
     event({
       event: "transfer",
       status: "kAwaitingLocalConfirmation",
-      token,
     }),
     event({ event: "action-requested", action: receiver.action }),
     event({
@@ -589,14 +590,13 @@ function actionLogs(receiver, cancelled, senderPeer) {
     }),
   ];
   if (!cancelled) {
-    receiverEvents.push(
-      event({ event: "transfer", status: receiverTerminal, token }),
-    );
+    receiverEvents.push(event({ event: "transfer", status: receiverTerminal }));
   }
   const receiverLog = receiverEvents.join("\n");
   const senderLog = [
+    event({ event: "paired-key-token", [TOKEN_FINGERPRINT]: token }),
     ...senderActionEvents(cancelled),
-    event({ event: "transfer", status: senderTerminal, token }),
+    event({ event: "transfer", status: senderTerminal }),
   ].join("\n");
   return { receiverLog, senderLog };
 }

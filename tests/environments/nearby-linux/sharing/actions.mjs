@@ -8,6 +8,7 @@ const BINARY = "/usr/local/bin/nearby_sharing_cli";
 const POLL_INTERVAL_MS = 100;
 const RECEIVER_START_DELAY_MS = 2_000;
 const SELF_TEST_TIMEOUT_MS = 10_000;
+const PIN_SALT = "nearby-linux-sharing-actions-self-test";
 const TERMINAL_STATUSES = new Set(["kCancelled", "kFailed", "kReject"]);
 
 function delay(milliseconds) {
@@ -86,8 +87,12 @@ function terminal(events, expected) {
 }
 
 function assertTokens(senderEvents, receiverEvents) {
-  const senderToken = senderEvents.find((event) => event.token)?.token;
-  const receiverToken = receiverEvents.find((event) => event.token)?.token;
+  const senderToken = senderEvents.find(
+    (event) => event.token_fingerprint,
+  )?.token_fingerprint;
+  const receiverToken = receiverEvents.find(
+    (event) => event.token_fingerprint,
+  )?.token_fingerprint;
   if (!senderToken || !receiverToken || senderToken !== receiverToken) {
     throw new Error(
       "Nearby Sharing peers reported different confirmation tokens",
@@ -312,6 +317,7 @@ function flows(cases) {
 
 function variables() {
   return {
+    QUICKSHARE_PIN_SALT: PIN_SALT,
     XDG_CONFIG_HOME: "/run/quickshare/config",
     XDG_DOWNLOAD_DIR: "/cases/received",
     XDG_RUNTIME_DIR: "/run/quickshare",
