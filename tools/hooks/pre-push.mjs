@@ -54,6 +54,7 @@ async function main() {
       const nodeBin = join(ROOT, "node_modules", ".bin");
       const env = {
         ...process.env,
+        CODEGRAPH: join(nodeBin, "codegraph"),
         NODE_BIN: nodeBin,
         PATH: `${nodeBin}:${process.env.PATH}`,
       };
