@@ -8,8 +8,8 @@ A small Omarchy endpoint is feasible, with a catch. A same-network implementatio
 
 The useful first version would be one native daemon and one CLI, delivered as a single package:
 
-- Android to Omarchy for files, text, and URLs
-- Omarchy to Android for files
+- files, plain text, and URLs from Android to Omarchy
+- files, plain text, and URLs from Omarchy to Android
 - same Wi-Fi or Ethernet LAN
 - inbound visibility as an "Everyone" device and outbound discovery of public peers
 - a four-digit PIN plus an explicit local or remote consent decision
@@ -53,7 +53,7 @@ For an Android to Omarchy transfer, Omarchy is the receiver and TCP server:
 
 The result is encrypted in transit. It is not account-authenticated. The PIN comparison plus local user approval is the trust check.
 
-For an Omarchy to Android file transfer, the protocol roles reverse. Omarchy discovers an available Android peer, initiates the Connections handshake, creates the outgoing Sharing introduction, waits for the peer's consent, and streams the declared file payloads after acceptance. This uses the same wire, cryptography, payload, and medium layers, but it needs separate initiator state machines and tests. Passing the inbound flow does not prove outbound discovery, consent, cancellation, or payload sending.
+For an Omarchy to Android transfer, the protocol roles reverse. Omarchy discovers an available Android peer, initiates the Connections handshake, creates the outgoing Sharing introduction, waits for the peer's consent, and sends the declared file or byte payloads after acceptance. This uses the same wire, cryptography, payload, and medium layers, but it needs separate initiator state machines and tests. Passing the inbound flow does not prove outbound discovery, consent, cancellation, or payload sending.
 
 There is now a second receiver-discovery path to account for. A documented [RQuickShare prototype branch](https://github.com/martinalderson/rquickshare/blob/feat/ble-receiver-connect-back/docs/BLE_RECEIVER_DISCOVERY.md) handles Pixel phones that disconnect from Wi-Fi while browsing after Google's AirDrop compatibility update. Linux advertises a connectable Quick Share receiver under BLE service `0xFEF3`, hosts the corresponding GATT service, accepts a Nearby "weave" data socket over BLE, completes the encrypted connection there, then offers a Wi-Fi LAN bandwidth upgrade so file bytes use TCP. This is much more than listening for a BLE beacon. It is still one native binary talking to BlueZ, but it adds a GATT server, packet reassembly, another socket transport, and a migration state machine. The branch reports working Android-to-Linux transfers and is the best available prototype for this specific regression, not a stable upstream feature.
 

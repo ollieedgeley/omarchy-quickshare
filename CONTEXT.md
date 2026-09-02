@@ -1,6 +1,6 @@
 # Omarchy Quick Share
 
-This context describes an account-free Omarchy endpoint that exchanges content with Android Quick Share peers. It accepts inbound shares and initiates outbound file shares.
+This context describes an account-free Omarchy endpoint that exchanges content with Android Quick Share peers. It sends and receives files, plain text, and URLs.
 
 ## Language
 
@@ -33,7 +33,7 @@ A share initiated by a peer and accepted or rejected by the local endpoint.
 _Avoid_: Receive session, download
 
 **Outbound share**:
-A file share initiated by the local endpoint and accepted or rejected by a peer.
+A share of one or more supported attachments initiated by the local endpoint and accepted or rejected by a peer.
 _Avoid_: Send job, upload
 
 **Attachment**:

@@ -235,9 +235,11 @@ Every quality gate must fail fast. This includes formatting, compiler checks, li
 
 A top-level aggregate command may take more than 60 seconds because it composes several gates. This exception applies only to top-level Make entry points, such as `make verify`, and top-level Cargo commands that aggregate several targets or test binaries. It does not exempt any child gate hidden behind those commands.
 
-Every child gate in an aggregate has a hard budget of 60 seconds of wall-clock time in its documented local reference environment. Setup, execution, teardown, and cleanup all count. Sibling gates are measured separately. If any one of them exceeds 60 seconds, split it into stable, directly runnable gates based on a real responsibility, test suite, connection type, or test environment. Keep the aggregate command as the convenient way to run all of them.
+Every child test gate in an aggregate has a hard budget of 60 seconds of wall-clock time in its documented local reference environment. Sibling gates are measured separately. If any one of them exceeds 60 seconds, split it into stable, directly runnable gates based on a real responsibility, test suite, connection type, or test environment. Keep the aggregate command as the convenient way to run all of them.
 
-The same budget applies to scripts and tools invoked by Make or Cargo. Wrapping slow work in another process, running it in the background, or moving it into setup does not reset or avoid the limit. Parallel execution may reduce aggregate time, but it does not make an over-budget child gate acceptable.
+Prepared-environment startup and teardown are separate, measured lifecycle targets. Their time is not charged to the child test gate. Aim to start an already provisioned environment in 30 seconds and keep startup or teardown under 60 seconds where practical. One-time downloads, compilation, image creation, and Android SDK installation belong to explicit provisioning targets and are not test execution. A test timer begins only after its environment reports ready and ends before teardown starts.
+
+The same budget applies to scripts and tools invoked during the test phase by Make or Cargo. Wrapping slow assertions in another process or running them in the background does not reset or avoid the limit. Parallel execution may reduce aggregate time, but it does not make an over-budget child test gate acceptable.
 
 Run cheap, deterministic gates before expensive gates when dependencies allow it. The local gate runner must enforce the 60-second child-gate timeout and report the timed-out gate by name. `make help` must list the targeted command for every child gate so a developer can rerun only the failed area.
 

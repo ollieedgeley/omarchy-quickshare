@@ -1,0 +1,145 @@
+schema = 1
+
+[[source]]
+id = "google-nearby"
+url = "https://github.com/google/nearby/archive/588531995decf09500870ed4d2e1ac6740a3e338.tar.gz"
+revision = "588531995decf09500870ed4d2e1ac6740a3e338"
+sha256 = "d9be78e41c0d77e90e7cc1de8458d1670f0dfb8ddb129658e7cfc4e897ed2e7d"
+license = "Apache-2.0"
+purpose = "Connections and Sharing semantic oracle"
+
+[[source]]
+id = "google-ukey2"
+url = "https://github.com/google/ukey2/archive/10fc737aa901e873a3367e7e26b88eb01cd55d69.tar.gz"
+revision = "10fc737aa901e873a3367e7e26b88eb01cd55d69"
+sha256 = "be8024eb51d6aac11a3fabbfe030b0feaa0dd905c586247f83d3cfc67d9b7277"
+license = "Apache-2.0"
+purpose = "UKEY2 and D2D compatibility oracle"
+
+[[source]]
+id = "nearby-linux"
+url = "https://github.com/kidfromjupiter/nearby/archive/6887b0983200c6c8c29e614ea2633d13bf18315d.tar.gz"
+revision = "6887b0983200c6c8c29e614ea2633d13bf18315d"
+sha256 = "0a3bfb100a95d622dc3f19a28e49e6e19a03850a3c2c31078bb9dea2127aed38"
+license = "Apache-2.0"
+purpose = "Live Google-derived Linux reference peer"
+
+[[source]]
+id = "nearshare"
+url = "https://github.com/Dhiva-Labs/NearShare/archive/66eea15c5799ea317b195bedba465fb89ff5da7b.tar.gz"
+revision = "66eea15c5799ea317b195bedba465fb89ff5da7b"
+sha256 = "1ddd890622ae94cf08c51c4570a4feb6ae08fc3dc491292c56620708851fdd94"
+license = "MIT"
+purpose = "Implementation-diverse LAN Sharing peer"
+
+[[source]]
+id = "smhasher"
+url = "https://github.com/aappleby/smhasher/archive/07bb4de10a63e8cc2e1724865454eba635742383.tar.gz"
+revision = "07bb4de10a63e8cc2e1724865454eba635742383"
+sha256 = "c2d4afa595d2fc186a40022d8566c2fbe06d6c26668d48eeea3b3e1bc2ea05c1"
+license = "Public-Domain"
+purpose = "Pinned replacement for Nearby's mutable archive"
+
+[[source]]
+id = "nisaba"
+url = "https://github.com/google-research/nisaba/archive/fe8f9cb63db9ed91ddd3022835317a75343a594c.tar.gz"
+revision = "fe8f9cb63db9ed91ddd3022835317a75343a594c"
+sha256 = "524a7225c0a3fcd430766dcde7d809b8945dd61115548e918f1303748863ac52"
+license = "Apache-2.0"
+purpose = "Pinned replacement for Nearby's mutable archive"
+
+[[source]]
+id = "protobuf-matchers"
+url = "https://github.com/inazarenko/protobuf-matchers/archive/793247783c7d9e6322c2b40f85ceb775a7f29f49.tar.gz"
+revision = "793247783c7d9e6322c2b40f85ceb775a7f29f49"
+sha256 = "427b7d7a282a4fb12c729c9a89c7838443d543aef7caa0bd01213064c1990bb1"
+license = "Apache-2.0"
+purpose = "Pinned replacement for Nearby's removed master branch"
+
+[[source]]
+id = "protobuf"
+url = "https://github.com/protocolbuffers/protobuf/archive/55d8d93777cc9936b0a979d340d387dbcf05388b.tar.gz"
+revision = "55d8d93777cc9936b0a979d340d387dbcf05388b"
+sha256 = "c7e6b1d7531455704ed629f459285ac2a45968fc11ea33a4b30f2a2bb1feac30"
+license = "BSD-3-Clause"
+purpose = "Pinned standalone UKEY2 build dependency"
+
+[[source]]
+id = "googletest"
+url = "https://github.com/google/googletest/archive/3b49a56fe3958a3a9c3da722f5ee1a3053b6975f.tar.gz"
+revision = "3b49a56fe3958a3a9c3da722f5ee1a3053b6975f"
+sha256 = "ceb7ccc29164333828bbd86f6f19efc73999d68fb3b5202000599ddd362ea65c"
+license = "BSD-3-Clause"
+purpose = "Pinned standalone UKEY2 build dependency"
+
+[[source]]
+id = "abseil"
+url = "https://github.com/abseil/abseil-cpp/archive/cc05267c15127e41d497ddfc985328e59992ea53.tar.gz"
+revision = "cc05267c15127e41d497ddfc985328e59992ea53"
+sha256 = "ab5ee8aabaa1d9aba255f32db3ef9f1a37af7a691752ae003fd4dc2415bf7e57"
+license = "Apache-2.0"
+purpose = "Pinned standalone UKEY2 build dependency"
+
+[[source]]
+id = "boringssl"
+url = "https://github.com/google/boringssl/archive/9c37515289e44989a828c05cda90dd024de6172f.tar.gz"
+revision = "9c37515289e44989a828c05cda90dd024de6172f"
+sha256 = "f49735ec68265a0ef02f430505e11146fcb304389a55bf6fcc65903bb1f80068"
+license = "ISC AND OpenSSL AND BSD-3-Clause"
+purpose = "Pinned standalone UKEY2 build dependency"
+
+[[source]]
+id = "bluez"
+url = "https://github.com/bluez/bluez/archive/3a2d543c4c21d9c1dab246d46d76a11996a69bf2.tar.gz"
+revision = "3a2d543c4c21d9c1dab246d46d76a11996a69bf2"
+sha256 = "42b4e0772416564344c7de113ed9e50c612372e20c381f58e310f7f0141f0852"
+license = "GPL-2.0-or-later"
+purpose = "Virtual Bluetooth controller and Linux socket reference"
+
+[[source]]
+id = "python-dbusmock"
+url = "https://github.com/martinpitt/python-dbusmock/archive/45885bf940b3f90f72570b202e8cc3b56d3b0506.tar.gz"
+revision = "45885bf940b3f90f72570b202e8cc3b56d3b0506"
+sha256 = "941fb1ad5f1be7306df84a22e17d89ff50400882c2641a8a959d5966378aae36"
+license = "LGPL-3.0-or-later"
+purpose = "Private BlueZ and NetworkManager D-Bus services"
+
+[[source]]
+id = "toxiproxy"
+url = "https://github.com/Shopify/toxiproxy/archive/40f7fd31bee529d824116bd2a11a9e3425e904ec.tar.gz"
+revision = "40f7fd31bee529d824116bd2a11a9e3425e904ec"
+sha256 = "26351cc70792f1c3391bdd1d376974a79a756b349ec1abfa8b8f1524c042b13d"
+license = "MIT"
+purpose = "Deterministic TCP stream fault injection"
+
+[[source]]
+id = "wmediumd"
+url = "https://github.com/bcopeland/wmediumd/archive/717e5d7fcc23eecbc8e32bd897a8fd4b1e3ba640.tar.gz"
+revision = "717e5d7fcc23eecbc8e32bd897a8fd4b1e3ba640"
+sha256 = "81ddce7de4fe91e1caf5f7e71e5f62b51169d984e9f2a2f5dc3922529262f6c8"
+license = "GPL-2.0-only"
+purpose = "Virtual 802.11 medium and link faults"
+
+[[source]]
+id = "bumble"
+url = "https://github.com/google/bumble/archive/452ccdb8f2649ff086f24f939f2ad020d91b4a15.tar.gz"
+revision = "452ccdb8f2649ff086f24f939f2ad020d91b4a15"
+sha256 = "4baa24812312e49356b9ff10ca90d5a7bcaa0c5d7bbdf901031cf365dfc9f85d"
+license = "Apache-2.0"
+purpose = "Programmable BLE and Bluetooth Classic peer"
+
+[[source]]
+id = "mobly"
+url = "https://github.com/google/mobly/archive/561991306680bc54061e15a2e32706cf9930f24d.tar.gz"
+revision = "561991306680bc54061e15a2e32706cf9930f24d"
+sha256 = "7b5647fbab605f5b555b3b61de24283471a298f8b022bf0415bed4ccb3d8d750"
+license = "Apache-2.0"
+purpose = "Android virtual-device orchestration"
+
+[[source]]
+id = "mobly-snippet-lib"
+url = "https://github.com/google/mobly-snippet-lib/archive/3c705915cad43acd88a8815b3f3e3cf9455a60a4.tar.gz"
+revision = "3c705915cad43acd88a8815b3f3e3cf9455a60a4"
+sha256 = "4b80a20e1010f828f925a229cc02f0b0d620c1de8e2ed455d19c00f170a4bfca"
+license = "Apache-2.0"
+purpose = "Android probe and UI-control bridge"

@@ -10,8 +10,9 @@ CODEGRAPH ?= $(NODE_BIN)/codegraph
 PRETTIER ?= $(NODE_BIN)/prettier
 MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 
-.PHONY: help setup hooks-install format format-check check lint-rust lint-ast lint-docs lint-structure
-.PHONY: test test-rust test-tooling test-ast-rules verify build commit-msg
+.PHONY: help setup hooks-install sources-fetch format format-check check
+.PHONY: lint-rust lint-ast lint-docs lint-structure lint-sources
+.PHONY: test test-rust test-tooling test-ast-rules test-source-cache verify build commit-msg
 .PHONY: pre-commit pre-commit-prepare pre-commit-structure pre-commit-format pre-commit-ast
 .PHONY: pre-commit-rust pre-commit-test pre-push
 
@@ -26,6 +27,9 @@ setup: ## Install pinned development tools and activate repository hooks.
 hooks-install: ## Activate Husky and initialize the reusable staged CodeGraph mirror.
 	@$(NODE_BIN)/husky
 	@CODEGRAPH=$(CODEGRAPH) $(TIMEOUT) node tools/hooks/prepare-staged.mjs --initialize
+
+sources-fetch: ## Download, hash-check, and extract every pinned test source.
+	@node tools/gates/sources.mjs fetch
 
 format: ## Deliberately rewrite supported files with pinned formatters.
 	@cargo fmt --all
@@ -51,6 +55,9 @@ lint-docs: ## Run Markdown policy checks.
 lint-structure: ## Check line, directory, dependency, and configuration contracts.
 	@$(TIMEOUT) node tools/gates/structure.mjs
 
+lint-sources: ## Validate immutable source revisions, hashes, licenses, and purposes.
+	@$(TIMEOUT) node tools/gates/sources.mjs check
+
 test-rust: ## Run complete workspace Rust tests and doc tests.
 	@$(TIMEOUT) cargo test --workspace --all-targets --all-features --locked
 	@$(TIMEOUT) cargo test --workspace --doc --all-features --locked
@@ -61,9 +68,12 @@ test-tooling: ## Run quality-gate and hook contract tests.
 test-ast-rules: ## Run ast-grep rule fixtures and committed snapshots.
 	@$(TIMEOUT) $(AST_GREP) test --config sgconfig.yml
 
+test-source-cache: ## Hash-check the prepared reference and simulator source archives.
+	@$(TIMEOUT) node tools/gates/sources.mjs verify-cache
+
 test: test-rust test-tooling test-ast-rules ## Run all local tests.
 
-verify: format-check lint-docs lint-structure check lint-rust lint-ast test ## Run the complete local quality suite.
+verify: format-check lint-docs lint-structure lint-sources check lint-rust lint-ast test test-source-cache ## Run the complete local quality suite.
 
 build: ## Build the complete locked workspace after verification.
 	@$(TIMEOUT) cargo build --workspace --all-targets --all-features --locked

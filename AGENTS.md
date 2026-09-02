@@ -53,7 +53,7 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 ## Quality gates
 
 - The root `Makefile` is the public task interface; Cargo remains the Rust build system. Release users do not need Make.
-- Gates fail on the first unhandled error. Each directly runnable child gate includes setup and cleanup in a 60-second limit. Only top-level Make or Cargo aggregates may exceed 60 seconds.
+- Gates fail on the first unhandled error. Each directly runnable child test gate has a 60-second execution limit. Prepared-environment startup and teardown use separate measured lifecycle targets, aim for 30 seconds, and should not exceed 60 seconds where practical; their time is not charged to the test gate.
 - Split a slow child by a real responsibility, suite, connection type, or environment. A wrapper, sibling aggregate, or background process does not reset the limit.
 - Pin Rust, rustfmt, Clippy, rust-analyzer, ast-grep, and other verification tools. Missing tools fail a gate instead of silently reducing coverage.
 - Treat formatting differences and every enabled diagnostic as errors. Use the lint and ast-grep policies for exact configuration and exceptions.
@@ -73,6 +73,8 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make lint-rust` runs compiler, rustdoc, rust-analyzer, and all enabled Clippy diagnostics as errors.
 - `make lint-ast` runs the complete error-only ast-grep scan; `make test-ast-rules` checks its rule fixtures and snapshots.
 - `make lint-docs` checks Markdown policy; `make lint-structure` checks file, directory, dependency, and configuration contracts.
+- `make lint-sources` validates immutable test-source pins; `make test-source-cache` hash-checks their prepared archives.
+- `make sources-fetch` provisions the pinned source cache; provisioning is not part of a child test's 60-second execution budget.
 - `make test-rust` runs workspace Rust tests; `make test-tooling` runs quality-gate and hook contract tests.
 - `make pre-commit` checks the staged snapshot and its affected tests; `make pre-push` verifies and builds each pushed commit.
 - `make verify` runs the complete local quality suite; `make build` performs the locked workspace build after verification.

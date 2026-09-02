@@ -2,10 +2,10 @@
 
 Research date: 2026-09-02
 
-This note extends [programmatic connection testing](../connection-mocking-tools.md) for file transfer in both directions:
+This note extends [programmatic connection testing](../connection-mocking-tools.md) for supported content transfer in both directions:
 
-- inbound: an Android/Google-compatible sender discovers Omarchy, connects, and sends a file;
-- outbound: Omarchy discovers an Android/Google-compatible receiver, connects, and sends a file.
+- inbound: an Android/Google-compatible sender discovers Omarchy, connects, and sends files, plain text, or URLs;
+- outbound: Omarchy discovers an Android/Google-compatible receiver, connects, and sends files, plain text, or URLs.
 
 The application direction does not fix the network role. Each direction must also cover the applicable advertiser/browser, listener/client, GATT or L2CAP server/client, and bandwidth-upgrade initiator/acceptor roles.
 
@@ -134,7 +134,7 @@ After every terminal result, assert that advertisements, GATT applications, Blue
 
 ## Pre-application verification gate
 
-The environment is ready for application TDD only when all applicable rows below are green from a clean machine. These become child gates under the root `Makefile` when setup is authorized. Each directly runnable child must complete in less than 60 seconds; split by medium or virtual environment when necessary.
+The environment is ready for application TDD only when all applicable rows below are green from a clean machine. These become child gates under the root `Makefile` when setup is authorized. Each directly runnable test phase must complete in less than 60 seconds; split by medium or virtual environment when necessary. Prepared-environment startup and teardown follow the separate lifecycle budget in the programmatic connection-testing policy.
 
 | Gate                  | Self-test before Rust exists                                                           | Required evidence                                                 |
 | --------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |

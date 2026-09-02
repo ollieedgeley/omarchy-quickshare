@@ -88,7 +88,7 @@ Deleted files remain inputs to impact analysis even though formatting and lintin
 
 ## Pre-commit gate order
 
-The top-level `make pre-commit` command is an aggregate and may exceed one minute. Each child gate remains directly runnable, is listed in `make help`, and has the existing 60-second wall-clock budget.
+The top-level `make pre-commit` command is an aggregate and may exceed one minute. Each child test gate remains directly runnable, is listed in `make help`, and has the existing 60-second execution budget. Prepared-environment lifecycle time is measured separately under the connection-test policy.
 
 Run child gates in this fail-fast order:
 
