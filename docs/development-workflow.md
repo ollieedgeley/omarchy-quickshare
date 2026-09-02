@@ -104,6 +104,13 @@ Run child gates in this fail-fast order:
 8. Run compiler and Clippy checks for the smallest Cargo targets that own or consume those files.
 9. Run directly changed tests and every test target selected by impact analysis.
 
+Behavior development begins with the smallest in-process test at an external
+seam. Deterministic fakes, stubs, and mocks provide routine feedback, while the
+same semantic scenario is retained for the relevant adapter contract and
+simulator or oracle suite. Broaden to those slower layers after the behavior is
+green; use their results to correct a drifting test double rather than weakening
+the shared scenario.
+
 The hook prints each selected command before running it. On failure it prints the narrow Make target that reproduces the result. It also records the changed files, Cargo owners, selected tests, selection source, fallback reason, and gate timings.
 
 ### Formatting and linting granularity

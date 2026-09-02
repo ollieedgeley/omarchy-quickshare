@@ -98,6 +98,22 @@ Use this preference order when replacing a dependency:
 5. a fixed-response stub
 6. a mock, only when the interaction itself is part of the confirmed interface
 
+### Fast feedback and simulator fidelity
+
+Routine TDD starts with in-process behavior tests and deterministic doubles at
+external seams: discovery, connection outcomes, time, randomness, payloads,
+decisions, storage, and upgrades. Rare failures should remain millisecond-fast.
+
+Fast and simulator layers consume the same semantic scenarios where they
+overlap. Scenarios describe peer actions, observations, faults, payload facts,
+and outcomes, never project-module calls. Contract cases run against each double
+and its real, virtualized, or oracle-backed adapter before the double is trusted.
+
+Simulator and oracle suites cover fewer combinations but cross real framing,
+process, operating-system, virtual-radio, and reference-peer boundaries in both
+roles. They keep the larger fast matrix honest. Mock only external boundaries;
+assert public events, results, payload bytes, cleanup, and terminal outcomes.
+
 ### Helpers
 
 Helpers should express actions in the project vocabulary, such as `open_visibility_window`, `offer_file`, `accept_inbound_share`, `reject_outbound_offer`, `drop_upgrade_channel`, and `expect_cleanup`. They may coordinate setup and return observed results. They should not contain the assertion that makes a test pass unless they are clearly named assertion helpers.
