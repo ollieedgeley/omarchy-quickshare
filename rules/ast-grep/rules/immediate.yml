@@ -1,0 +1,53 @@
+id: no-broad-lint-suppression
+language: Rust
+severity: error
+message: Broad lint suppression is forbidden; name one lint and give a reason.
+note: Keep every compiler and Clippy diagnostic visible unless a reviewed, named exception is unavoidable.
+files:
+  - "**/*.rs"
+rule:
+  all:
+    - any:
+        - kind: attribute_item
+        - kind: inner_attribute_item
+    - regex: '^#!?\[(allow|expect)\((warnings|unused|clippy::(all|cargo|complexity|correctness|nursery|pedantic|perf|restriction|style|suspicious))\)\]$'
+---
+id: lint-suppression-requires-reason
+language: Rust
+severity: error
+message: A lint suppression must include a non-empty reason.
+note: Use the reason field to preserve the reviewed justification beside the exception.
+files:
+  - "**/*.rs"
+rule:
+  all:
+    - kind: attribute_item
+    - regex: '^#!?\[(allow|expect)\([^]]+\)\]$'
+    - not:
+        regex: 'reason\s*=\s*"[^"\n]+"'
+---
+id: no-ignored-tests
+language: Rust
+severity: error
+message: Committed tests must not be ignored.
+note: Put environment-specific tests in an explicit targeted gate instead of silently disabling them.
+files:
+  - "**/*.rs"
+rule:
+  all:
+    - kind: attribute_item
+    - regex: '^#\[ignore(?:\s*=\s*"[^"\n]+")?\]$'
+---
+id: no-real-sleep-in-tests
+language: Rust
+severity: error
+message: Tests must use fake time or bounded readiness signals instead of sleeping.
+note: A real sleep makes failures timing-dependent and slows targeted feedback.
+files:
+  - "**/tests/**/*.rs"
+  - "tests/**/*.rs"
+  - "tools/**/tests/**/*.rs"
+rule:
+  all:
+    - kind: call_expression
+    - regex: '^(std::thread::sleep|tokio::time::sleep)\([\s\S]*\)$'

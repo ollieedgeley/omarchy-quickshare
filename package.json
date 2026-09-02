@@ -1,0 +1,25 @@
+{
+  "name": "omarchy-quickshare-development",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Development-only quality tooling for omarchy-quickshare",
+  "scripts": {
+    "prepare": "husky",
+    "test:tooling": "node --test tools/gates/tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "@ast-grep/cli": "0.45.3",
+    "@colbymchenry/codegraph": "1.6.0",
+    "ajv": "8.20.0",
+    "husky": "9.1.7",
+    "markdownlint-cli2": "0.23.2",
+    "prettier": "3.9.6",
+    "yaml": "2.9.0"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "allowScripts": {
+    "@ast-grep/cli@0.45.3": true
+  }
+}

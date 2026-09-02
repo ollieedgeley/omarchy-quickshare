@@ -1,0 +1,10 @@
+{
+  "deprecated-llvm-intrinsic": "Listed by rustc 1.98.0 but unstable on the stable channel, so requesting it is rejected as an unknown lint.",
+  "implicit-provenance-casts": "Listed by rustc 1.98.0 but unstable on the stable channel, so requesting it is rejected as an unknown lint.",
+  "multiple-supertrait-upcastable": "Listed by rustc 1.98.0 but unstable on the stable channel, so requesting it is rejected as an unknown lint.",
+  "must-not-suspend": "Listed by rustc 1.98.0 but unstable on the stable channel, so requesting it is rejected as an unknown lint.",
+  "non-exhaustive-omitted-patterns": "Listed by rustc 1.98.0 but unstable on the stable channel, so requesting it is rejected as an unknown lint.",
+  "resolving-to-items-shadowing-supertrait-items": "Listed by rustc 1.98.0 but unstable on the stable channel, so requesting it is rejected as an unknown lint.",
+  "shadowing-supertrait-items": "Listed by rustc 1.98.0 but unstable on the stable channel, so requesting it is rejected as an unknown lint.",
+  "unqualified-local-imports": "Listed by rustc 1.98.0 but unstable on the stable channel, so requesting it is rejected as an unknown lint."
+}

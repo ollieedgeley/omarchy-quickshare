@@ -1,0 +1,8 @@
+id: no-ignored-tests
+snapshots:
+  '#[test] #[ignore] fn transfers_payload() {}':
+    labels:
+    - source: '#[ignore]'
+      style: primary
+      start: 8
+      end: 17

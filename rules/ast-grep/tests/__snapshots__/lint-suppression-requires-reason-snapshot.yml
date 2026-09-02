@@ -1,0 +1,8 @@
+id: lint-suppression-requires-reason
+snapshots:
+  '#[allow(clippy::too_many_arguments)] fn decode() {}':
+    labels:
+    - source: '#[allow(clippy::too_many_arguments)]'
+      style: primary
+      start: 0
+      end: 36

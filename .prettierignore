@@ -1,0 +1,9 @@
+.cache
+.codegraph
+.git
+dist
+node_modules
+reports
+target
+rules/ast-grep/schemas
+rules/ast-grep/tests/__snapshots__

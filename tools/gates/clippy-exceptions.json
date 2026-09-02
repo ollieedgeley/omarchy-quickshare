@@ -1,0 +1,9 @@
+{
+  "blanket_clippy_restriction_lints": "The command line intentionally enables the complete restriction group so additions in the pinned Clippy cannot be missed.",
+  "implicit_return": "Requiring explicit return conflicts with Clippy's idiomatic needless-return lint.",
+  "question_mark_used": "Forbidding the question-mark operator conflicts with Clippy's question-mark simplification lint.",
+  "self_named_module_files": "The permanent module layout deliberately uses foo.rs with foo/ children instead of mod.rs.",
+  "semicolon_outside_block": "This conflicts with semicolon-inside-block; the project selects inside-block placement.",
+  "separated_literal_suffix": "This conflicts with unseparated-literal-suffix; the project selects separated suffixes.",
+  "pub_without_shorthand": "This conflicts with pub-with-shorthand; the project selects shorthand visibility syntax."
+}

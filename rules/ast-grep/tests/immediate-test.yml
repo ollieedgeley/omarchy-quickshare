@@ -1,0 +1,32 @@
+id: no-broad-lint-suppression
+valid:
+  - |-
+    #[allow(clippy::too_many_arguments, reason = "Wire shape is fixed upstream")]
+    fn decode() {}
+invalid:
+  - "#![allow(clippy::all)] fn decode() {}"
+---
+id: lint-suppression-requires-reason
+valid:
+  - |-
+    #[expect(clippy::too_many_arguments, reason = "Wire shape is fixed upstream")]
+    fn decode() {}
+invalid:
+  - "#[allow(clippy::too_many_arguments)] fn decode() {}"
+---
+id: no-ignored-tests
+valid:
+  - |-
+    #[test]
+    fn transfers_payload() {}
+invalid:
+  - "#[test] #[ignore] fn transfers_payload() {}"
+---
+id: no-real-sleep-in-tests
+valid:
+  - |-
+    fn wait_until_ready(clock: &mut FakeClock) {
+        clock.advance();
+    }
+invalid:
+  - "fn wait_until_ready() { std::thread::sleep(Duration::from_secs(1)); }"

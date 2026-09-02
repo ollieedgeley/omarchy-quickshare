@@ -1,0 +1,8 @@
+id: no-broad-lint-suppression
+snapshots:
+  '#![allow(clippy::all)] fn decode() {}':
+    labels:
+    - source: '#![allow(clippy::all)]'
+      style: primary
+      start: 0
+      end: 22

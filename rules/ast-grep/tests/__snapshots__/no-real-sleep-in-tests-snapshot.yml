@@ -1,0 +1,8 @@
+id: no-real-sleep-in-tests
+snapshots:
+  fn wait_until_ready() { std::thread::sleep(Duration::from_secs(1)); }:
+    labels:
+    - source: std::thread::sleep(Duration::from_secs(1))
+      style: primary
+      start: 24
+      end: 66

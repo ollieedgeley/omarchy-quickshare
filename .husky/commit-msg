@@ -1,0 +1,1 @@
+make commit-msg COMMIT_MSG_FILE="$1"
