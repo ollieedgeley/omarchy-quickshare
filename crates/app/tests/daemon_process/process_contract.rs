@@ -113,7 +113,7 @@ fn endpoint_snapshot(runtime_directory: &Path) -> io::Result<EndpointSnapshot> {
         Response::Snapshot { snapshot } => Ok(snapshot.clone()),
         Response::Cancelled
         | Response::NotFound
-        | Response::Queued
+        | Response::Queued { .. }
         | Response::Ready
         | _ => Err(io::Error::other("endpoint did not return a snapshot")),
     }

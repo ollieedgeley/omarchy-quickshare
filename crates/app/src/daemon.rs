@@ -130,18 +130,18 @@ impl Daemon {
             Request::Status => Ok(ResponseEnvelope::ready()),
             Request::SubmitFile { path } => {
                 let attachment = file_attachment(path)?;
-                let _share_id = self.sharing.queue_outbound(attachment);
-                Ok(ResponseEnvelope::queued())
+                let share_id = self.sharing.queue_outbound(attachment);
+                Ok(ResponseEnvelope::queued(share_id.get()))
             }
             Request::SubmitText { text } => {
-                let _share_id =
+                let share_id =
                     self.sharing.queue_outbound(Attachment::text(text));
-                Ok(ResponseEnvelope::queued())
+                Ok(ResponseEnvelope::queued(share_id.get()))
             }
             Request::SubmitUrl { url } => {
-                let _share_id =
+                let share_id =
                     self.sharing.queue_outbound(Attachment::url(url));
-                Ok(ResponseEnvelope::queued())
+                Ok(ResponseEnvelope::queued(share_id.get()))
             }
             Request::SimulateIncomingText { .. }
             | Request::SimulatePeerAccept { .. }
@@ -167,7 +167,7 @@ impl Daemon {
             ));
         }
         let response = self.response_for(request.request())?;
-        if matches!(response.response(), Response::Queued) {
+        if matches!(response.response(), Response::Queued { .. }) {
             self.queued.push(request);
         }
         write_response(&mut stream, &response)

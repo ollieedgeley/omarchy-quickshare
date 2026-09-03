@@ -177,7 +177,9 @@ where
     let request = request(arguments, current_directory)?;
     let response = exchange(socket_path, &request)?;
     match response.response() {
-        Response::Queued => writeln!(output, "Share queued."),
+        Response::Queued { share_id } => {
+            writeln!(output, "Share {share_id} queued.")
+        }
         Response::Applied
         | Response::Cancelled
         | Response::NotFound
@@ -213,12 +215,13 @@ where
             io::ErrorKind::NotFound,
             "action is not available in the current state",
         )),
-        Response::Queued | Response::Ready | Response::Snapshot { .. } | _ => {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "endpoint returned an unsupported response",
-            ))
-        }
+        Response::Queued { .. }
+        | Response::Ready
+        | Response::Snapshot { .. }
+        | _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "endpoint returned an unsupported response",
+        )),
     }
 }
 

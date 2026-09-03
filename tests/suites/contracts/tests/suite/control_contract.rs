@@ -29,7 +29,7 @@ mod tests {
     const STATUS_RESPONSE_FIXTURE: &str = include_str!(
         "../../../../fixtures/control/v1/status-ready-response.jsonl"
     );
-    const EXPECTED_OUTPUT: &[u8] = b"Share queued.\n";
+    const EXPECTED_OUTPUT: &[u8] = b"Share 1 queued.\n";
     static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
     struct ControlDaemonFake {

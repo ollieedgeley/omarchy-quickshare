@@ -45,9 +45,9 @@ impl Envelope {
     /// Creates a successful response for one queued share.
     #[must_use]
     #[inline]
-    pub const fn queued() -> Self {
+    pub const fn queued(share_id: u64) -> Self {
         Self {
-            response: Response::Queued,
+            response: Response::Queued { share_id },
             version: crate::PROTOCOL_VERSION,
         }
     }
@@ -101,7 +101,10 @@ pub enum Response {
     /// No active share matched the requested identifier.
     NotFound,
     /// The endpoint queued the command for processing.
-    Queued,
+    Queued {
+        /// Stable identifier used by subsequent share actions.
+        share_id: u64,
+    },
     /// The local endpoint is ready to accept commands.
     Ready,
     /// The endpoint's current public state.
