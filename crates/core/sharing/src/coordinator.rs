@@ -38,7 +38,23 @@ impl Coordinator {
     /// Cancels the active share when its identifier matches.
     #[inline]
     pub const fn cancel(&mut self, share_id: u64) -> bool {
-        self.snapshot.cancel(share_id)
+        let cancelled = self.snapshot.cancel(share_id);
+        if cancelled {
+            self.snapshot.stop_discovery();
+        }
+        cancelled
+    }
+
+    /// Closes inbound discoverability.
+    #[inline]
+    pub const fn close_visibility(&mut self) {
+        self.snapshot.close_visibility();
+    }
+
+    /// Ends the running peer search after its daemon-owned deadline.
+    #[inline]
+    pub const fn discovery_timed_out(&mut self) -> bool {
+        self.snapshot.discovery_timed_out()
     }
 
     /// Clears one terminal share after its result has been observed.
@@ -50,7 +66,11 @@ impl Coordinator {
     /// Marks one active share as failed at an external seam.
     #[inline]
     pub const fn fail(&mut self, share_id: u64) -> bool {
-        self.snapshot.fail(share_id)
+        let failed = self.snapshot.fail(share_id);
+        if failed {
+            self.snapshot.stop_discovery();
+        }
+        failed
     }
 
     /// Creates an idle endpoint coordinator.
@@ -100,6 +120,12 @@ impl Coordinator {
         Some(share_id)
     }
 
+    /// Opens inbound discoverability.
+    #[inline]
+    pub const fn open_visibility(&mut self) {
+        self.snapshot.open_visibility();
+    }
+
     /// Pins exactly one observed peer for future outbound shares.
     #[inline]
     pub fn pin_peer(&mut self, peer_id: &str) -> bool {
@@ -122,6 +148,8 @@ impl Coordinator {
         );
         if let Some(peer) = pinned_peer {
             share.select_peer(peer, Phase::AwaitingPeerConsent);
+        } else {
+            self.snapshot.start_discovery();
         }
         self.snapshot.set_active(share);
         share_id
@@ -185,6 +213,7 @@ impl Coordinator {
             return false;
         }
         active.select_peer(peer, Phase::AwaitingPeerConsent);
+        self.snapshot.stop_discovery();
         true
     }
 
@@ -193,6 +222,18 @@ impl Coordinator {
     #[inline]
     pub const fn snapshot(&self) -> &EndpointSnapshot {
         &self.snapshot
+    }
+
+    /// Starts or restarts outbound peer discovery.
+    #[inline]
+    pub const fn start_discovery(&mut self) {
+        self.snapshot.start_discovery();
+    }
+
+    /// Stops outbound peer discovery.
+    #[inline]
+    pub const fn stop_discovery(&mut self) {
+        self.snapshot.stop_discovery();
     }
 
     /// Applies a lifecycle transition when all state predicates match.

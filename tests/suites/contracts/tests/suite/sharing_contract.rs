@@ -1,6 +1,9 @@
 #[cfg(test)]
 mod tests {
-    use quickshare_sharing::{Attachment, Coordinator, Direction, Phase};
+    use quickshare_sharing::{
+        Attachment, Coordinator, Direction, DiscoveryState, Phase,
+        VisibilityState,
+    };
 
     #[test]
     fn submitted_text_waits_for_an_outbound_peer() {
@@ -213,5 +216,49 @@ mod tests {
             .map(quickshare_sharing::PeerSnapshot::id)
             .collect::<Vec<_>>();
         assert_eq!(peer_ids, ["galaxy-tab"]);
+    }
+
+    #[test]
+    fn outbound_discovery_stops_after_peer_selection() {
+        let mut coordinator = Coordinator::new();
+        let share_id = coordinator.queue_outbound(Attachment::text("hello"));
+        assert_eq!(
+            coordinator.snapshot().discovery(),
+            DiscoveryState::Searching,
+        );
+
+        coordinator.observe_peer("pixel-8", "Ollie's Pixel");
+        assert!(coordinator.select_peer(share_id.get(), "pixel-8"));
+        assert_eq!(coordinator.snapshot().discovery(), DiscoveryState::Idle);
+    }
+
+    #[test]
+    fn outbound_discovery_can_expire_and_restart() {
+        let mut coordinator = Coordinator::new();
+        let _share_id = coordinator.queue_outbound(Attachment::text("hello"));
+
+        assert!(coordinator.discovery_timed_out());
+        assert_eq!(
+            coordinator.snapshot().discovery(),
+            DiscoveryState::TimedOut,
+        );
+        coordinator.start_discovery();
+        assert_eq!(
+            coordinator.snapshot().discovery(),
+            DiscoveryState::Searching,
+        );
+    }
+
+    #[test]
+    fn inbound_visibility_can_be_opened_and_closed() {
+        let mut coordinator = Coordinator::new();
+
+        coordinator.open_visibility();
+        assert_eq!(coordinator.snapshot().visibility(), VisibilityState::Open,);
+        coordinator.close_visibility();
+        assert_eq!(
+            coordinator.snapshot().visibility(),
+            VisibilityState::Closed,
+        );
     }
 }

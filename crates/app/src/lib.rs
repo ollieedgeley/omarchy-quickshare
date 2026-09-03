@@ -40,8 +40,15 @@ fn action_request(arguments: &[String]) -> io::Result<Option<RequestEnvelope>> {
         [flag, value] if flag == "--cancel" => {
             RequestEnvelope::cancel(parse_number(value, "share ID")?)
         }
+        [flag] if flag == "--close-visibility" => {
+            RequestEnvelope::close_visibility()
+        }
+        [flag] if flag == "--discover" => RequestEnvelope::discover(),
         [flag, value] if flag == "--dismiss" => {
             RequestEnvelope::dismiss(parse_number(value, "share ID")?)
+        }
+        [flag] if flag == "--open-visibility" => {
+            RequestEnvelope::open_visibility()
         }
         [flag, peer_id] if flag == "--pin" => {
             RequestEnvelope::pin_peer(peer_id)
@@ -54,6 +61,9 @@ fn action_request(arguments: &[String]) -> io::Result<Option<RequestEnvelope>> {
                 parse_number(share_id, "share ID")?,
                 peer_id,
             )
+        }
+        [flag] if flag == "--stop-discovery" => {
+            RequestEnvelope::stop_discovery()
         }
         _ => return simulation_action_request(arguments),
     };
@@ -73,6 +83,9 @@ fn simulation_action_request(
     arguments: &[String],
 ) -> io::Result<Option<RequestEnvelope>> {
     let request = match arguments {
+        [flag] if flag == "--simulate-discovery-timeout" => {
+            RequestEnvelope::simulate_discovery_timeout()
+        }
         [flag, value] if flag == "--simulate-fail" => {
             RequestEnvelope::simulate_fail(parse_number(value, "share ID")?)
         }

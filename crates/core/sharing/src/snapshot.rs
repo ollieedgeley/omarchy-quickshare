@@ -18,6 +18,22 @@ pub enum Direction {
     Outbound,
 }
 
+/// Public state of an outbound peer search.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[non_exhaustive]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryState {
+    /// No peer search is active.
+    #[default]
+    Idle,
+    /// The endpoint is accepting newly observed peers.
+    Searching,
+    /// The daemon ended the bounded search without selecting a peer.
+    TimedOut,
+}
+
 /// A user-visible stage in a share's lifecycle.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[non_exhaustive]
@@ -39,6 +55,20 @@ pub enum Phase {
     Transferring,
     /// The endpoint is discovering a peer for the share.
     WaitingForPeer,
+}
+
+/// Public state of inbound discoverability.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[non_exhaustive]
+#[serde(rename_all = "snake_case")]
+pub enum VisibilityState {
+    /// The endpoint is not currently discoverable for inbound offers.
+    #[default]
+    Closed,
+    /// The endpoint is discoverable for inbound offers.
+    Open,
 }
 
 /// Public state for one active share.
@@ -68,9 +98,15 @@ pub struct ShareSnapshot {
 pub struct EndpointSnapshot {
     /// The share currently displayed by clients.
     active_share: Option<ShareSnapshot>,
+    /// Current outbound peer-search state.
+    #[serde(default, skip_serializing_if = "DiscoveryState::is_idle")]
+    discovery: DiscoveryState,
     /// Peers currently visible to the endpoint.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     peers: Vec<PeerSnapshot>,
+    /// Current inbound discoverability state.
+    #[serde(default, skip_serializing_if = "VisibilityState::is_closed")]
+    visibility: VisibilityState,
 }
 
 impl EndpointSnapshot {
@@ -98,6 +134,28 @@ impl EndpointSnapshot {
             return false;
         }
         active.phase = Phase::Cancelled;
+        true
+    }
+
+    /// Closes inbound discoverability.
+    #[inline]
+    pub(crate) const fn close_visibility(&mut self) {
+        self.visibility = VisibilityState::Closed;
+    }
+
+    /// Returns the current outbound peer-search state.
+    #[must_use]
+    #[inline]
+    pub const fn discovery(&self) -> DiscoveryState {
+        self.discovery
+    }
+
+    /// Ends one running search after its daemon-owned deadline.
+    pub(crate) const fn discovery_timed_out(&mut self) -> bool {
+        if !matches!(self.discovery, DiscoveryState::Searching) {
+            return false;
+        }
+        self.discovery = DiscoveryState::TimedOut;
         true
     }
 
@@ -135,7 +193,9 @@ impl EndpointSnapshot {
     pub(crate) const fn idle() -> Self {
         Self {
             active_share: None,
+            discovery: DiscoveryState::Idle,
             peers: Vec::new(),
+            visibility: VisibilityState::Closed,
         }
     }
 
@@ -148,6 +208,12 @@ impl EndpointSnapshot {
             return;
         }
         self.peers.push(PeerSnapshot::new(peer_id, name));
+    }
+
+    /// Opens inbound discoverability.
+    #[inline]
+    pub(crate) const fn open_visibility(&mut self) {
+        self.visibility = VisibilityState::Open;
     }
 
     /// Returns the peer with this stable identifier.
@@ -198,6 +264,37 @@ impl EndpointSnapshot {
     pub(crate) fn set_active(&mut self, active_share: ShareSnapshot) {
         self.active_share = Some(active_share);
     }
+
+    /// Starts or restarts outbound peer discovery.
+    #[inline]
+    pub(crate) const fn start_discovery(&mut self) {
+        self.discovery = DiscoveryState::Searching;
+    }
+
+    /// Stops outbound peer discovery.
+    #[inline]
+    pub(crate) const fn stop_discovery(&mut self) {
+        self.discovery = DiscoveryState::Idle;
+    }
+
+    /// Returns the current inbound discoverability state.
+    #[must_use]
+    #[inline]
+    pub const fn visibility(&self) -> VisibilityState {
+        self.visibility
+    }
+}
+
+impl DiscoveryState {
+    /// Returns whether no outbound discovery is running.
+    #[inline]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "Serde skip predicates receive fields by reference"
+    )]
+    const fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
 }
 
 impl Phase {
@@ -228,6 +325,18 @@ impl ShareId {
     )]
     pub(crate) const fn new(value: u64) -> Self {
         Self(value)
+    }
+}
+
+impl VisibilityState {
+    /// Returns whether inbound discoverability is closed.
+    #[inline]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "Serde skip predicates receive fields by reference"
+    )]
+    const fn is_closed(&self) -> bool {
+        matches!(self, Self::Closed)
     }
 }
 

@@ -26,5 +26,6 @@ pub use attachment::Attachment;
 pub use coordinator::Coordinator;
 pub use peer::PeerSnapshot;
 pub use snapshot::{
-    Direction, EndpointSnapshot, Phase, ShareId, ShareSnapshot,
+    Direction, DiscoveryState, EndpointSnapshot, Phase, ShareId, ShareSnapshot,
+    VisibilityState,
 };

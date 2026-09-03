@@ -77,6 +77,26 @@ impl Drop for ControlSocket {
 }
 
 impl Daemon {
+    /// Applies endpoint discovery and visibility controls.
+    #[expect(
+        clippy::pattern_type_mismatch,
+        clippy::wildcard_enum_match_arm,
+        reason = "Borrowed non-exhaustive requests require an unhandled case"
+    )]
+    const fn endpoint_response(
+        &mut self,
+        request: &Request,
+    ) -> Option<ResponseEnvelope> {
+        match request {
+            Request::CloseVisibility => self.sharing.close_visibility(),
+            Request::Discover => self.sharing.start_discovery(),
+            Request::OpenVisibility => self.sharing.open_visibility(),
+            Request::StopDiscovery => self.sharing.stop_discovery(),
+            _ => return None,
+        }
+        Some(ResponseEnvelope::applied())
+    }
+
     /// Creates an empty local endpoint.
     #[must_use]
     #[inline]
@@ -110,29 +130,13 @@ impl Daemon {
         &mut self,
         request: &Request,
     ) -> io::Result<ResponseEnvelope> {
+        if let Some(response) = self.endpoint_response(request) {
+            return Ok(response);
+        }
+        if let Some(response) = self.share_response(request) {
+            return Ok(response);
+        }
         match request {
-            Request::Accept { share_id } => {
-                Ok(action_response(self.sharing.accept_inbound(*share_id)))
-            }
-            Request::Cancel { share_id } => {
-                Ok(if self.sharing.cancel(*share_id) {
-                    ResponseEnvelope::cancelled()
-                } else {
-                    ResponseEnvelope::not_found()
-                })
-            }
-            Request::Dismiss { share_id } => {
-                Ok(action_response(self.sharing.dismiss(*share_id)))
-            }
-            Request::PinPeer { peer_id } => {
-                Ok(action_response(self.sharing.pin_peer(peer_id)))
-            }
-            Request::Reject { share_id } => {
-                Ok(action_response(self.sharing.reject_inbound(*share_id)))
-            }
-            Request::SelectPeer { peer_id, share_id } => Ok(action_response(
-                self.sharing.select_peer(*share_id, peer_id),
-            )),
             Request::Snapshot => {
                 Ok(ResponseEnvelope::snapshot(self.sharing.snapshot()))
             }
@@ -210,6 +214,44 @@ impl Daemon {
         Ok(())
     }
 
+    /// Applies consent and peer-selection actions when they are recognized.
+    #[expect(
+        clippy::pattern_type_mismatch,
+        clippy::wildcard_enum_match_arm,
+        reason = "Borrowed non-exhaustive requests require an unhandled case"
+    )]
+    fn share_response(
+        &mut self,
+        request: &Request,
+    ) -> Option<ResponseEnvelope> {
+        let response = match request {
+            Request::Accept { share_id } => {
+                action_response(self.sharing.accept_inbound(*share_id))
+            }
+            Request::Cancel { share_id } => {
+                if self.sharing.cancel(*share_id) {
+                    ResponseEnvelope::cancelled()
+                } else {
+                    ResponseEnvelope::not_found()
+                }
+            }
+            Request::Dismiss { share_id } => {
+                action_response(self.sharing.dismiss(*share_id))
+            }
+            Request::PinPeer { peer_id } => {
+                action_response(self.sharing.pin_peer(peer_id))
+            }
+            Request::Reject { share_id } => {
+                action_response(self.sharing.reject_inbound(*share_id))
+            }
+            Request::SelectPeer { peer_id, share_id } => {
+                action_response(self.sharing.select_peer(*share_id, peer_id))
+            }
+            _ => return None,
+        };
+        Some(response)
+    }
+
     /// Creates an endpoint backed by deterministic local peers.
     #[must_use]
     #[inline]
@@ -224,16 +266,17 @@ impl Daemon {
         endpoint
     }
 
-    /// Applies a deterministic peer event when simulation is enabled.
+    /// Applies one simulator request and reports whether state changed.
     #[expect(
         clippy::pattern_type_mismatch,
-        reason = "Borrowed simulation records retain their payload ownership"
+        clippy::wildcard_enum_match_arm,
+        reason = "Borrowed non-exhaustive requests require an unhandled case"
     )]
-    fn simulation_response(&mut self, request: &Request) -> ResponseEnvelope {
-        if !self.simulated {
-            return ResponseEnvelope::not_found();
-        }
-        let applied = match request {
+    fn simulation_applied(&mut self, request: &Request) -> bool {
+        match request {
+            Request::SimulateDiscoveryTimeout => {
+                self.sharing.discovery_timed_out()
+            }
             Request::SimulateFail { share_id } => self.sharing.fail(*share_id),
             Request::SimulateIncomingFile { name, size_bytes } => self
                 .sharing
@@ -264,20 +307,16 @@ impl Daemon {
                 share_id,
                 transferred_bytes,
             } => self.sharing.record_progress(*share_id, *transferred_bytes),
-            Request::Accept { .. }
-            | Request::Cancel { .. }
-            | Request::Dismiss { .. }
-            | Request::PinPeer { .. }
-            | Request::Reject { .. }
-            | Request::SelectPeer { .. }
-            | Request::Snapshot
-            | Request::Status
-            | Request::SubmitFile { .. }
-            | Request::SubmitText { .. }
-            | Request::SubmitUrl { .. }
-            | _ => false,
-        };
-        action_response(applied)
+            _ => false,
+        }
+    }
+
+    /// Applies a deterministic peer event when simulation is enabled.
+    fn simulation_response(&mut self, request: &Request) -> ResponseEnvelope {
+        if !self.simulated {
+            return ResponseEnvelope::not_found();
+        }
+        action_response(self.simulation_applied(request))
     }
 }
 

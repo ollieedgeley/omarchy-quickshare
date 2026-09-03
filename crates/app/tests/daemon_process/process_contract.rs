@@ -11,7 +11,10 @@ use std::time::Instant;
 use omarchy_quickshare as _;
 use quickshare_control::codec::read_response;
 use quickshare_control::response::Response;
-use quickshare_sharing::{Attachment, Direction, EndpointSnapshot, Phase};
+use quickshare_sharing::{
+    Attachment, Direction, DiscoveryState, EndpointSnapshot, Phase,
+    VisibilityState,
+};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_omarchy-quickshare");
 const ACTIVE_TEXT_SNAPSHOT: &str = include_str!(
@@ -456,6 +459,46 @@ fn simulated_daemon_changes_visible_peers() {
 }
 
 #[test]
+fn simulated_daemon_drives_discovery_and_visibility() {
+    let root = runtime_fixture_path();
+    let fixture_result = DaemonProcessFixture::start_simulated(root);
+    assert!(fixture_result.is_ok(), "failed to start simulated daemon");
+    let Ok(fixture) = fixture_result else {
+        return;
+    };
+    assert_command(fixture.runtime_directory(), &["--discover"]);
+    assert_endpoint_modes(
+        fixture.runtime_directory(),
+        DiscoveryState::Searching,
+        VisibilityState::Closed,
+    );
+    assert_command(fixture.runtime_directory(), &["--open-visibility"]);
+    assert_endpoint_modes(
+        fixture.runtime_directory(),
+        DiscoveryState::Searching,
+        VisibilityState::Open,
+    );
+    assert_command(
+        fixture.runtime_directory(),
+        &["--simulate-discovery-timeout"],
+    );
+    assert_endpoint_modes(
+        fixture.runtime_directory(),
+        DiscoveryState::TimedOut,
+        VisibilityState::Open,
+    );
+    assert_command(fixture.runtime_directory(), &["--discover"]);
+    assert_command(fixture.runtime_directory(), &["--stop-discovery"]);
+    assert_command(fixture.runtime_directory(), &["--close-visibility"]);
+    assert_endpoint_modes(
+        fixture.runtime_directory(),
+        DiscoveryState::Idle,
+        VisibilityState::Closed,
+    );
+    assert!(fixture.stop().is_ok(), "failed to stop simulated daemon");
+}
+
+#[test]
 fn simulated_daemon_offers_url_and_file_attachments() {
     let root = runtime_fixture_path();
     let fixture_result = DaemonProcessFixture::start_simulated(root);
@@ -491,6 +534,20 @@ fn assert_command(runtime_directory: &Path, arguments: &[&str]) {
         return;
     };
     assert!(output.status.success(), "command rejected: {arguments:?}");
+}
+
+fn assert_endpoint_modes(
+    runtime_directory: &Path,
+    discovery: DiscoveryState,
+    visibility: VisibilityState,
+) {
+    let snapshot_result = endpoint_snapshot(runtime_directory);
+    assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
+    let Ok(snapshot) = snapshot_result else {
+        return;
+    };
+    assert_eq!(snapshot.discovery(), discovery);
+    assert_eq!(snapshot.visibility(), visibility);
 }
 
 fn assert_active_peer(runtime_directory: &Path, peer_id: &str, phase: Phase) {

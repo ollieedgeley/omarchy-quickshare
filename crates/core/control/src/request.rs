@@ -35,12 +35,42 @@ impl Envelope {
         }
     }
 
+    /// Creates a request to close inbound discoverability.
+    #[must_use]
+    #[inline]
+    pub const fn close_visibility() -> Self {
+        Self {
+            request: Request::CloseVisibility,
+            version: PROTOCOL_VERSION,
+        }
+    }
+
+    /// Creates a request to start or restart outbound peer discovery.
+    #[must_use]
+    #[inline]
+    pub const fn discover() -> Self {
+        Self {
+            request: Request::Discover,
+            version: PROTOCOL_VERSION,
+        }
+    }
+
     /// Creates a request to clear one terminal share from public state.
     #[must_use]
     #[inline]
     pub const fn dismiss(share_id: u64) -> Self {
         Self {
             request: Request::Dismiss { share_id },
+            version: PROTOCOL_VERSION,
+        }
+    }
+
+    /// Creates a request to open inbound discoverability.
+    #[must_use]
+    #[inline]
+    pub const fn open_visibility() -> Self {
+        Self {
+            request: Request::OpenVisibility,
             version: PROTOCOL_VERSION,
         }
     }
@@ -83,6 +113,16 @@ impl Envelope {
                 peer_id: String::from(peer_id),
                 share_id,
             },
+            version: PROTOCOL_VERSION,
+        }
+    }
+
+    /// Creates a deterministic discovery expiry for local testing.
+    #[must_use]
+    #[inline]
+    pub const fn simulate_discovery_timeout() -> Self {
+        Self {
+            request: Request::SimulateDiscoveryTimeout,
             version: PROTOCOL_VERSION,
         }
     }
@@ -215,6 +255,16 @@ impl Envelope {
         }
     }
 
+    /// Creates a request to stop outbound peer discovery.
+    #[must_use]
+    #[inline]
+    pub const fn stop_discovery() -> Self {
+        Self {
+            request: Request::StopDiscovery,
+            version: PROTOCOL_VERSION,
+        }
+    }
+
     /// Creates a request to submit one file for sharing.
     #[must_use]
     #[inline]
@@ -274,11 +324,17 @@ pub enum Request {
         /// Identifier returned when the share was queued.
         share_id: u64,
     },
+    /// Close inbound discoverability.
+    CloseVisibility,
+    /// Start or restart outbound peer discovery.
+    Discover,
     /// Clear one terminal share after its result has been observed.
     Dismiss {
         /// Stable local share identifier.
         share_id: u64,
     },
+    /// Open inbound discoverability.
+    OpenVisibility,
     /// Prefer one observed peer for future outbound shares.
     PinPeer {
         /// Stable identifier advertised by the peer.
@@ -296,6 +352,8 @@ pub enum Request {
         /// Stable local share identifier.
         share_id: u64,
     },
+    /// Expire one running search on a simulated endpoint.
+    SimulateDiscoveryTimeout,
     /// Inject a transfer failure into a simulated endpoint.
     SimulateFail {
         /// Stable local share identifier.
@@ -351,6 +409,8 @@ pub enum Request {
     Snapshot,
     /// Check whether the local endpoint can accept commands.
     Status,
+    /// Stop outbound peer discovery.
+    StopDiscovery,
     /// Submit one file for an outbound share.
     SubmitFile {
         /// The path to the file on the local machine.
