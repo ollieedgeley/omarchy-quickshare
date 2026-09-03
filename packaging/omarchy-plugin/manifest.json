@@ -5,14 +5,14 @@
   "version": "0.1.0",
   "author": "Ollie Edgeley",
   "license": "Apache-2.0",
-  "description": "Shows the local Omarchy Quick Share endpoint status.",
+  "description": "Controls the local Omarchy Quick Share endpoint.",
   "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
     "displayName": "Quick Share",
-    "description": "Open Quick Share status",
+    "description": "Open Quick Share transfers",
     "category": "System",
     "defaultSection": "right",
     "allowMultiple": false

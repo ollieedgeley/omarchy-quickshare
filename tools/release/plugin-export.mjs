@@ -20,6 +20,7 @@ const PLUGIN_FILES = [
   "BarWidget.qml",
   "LICENSE",
   "README.md",
+  "SharePanel.qml",
   "StatusProbe.qml",
   "manifest.json",
   "release.json",

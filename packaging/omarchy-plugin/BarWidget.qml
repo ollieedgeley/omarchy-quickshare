@@ -49,7 +49,7 @@ BarWidget {
     owner: root
     open: root.opened
     contentWidth: Style.space(300)
-    contentHeight: Style.space(150)
+    contentHeight: Style.space(260)
 
     Column {
       anchors.fill: parent
@@ -71,6 +71,7 @@ BarWidget {
           : Color.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.body
+        visible: status.protocolState !== "ready"
       }
 
       Text {
@@ -80,6 +81,30 @@ BarWidget {
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
         wrapMode: Text.WordWrap
+        visible: status.protocolState !== "ready"
+      }
+
+      SharePanel {
+        width: parent.width
+        accentColor: Color.accent
+        dangerColor: Color.urgent
+        foregroundColor: Color.foreground
+        mutedColor: Qt.darker(Color.foreground, 1.4)
+        snapshot: status.endpointSnapshot
+        surfaceColor: Color.popups.background
+        visible: status.protocolState === "ready"
+        onAcceptRequested: function(shareId) {
+          status.accept(shareId)
+        }
+        onCancelRequested: function(shareId) {
+          status.cancel(shareId)
+        }
+        onPeerSelected: function(shareId, peerId) {
+          status.sendTo(shareId, peerId)
+        }
+        onRejectRequested: function(shareId) {
+          status.reject(shareId)
+        }
       }
     }
   }

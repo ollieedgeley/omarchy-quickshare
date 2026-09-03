@@ -17,7 +17,20 @@ import { fileURLToPath } from "node:url";
 import { createPluginRepository } from "../plugin-export.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const HARNESS = join(ROOT, "tools", "release", "tests", "status-harness.qml");
+const STATUS_HARNESS = join(
+  ROOT,
+  "tools",
+  "release",
+  "tests",
+  "status-harness.qml",
+);
+const PANEL_HARNESS = join(
+  ROOT,
+  "tools",
+  "release",
+  "tests",
+  "panel-harness.qml",
+);
 const PLUGIN_SOURCE = join(ROOT, "packaging", "omarchy-plugin");
 const COMMIT_LENGTH = 40;
 const HARNESS_TIMEOUT_MS = 8_000;
@@ -29,6 +42,7 @@ const EXPECTED_FILES = [
   "BarWidget.qml",
   "LICENSE",
   "README.md",
+  "SharePanel.qml",
   "StatusProbe.qml",
   "manifest.json",
   "release.json",
@@ -48,7 +62,19 @@ function prepareHarness(root) {
     copyFileSync(join(PLUGIN_SOURCE, file), join(directory, file));
   }
   const harness = join(directory, "status-harness.qml");
-  copyFileSync(HARNESS, harness);
+  copyFileSync(STATUS_HARNESS, harness);
+  return harness;
+}
+
+function preparePanelHarness(root) {
+  const directory = join(root, "harness");
+  mkdirSync(directory);
+  copyFileSync(
+    join(PLUGIN_SOURCE, "SharePanel.qml"),
+    join(directory, "SharePanel.qml"),
+  );
+  const harness = join(directory, "panel-harness.qml");
+  copyFileSync(PANEL_HARNESS, harness);
   return harness;
 }
 
@@ -89,6 +115,18 @@ test("Quick Shell runtime matches the supported version", () => {
 
 test("Quick Shell observes every native availability state", () => {
   const harness = prepareHarness(temporaryDirectory());
+  const result = spawnSync(QUICKSHELL, ["--no-color", "-p", harness], {
+    encoding: "utf8",
+    timeout: HARNESS_TIMEOUT_MS,
+  });
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+
+  assert.equal(result.status, 0, output);
+  assert.match(output, SUCCESS_PATTERN);
+});
+
+test("Quick Shell renders and controls both transfer directions", () => {
+  const harness = preparePanelHarness(temporaryDirectory());
   const result = spawnSync(QUICKSHELL, ["--no-color", "-p", harness], {
     encoding: "utf8",
     timeout: HARNESS_TIMEOUT_MS,

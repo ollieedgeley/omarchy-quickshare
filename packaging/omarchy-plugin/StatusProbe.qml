@@ -6,6 +6,8 @@ QtObject {
 
   property string protocolState: "checking"
   property var activeShare: ({})
+  property var actionCommand: []
+  property string actionError: ""
   property var endpointSnapshot: ({})
   property int minimumProtocol: -1
   property int maximumProtocol: -1
@@ -41,8 +43,7 @@ QtObject {
   }
   readonly property string statusDetail: {
     if (protocolState === "ready") {
-      return "The binary and local endpoint are ready. Device discovery and "
-        + "transfers are not available in this development build."
+      return "The binary and local endpoint are ready."
     }
     if (protocolState === "incompatible") {
       return "The binary does not support this plugin's control protocol. "
@@ -56,6 +57,14 @@ QtObject {
         + installRoutes
     }
     return "Looking for omarchy-quickshare on PATH."
+  }
+
+  function accept(shareId) {
+    runAction(["--accept", String(shareId)])
+  }
+
+  function cancel(shareId) {
+    runAction(["--cancel", String(shareId)])
   }
 
   function acceptRelease(source) {
@@ -143,6 +152,29 @@ QtObject {
       root.versionProbe.running = true
     } else if (!releaseReady) {
       root.releaseFile.reload()
+    }
+  }
+
+  function reject(shareId) {
+    runAction(["--reject", String(shareId)])
+  }
+
+  function runAction(arguments) {
+    if (root.actionProbe.running) return
+    actionError = ""
+    actionCommand = ["env", "omarchy-quickshare"].concat(arguments)
+    root.actionProbe.running = true
+  }
+
+  function sendTo(shareId, peerId) {
+    runAction(["--send-to", String(shareId), String(peerId)])
+  }
+
+  property Process actionProbe: Process {
+    command: root.actionCommand
+    onExited: function(exitCode) {
+      if (exitCode !== 0) root.actionError = "Quick Share action failed."
+      root.refresh()
     }
   }
 

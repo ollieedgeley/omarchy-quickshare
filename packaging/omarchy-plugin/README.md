@@ -1,11 +1,12 @@
 # Omarchy Quick Share plugin
 
 This is the Omarchy shell plugin for the native `omarchy-quickshare` binary.
-It adds a Quick Share icon to the bar and reports whether the installed binary
-supports the plugin's local control protocol.
+It adds a Quick Share icon to the bar. The panel reads the native endpoint's
+peer and transfer state, lets the user choose an outbound peer, handles inbound
+consent, and provides transfer progress and cancellation controls.
 
-The current development build does not discover peers or transfer attachments.
-The panel says so rather than displaying invented devices or progress.
+The native binary also has an explicit simulated-peer mode for exercising both
+directions without a physical phone. Normal service startup does not enable it.
 
 ## Install
 
