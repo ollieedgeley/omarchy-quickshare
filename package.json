@@ -2,6 +2,7 @@
   "name": "omarchy-quickshare-development",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "description": "Development-only quality tooling for omarchy-quickshare",
   "scripts": {
     "lint:javascript": "eslint . --max-warnings 0 --no-warn-ignored",

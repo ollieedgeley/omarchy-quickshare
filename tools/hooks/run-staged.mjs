@@ -192,6 +192,7 @@ function affectedCandidates() {
 
 function isToolingPath(path) {
   const prefixes = [
+    ".omp/",
     ".husky/",
     "rules/ast-grep/",
     "tests/environments/",

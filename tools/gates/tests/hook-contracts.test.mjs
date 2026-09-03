@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import blockMainGates from "../../../.omp/hooks/pre/block-main-gates.js";
 import { packageSelection, parseAffectedJson } from "../../hooks/affected.mjs";
 import { validateCommitMessage } from "../../hooks/commit-msg.mjs";
 import { parseNameStatus } from "../../hooks/prepare-staged.mjs";
@@ -33,6 +34,21 @@ const VERIFY_ORDER_TEST =
   "pre-push verification runs cheap static gates before tests";
 const MAKE_CONTINUATION_PATTERN = /\\\n\s*/gu;
 const WHITESPACE_PATTERN = /\s+/u;
+const AGGREGATE_GATE_PATTERN = /Git hooks own/u;
+const OMP_TOOLING_PATTERN = /"\.omp\/"/u;
+
+function gateGuardResult(command, toolName = "bash") {
+  let handler = null;
+  blockMainGates({
+    on(event, candidate) {
+      if (event === "tool_call") {
+        handler = candidate;
+      }
+    },
+  });
+  assert.equal(typeof handler, "function");
+  return handler({ input: { command }, toolName });
+}
 
 function cargoPackage({ id, manifestPath, name, targetKinds = ["lib"] }) {
   return Object.fromEntries([
@@ -217,4 +233,43 @@ test("Python tooling selects all pinned Ruff rules", () => {
   assert.match(setup, RUFF_DIGEST_PATTERN);
   assert.match(makefile, RUFF_VERIFY_PATTERN);
   assert.ok(makefile.includes("pre-commit-python"));
+});
+
+test("OMP blocks direct aggregate Make gates", () => {
+  const commands = [
+    "make pre-commit",
+    "make pre-push",
+    "make verify",
+    "make build",
+    "CARGO_TARGET_DIR=target/check make -j2 verify",
+    "cd /tmp && /usr/bin/make build",
+  ];
+  for (const command of commands) {
+    const result = gateGuardResult(command);
+    assert.equal(result?.block, true, command);
+    assert.match(result.reason, AGGREGATE_GATE_PATTERN);
+  }
+});
+
+test("OMP allows narrow gates and Git-owned aggregate gates", () => {
+  const commands = [
+    "make verify-app",
+    "make build-release",
+    "make test-rust",
+    "git commit -m 'test: exercise hooks'",
+    "git push origin main",
+    "printf 'make verify\\n'",
+  ];
+  for (const command of commands) {
+    assert.equal(gateGuardResult(command), null, command);
+  }
+  assert.equal(gateGuardResult("make verify", "eval"), null);
+});
+
+test("staged tooling selection includes OMP hooks", () => {
+  const source = readFileSync(
+    join(ROOT, "tools", "hooks", "run-staged.mjs"),
+    "utf8",
+  );
+  assert.match(source, OMP_TOOLING_PATTERN);
 });
