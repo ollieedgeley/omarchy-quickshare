@@ -29,6 +29,10 @@ const RUFF_PREVIEW_PATTERN = /preview = true/u;
 const RUFF_VERSION_PATTERN = /RUFF_VERSION="0\.16\.0"/u;
 const RUFF_DIGEST_PATTERN = /98001c995a134d95f9bc83106a7f94b5/u;
 const RUFF_VERIFY_PATTERN = /verify-tooling:.*lint-python/u;
+const VERIFY_ORDER_TEST =
+  "pre-push verification runs cheap static gates before tests";
+const MAKE_CONTINUATION_PATTERN = /\\\n\s*/gu;
+const WHITESPACE_PATTERN = /\s+/u;
 
 function cargoPackage({ id, manifestPath, name, targetKinds = ["lib"] }) {
   return Object.fromEntries([
@@ -37,6 +41,16 @@ function cargoPackage({ id, manifestPath, name, targetKinds = ["lib"] }) {
     ["manifest_path", manifestPath],
     ["targets", targetKinds.map((kind) => ({ kind: [kind] }))],
   ]);
+}
+
+function makePrerequisites(source, target) {
+  return (
+    source
+      .replaceAll(MAKE_CONTINUATION_PATTERN, " ")
+      .split("\n")
+      .find((line) => line.startsWith(`${target}:`) && !line.includes("##")) ??
+    ""
+  );
 }
 
 test("Conventional Commit validation accepts the project types", () => {
@@ -171,6 +185,26 @@ test(PRE_PUSH_ENVIRONMENT_TEST, () => {
   assert.match(source, RUFF_ENV_PATTERN);
   assert.match(source, TEST_ENV_PATTERN);
   assert.doesNotMatch(source, BROAD_CACHE_PATTERN);
+});
+test(VERIFY_ORDER_TEST, () => {
+  const makefile = readFileSync(join(ROOT, "Makefile"), "utf8");
+  const prerequisites = makePrerequisites(makefile, "verify");
+  const expectedOrder = [
+    "format-check",
+    "lint-javascript",
+    "check",
+    "lint-rust",
+    "test-ast-rules",
+    "test-rust",
+    "test-oracle-toolchain",
+  ];
+  const gates = prerequisites.split(WHITESPACE_PATTERN);
+  const positions = expectedOrder.map((gate) => gates.indexOf(gate));
+  assert.ok(positions.every((position) => position >= 0));
+  assert.deepEqual(
+    positions,
+    positions.toSorted((left, right) => left - right),
+  );
 });
 
 test("Python tooling selects all pinned Ruff rules", () => {

@@ -372,19 +372,21 @@ verify-tooling: lint-dbus lint-bluetooth-radio lint-network lint-android
 verify-tooling: test-tooling test-ast-rules test-nearby-linux-tooling
 
 verify: ## Run the complete local quality suite.
-verify: verify-app verify-tooling test-source-cache
-verify: test-oracle-toolchain test-oracle-reference test-nearshare-reference
-verify: test-nearby-linux-connections test-nearby-linux-sharing
-verify: test-nearby-linux-sharing-actions test-nearby-linux-sharing-fixtures
-verify: test-diverse-lan test-rust-lan
-verify: test-oracle-bluetooth test-oracle-ble test-oracle-lan
-verify: test-oracle-hotspot test-oracle-wifi-direct test-oracle-bwu-handler
-verify: test-oracle-bwu-fallback test-proxy-toxiproxy
-verify: test-dbus-bluez test-dbus-networkmanager
-verify: test-bluetooth-controller test-bluetooth-ble
-verify: test-bluetooth-classic test-network-wmediumd test-network-netem
-verify: test-network-lan test-network-hotspot-client
-verify: test-network-hotspot-owner test-network-wifi-direct-client
+verify: format-check lint-structure lint-javascript lint-python lint-docs \
+	lint-ast lint-sources lint-oracle lint-nearshare lint-nearby-linux \
+	lint-diverse-lan lint-proxies lint-dbus lint-bluetooth-radio \
+	lint-network lint-android check lint-rust test-ast-rules \
+	test-nearby-linux-tooling test-tooling test-rust test-source-cache \
+	test-oracle-toolchain test-oracle-reference test-nearshare-reference \
+	test-nearby-linux-connections test-nearby-linux-sharing \
+	test-nearby-linux-sharing-actions test-nearby-linux-sharing-fixtures \
+	test-diverse-lan test-rust-lan test-oracle-bluetooth test-oracle-ble \
+	test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct \
+	test-oracle-bwu-handler test-oracle-bwu-fallback test-proxy-toxiproxy \
+	test-dbus-bluez test-dbus-networkmanager test-bluetooth-controller \
+	test-bluetooth-ble test-bluetooth-classic test-network-wmediumd \
+	test-network-netem test-network-lan test-network-hotspot-client \
+	test-network-hotspot-owner test-network-wifi-direct-client
 
 build: ## Build the complete locked workspace after verification.
 	@$(TIMEOUT) cargo build --workspace --all-targets --all-features --locked

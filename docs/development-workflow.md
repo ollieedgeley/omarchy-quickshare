@@ -173,6 +173,9 @@ make build
 Run `make build` only if `make verify` succeeds. A verification failure must prevent the build from starting. A build failure must abort the push.
 
 Do not verify or build a dirty working tree and assume it represents the pushed commit. Reuse safe build caches, but keep source, generated outputs, build artifacts, and reports tied to the commit SHA. Dependencies and tool versions remain locked. A missing tool or dependency fails the hook rather than silently skipping a gate.
+Fail fast from cheapest to costliest: check all formatting and static lint or
+environment definitions before compiler-backed Rust diagnostics, then run
+fast in-process tests before oracle, simulator, and virtual-system tests.
 
 `make verify` is the complete non-release suite defined by the Makefile policy. It includes formatting, compiler checks, Clippy, rustdoc, ast-grep, rule tests, unit tests, integration tests, oracle checks, fixture checks, packaging checks, and every reproducible simulator or virtual-system check described by the connection-test policy. Checks that need Linux capabilities or virtual radios must run non-interactively through a prepared local VM, container, or namespace. Physical-phone checks are manual only. Hooks, `make verify`, and `make build` must never attempt them.
 
