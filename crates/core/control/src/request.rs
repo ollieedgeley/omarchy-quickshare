@@ -24,6 +24,18 @@ impl Envelope {
             version: PROTOCOL_VERSION,
         }
     }
+
+    /// Creates a request to submit a URL for sharing.
+    #[must_use]
+    #[inline]
+    pub fn submit_url(url: &str) -> Self {
+        Self {
+            request: Request::SubmitUrl {
+                url: String::from(url),
+            },
+            version: PROTOCOL_VERSION,
+        }
+    }
 }
 
 /// A command supported by the local endpoint.
@@ -35,5 +47,10 @@ pub enum Request {
     SubmitText {
         /// The exact text supplied by the user.
         text: String,
+    },
+    /// Submit a URL for an outbound share.
+    SubmitUrl {
+        /// The exact URL supplied by the user.
+        url: String,
     },
 }

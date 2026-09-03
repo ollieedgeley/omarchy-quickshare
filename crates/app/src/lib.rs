@@ -47,8 +47,14 @@ where
             "usage: omarchy-quickshare <text>",
         ));
     }
+    let request = if text.starts_with("http://") || text.starts_with("https://")
+    {
+        RequestEnvelope::submit_url(text)
+    } else {
+        RequestEnvelope::submit_text(text)
+    };
     let mut stream = UnixStream::connect(socket_path)?;
-    write_request(&mut stream, &RequestEnvelope::submit_text(text))?;
+    write_request(&mut stream, &request)?;
     let response = read_response(&mut BufReader::new(stream))?;
     if response.version() != PROTOCOL_VERSION {
         return Err(io::Error::new(

@@ -16,6 +16,9 @@ mod tests {
     const RESPONSE_FIXTURE: &str = include_str!(
         "../../../../fixtures/control/v1/submit-text-queued-response.jsonl"
     );
+    const URL_REQUEST_FIXTURE: &str = include_str!(
+        "../../../../fixtures/control/v1/submit-url-request.jsonl"
+    );
     const EXPECTED_OUTPUT: &[u8] = b"Share queued.\n";
     static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
@@ -76,19 +79,18 @@ mod tests {
         Ok(request)
     }
 
-    #[test]
-    fn bare_text_is_submitted_to_the_local_endpoint() {
+    fn assert_submission(value: &str, expected_request: &str) {
         let fake_result = ControlDaemonFake::start();
         assert!(fake_result.is_ok(), "failed to start control fake");
         let Ok(fake) = fake_result else {
             return;
         };
         let mut output = Vec::new();
-        let arguments = vec![String::from("hello from Omarchy")];
+        let arguments = vec![String::from(value)];
 
         let run_result =
             omarchy_quickshare::run(&arguments, fake.socket(), &mut output);
-        assert!(run_result.is_ok(), "text submission failed: {run_result:?}");
+        assert!(run_result.is_ok(), "submission failed: {run_result:?}");
 
         let request_result = fake.finish();
         assert!(
@@ -98,7 +100,17 @@ mod tests {
         let Ok(request) = request_result else {
             return;
         };
-        assert_eq!(request, REQUEST_FIXTURE);
+        assert_eq!(request, expected_request);
         assert_eq!(output, EXPECTED_OUTPUT);
+    }
+
+    #[test]
+    fn bare_text_is_submitted_to_the_local_endpoint() {
+        assert_submission("hello from Omarchy", REQUEST_FIXTURE);
+    }
+
+    #[test]
+    fn url_is_submitted_to_the_local_endpoint_as_a_url() {
+        assert_submission("https://example.com/share", URL_REQUEST_FIXTURE);
     }
 }
