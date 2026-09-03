@@ -21,6 +21,16 @@ impl Envelope {
         }
     }
 
+    /// Creates a response for a ready local endpoint.
+    #[must_use]
+    #[inline]
+    pub const fn ready() -> Self {
+        Self {
+            response: Response::Ready,
+            version: crate::PROTOCOL_VERSION,
+        }
+    }
+
     /// Returns the endpoint's response.
     #[must_use]
     #[inline]
@@ -43,4 +53,6 @@ impl Envelope {
 pub enum Response {
     /// The endpoint queued the command for processing.
     Queued,
+    /// The local endpoint is ready to accept commands.
+    Ready,
 }

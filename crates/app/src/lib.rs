@@ -77,6 +77,23 @@ pub fn run<Output>(
 where
     Output: Write,
 {
+    if matches!(arguments, [argument] if argument == "--protocol-version") {
+        return writeln!(output, "{PROTOCOL_VERSION}");
+    }
+    if matches!(arguments, [argument] if argument == "--runtime-status") {
+        let mut stream = UnixStream::connect(socket_path)?;
+        write_request(&mut stream, &RequestEnvelope::status())?;
+        let response = read_response(&mut BufReader::new(stream))?;
+        if response.version() == PROTOCOL_VERSION
+            && matches!(response.response(), Response::Ready)
+        {
+            return writeln!(output, "available");
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "endpoint did not confirm readiness",
+        ));
+    }
     let request = request(arguments, current_directory)?;
     let mut stream = UnixStream::connect(socket_path)?;
     write_request(&mut stream, &request)?;
@@ -89,7 +106,7 @@ where
     }
     match *response.response() {
         Response::Queued => writeln!(output, "Share queued."),
-        _ => Err(io::Error::new(
+        Response::Ready | _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "endpoint returned an unsupported response",
         )),

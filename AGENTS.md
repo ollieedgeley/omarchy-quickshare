@@ -101,6 +101,8 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make test-oracle-{bluetooth,ble,lan,hotspot,wifi-direct}` checks one pinned Google simulated connection family.
 - `make test-oracle-bwu-handler` checks selected Bluetooth, Wi-Fi Direct, and LAN simulated semantics; `make test-oracle-bwu-fallback` checks selected fallback semantics, not cross-peer transfer interoperability.
 - `make test-rust` runs workspace Rust tests; `make test-tooling` runs quality-gate and hook contract tests.
+- `make test-plugin-release` checks the allowlisted plugin export and every
+  native availability state through Quick Shell.
 - `make test-contracts` runs shared transfer scenarios against fast doubles; simulator adapters consume the same scenarios.
 - `make test-nearshare-reference` runs the pinned diverse LAN peer through discovery, encryption, both transfer roles, and byte-integrity checks.
 - `make diverse-lan-{up,down}` measures the isolated NearShare↔Google-derived LAN lifecycle.

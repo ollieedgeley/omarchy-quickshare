@@ -5,7 +5,7 @@ use std::os::unix::net::UnixListener;
 
 use quickshare_control::PROTOCOL_VERSION;
 use quickshare_control::codec::{read_request, write_response};
-use quickshare_control::request::Envelope as RequestEnvelope;
+use quickshare_control::request::{Envelope as RequestEnvelope, Request};
 use quickshare_control::response::Envelope as ResponseEnvelope;
 
 /// The same-user local endpoint state.
@@ -45,6 +45,9 @@ impl Daemon {
                 io::ErrorKind::InvalidData,
                 "client uses an unsupported control protocol",
             ));
+        }
+        if matches!(request.request(), Request::Status) {
+            return write_response(&mut stream, &ResponseEnvelope::ready());
         }
         self.queued.push(request);
         write_response(&mut stream, &ResponseEnvelope::queued())

@@ -12,6 +12,7 @@ ESLINT ?= $(NODE_BIN)/eslint
 PRETTIER ?= $(NODE_BIN)/prettier
 MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 RUFF ?= $(CURDIR)/.cache/tools/ruff-0.16.0/ruff
+QUICKSHELL ?= quickshell
 REPOSITORY_FILES = git ls-files --cached --others --exclude-standard -z
 
 .PHONY: help setup hooks-install ruff-provision sources-fetch
@@ -24,7 +25,7 @@ REPOSITORY_FILES = git ls-files --cached --others --exclude-standard -z
 .PHONY: lint-dbus
 .PHONY: lint-bluetooth-radio lint-network lint-android
 .PHONY: test test-rust test-contracts test-tooling test-ast-rules
-.PHONY: test-source-cache
+.PHONY: test-source-cache test-plugin-release plugin-export
 .PHONY: test-oracle-toolchain test-oracle-reference
 .PHONY: test-nearshare-reference test-nearby-linux-tooling
 .PHONY: test-nearby-linux-connections test-nearby-linux-sharing
@@ -167,6 +168,13 @@ test-contracts: ## Run shared transfer scenarios against fast test doubles.
 
 test-tooling: ## Run quality-gate and hook contract tests.
 	@$(TIMEOUT) npm run test:tooling
+
+test-plugin-release: ## Check the plugin export and native status states.
+	@QUICKSHELL=$(QUICKSHELL) $(TIMEOUT) node --test \
+		tools/release/tests/plugin-release-contract.test.mjs
+
+plugin-export: ## Create the validated local plugin Git repository.
+	@node tools/release/plugin-export.mjs
 
 test-ast-rules: ## Run ast-grep rule fixtures and committed snapshots.
 	@$(TIMEOUT) $(AST_GREP) test --config sgconfig.yml

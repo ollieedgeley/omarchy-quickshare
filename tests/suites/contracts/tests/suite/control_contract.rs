@@ -21,6 +21,11 @@ mod tests {
     const URL_REQUEST_FIXTURE: &str = include_str!(
         "../../../../fixtures/control/v1/submit-url-request.jsonl"
     );
+    const STATUS_REQUEST_FIXTURE: &str =
+        include_str!("../../../../fixtures/control/v1/status-request.jsonl");
+    const STATUS_RESPONSE_FIXTURE: &str = include_str!(
+        "../../../../fixtures/control/v1/status-ready-response.jsonl"
+    );
     const EXPECTED_OUTPUT: &[u8] = b"Share queued.\n";
     static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
@@ -28,6 +33,12 @@ mod tests {
         root: PathBuf,
         socket: PathBuf,
         worker: JoinHandle<io::Result<String>>,
+    }
+
+    struct LocalEndpointFixture {
+        root: PathBuf,
+        socket: PathBuf,
+        worker: JoinHandle<io::Result<Daemon>>,
     }
 
     struct FileFixture {
@@ -67,10 +78,6 @@ mod tests {
             &self.socket
         }
 
-        #[expect(
-            clippy::single_call_fn,
-            reason = "Named fake setup keeps the behavior test focused"
-        )]
         fn start() -> io::Result<Self> {
             let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
             let root = env::temp_dir().join(format!(
@@ -89,6 +96,41 @@ mod tests {
         }
     }
 
+    impl LocalEndpointFixture {
+        fn finish(self) -> io::Result<Daemon> {
+            let endpoint = self.worker.join().map_err(|_panic| {
+                io::Error::other("local endpoint panicked")
+            })?;
+            fs::remove_dir_all(self.root)?;
+            endpoint
+        }
+
+        fn socket(&self) -> &Path {
+            &self.socket
+        }
+
+        fn start() -> io::Result<Self> {
+            let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+            let root = env::temp_dir().join(format!(
+                "omarchy-quickshare-endpoint-{}-{sequence}",
+                process::id()
+            ));
+            fs::create_dir_all(&root)?;
+            let socket = root.join("control.sock");
+            let listener = UnixListener::bind(&socket)?;
+            let worker = thread::spawn(move || {
+                let mut endpoint = Daemon::new();
+                endpoint.serve_next(&listener)?;
+                io::Result::Ok(endpoint)
+            });
+            Ok(Self {
+                root,
+                socket,
+                worker,
+            })
+        }
+    }
+
     #[expect(
         clippy::single_call_fn,
         reason = "The fake worker names its one external protocol interaction"
@@ -98,6 +140,10 @@ mod tests {
         let mut request = String::new();
         let _bytes_read =
             BufReader::new(stream.try_clone()?).read_line(&mut request)?;
+        if request == STATUS_REQUEST_FIXTURE {
+            stream.write_all(STATUS_RESPONSE_FIXTURE.as_bytes())?;
+            return Ok(request);
+        }
         if !request.is_empty() {
             stream.write_all(RESPONSE_FIXTURE.as_bytes())?;
         }
@@ -197,46 +243,96 @@ mod tests {
     }
 
     #[test]
-    fn real_local_endpoint_owns_the_queued_share() {
-        let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-        let root = env::temp_dir().join(format!(
-            "omarchy-quickshare-endpoint-{}-{sequence}",
-            process::id()
-        ));
-        let setup_result = fs::create_dir_all(&root);
-        assert!(setup_result.is_ok(), "failed to create endpoint fixture");
-        let socket = root.join("control.sock");
-        let listener_result = UnixListener::bind(&socket);
-        assert!(listener_result.is_ok(), "failed to bind endpoint fixture");
-        let Ok(listener) = listener_result else {
+    fn control_protocol_version_is_reported_without_an_endpoint() {
+        let arguments = vec![String::from("--protocol-version")];
+        let mut output = Vec::new();
+
+        let result = omarchy_quickshare::run(
+            &arguments,
+            Path::new("."),
+            Path::new("missing-control.sock"),
+            &mut output,
+        );
+
+        assert!(result.is_ok(), "version query failed: {result:?}");
+        assert_eq!(output, b"1\n");
+    }
+
+    #[test]
+    fn runtime_status_reports_an_available_local_endpoint() {
+        let fake_result = ControlDaemonFake::start();
+        assert!(fake_result.is_ok(), "failed to start control fake");
+        let Ok(fake) = fake_result else {
             return;
         };
-        let worker = thread::spawn(move || {
-            let mut endpoint = Daemon::new();
-            endpoint.serve_next(&listener)?;
-            io::Result::Ok(endpoint)
-        });
+        let arguments = vec![String::from("--runtime-status")];
+        let mut output = Vec::new();
+
+        let result = omarchy_quickshare::run(
+            &arguments,
+            Path::new("."),
+            fake.socket(),
+            &mut output,
+        );
+
+        assert!(result.is_ok(), "runtime query failed: {result:?}");
+        assert_eq!(output, b"available\n");
+        let request_result = fake.finish();
+        assert!(request_result.is_ok(), "control fake failed");
+        assert_eq!(request_result.unwrap_or_default(), STATUS_REQUEST_FIXTURE);
+    }
+
+    #[test]
+    fn real_local_endpoint_owns_the_queued_share() {
+        let fixture_result = LocalEndpointFixture::start();
+        assert!(fixture_result.is_ok(), "failed to start local endpoint");
+        let Ok(fixture) = fixture_result else {
+            return;
+        };
         let mut output = Vec::new();
         let arguments = vec![String::from("hello from Omarchy")];
 
-        let run_result =
-            omarchy_quickshare::run(&arguments, &root, &socket, &mut output);
+        let run_result = omarchy_quickshare::run(
+            &arguments,
+            Path::new("."),
+            fixture.socket(),
+            &mut output,
+        );
 
         assert!(run_result.is_ok(), "submission failed: {run_result:?}");
-        let joined = worker
-            .join()
-            .map_err(|_panic| io::Error::other("local endpoint panicked"));
-        assert!(joined.is_ok(), "failed to join local endpoint");
-        let Ok(endpoint_result) = joined else {
-            return;
-        };
+        let endpoint_result = fixture.finish();
         assert!(endpoint_result.is_ok(), "local endpoint failed");
         let Ok(endpoint) = endpoint_result else {
             return;
         };
         assert_eq!(endpoint.queued_count(), 1);
         assert_eq!(output, EXPECTED_OUTPUT);
-        let cleanup_result = fs::remove_dir_all(root);
-        assert!(cleanup_result.is_ok(), "failed to clean endpoint fixture");
+    }
+
+    #[test]
+    fn real_local_endpoint_reports_ready_without_queueing_a_share() {
+        let fixture_result = LocalEndpointFixture::start();
+        assert!(fixture_result.is_ok(), "failed to start local endpoint");
+        let Ok(fixture) = fixture_result else {
+            return;
+        };
+        let mut output = Vec::new();
+        let arguments = vec![String::from("--runtime-status")];
+
+        let run_result = omarchy_quickshare::run(
+            &arguments,
+            Path::new("."),
+            fixture.socket(),
+            &mut output,
+        );
+
+        assert!(run_result.is_ok(), "runtime query failed: {run_result:?}");
+        let endpoint_result = fixture.finish();
+        assert!(endpoint_result.is_ok(), "local endpoint failed");
+        let Ok(endpoint) = endpoint_result else {
+            return;
+        };
+        assert_eq!(endpoint.queued_count(), 0);
+        assert_eq!(output, b"available\n");
     }
 }

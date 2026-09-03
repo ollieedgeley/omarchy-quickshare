@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "channel": "development",
+  "sourceCommit": "generated-by-plugin-export",
+  "pluginVersion": "0.1.0",
+  "controlProtocol": {
+    "minimum": 1,
+    "maximum": 1
+  },
+  "nativeArtifact": {
+    "version": "0.0.0",
+    "published": false
+  }
+}

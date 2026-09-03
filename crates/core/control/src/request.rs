@@ -15,6 +15,23 @@ pub struct Envelope {
 }
 
 impl Envelope {
+    /// Returns the command carried by this envelope.
+    #[must_use]
+    #[inline]
+    pub const fn request(&self) -> &Request {
+        &self.request
+    }
+
+    /// Creates a request to check the local endpoint's readiness.
+    #[must_use]
+    #[inline]
+    pub const fn status() -> Self {
+        Self {
+            request: Request::Status,
+            version: PROTOCOL_VERSION,
+        }
+    }
+
     /// Creates a request to submit one file for sharing.
     #[must_use]
     #[inline]
@@ -64,6 +81,8 @@ impl Envelope {
 #[serde(deny_unknown_fields, rename_all = "snake_case", tag = "type")]
 #[non_exhaustive]
 pub enum Request {
+    /// Check whether the local endpoint can accept commands.
+    Status,
     /// Submit one file for an outbound share.
     SubmitFile {
         /// The path to the file on the local machine.
