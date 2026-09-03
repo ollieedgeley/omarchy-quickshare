@@ -177,4 +177,41 @@ mod tests {
         };
         assert_eq!(inbound_rejected.phase(), Phase::Rejected);
     }
+
+    #[test]
+    fn failed_transfer_can_be_dismissed_after_it_stays_visible() {
+        let mut coordinator = Coordinator::new();
+        coordinator.observe_peer("pixel-8", "Ollie's Pixel");
+        let share_id = coordinator.queue_outbound(Attachment::text("hello"));
+        assert!(coordinator.select_peer(share_id.get(), "pixel-8"));
+        assert!(coordinator.accept_by_peer(share_id.get()));
+
+        assert!(coordinator.fail(share_id.get()));
+        let failed_result = coordinator.snapshot().active_share();
+        assert!(failed_result.is_some(), "failed share disappeared");
+        let Some(failed) = failed_result else {
+            return;
+        };
+        assert_eq!(failed.phase(), Phase::Failed);
+        assert!(coordinator.dismiss(share_id.get()));
+        assert!(coordinator.snapshot().active_share().is_none());
+    }
+
+    #[test]
+    fn visible_peers_can_appear_and_disappear_during_discovery() {
+        let mut coordinator = Coordinator::new();
+        coordinator.observe_peer("pixel-8", "Ollie's Pixel");
+        coordinator.observe_peer("galaxy-tab", "Galaxy Tab");
+
+        assert!(coordinator.remove_peer("pixel-8"));
+        assert!(!coordinator.remove_peer("missing"));
+
+        let peer_ids = coordinator
+            .snapshot()
+            .peers()
+            .iter()
+            .map(quickshare_sharing::PeerSnapshot::id)
+            .collect::<Vec<_>>();
+        assert_eq!(peer_ids, ["galaxy-tab"]);
+    }
 }

@@ -37,8 +37,20 @@ impl Coordinator {
 
     /// Cancels the active share when its identifier matches.
     #[inline]
-    pub fn cancel(&mut self, share_id: u64) -> bool {
+    pub const fn cancel(&mut self, share_id: u64) -> bool {
         self.snapshot.cancel(share_id)
+    }
+
+    /// Clears one terminal share after its result has been observed.
+    #[inline]
+    pub fn dismiss(&mut self, share_id: u64) -> bool {
+        self.snapshot.dismiss(share_id)
+    }
+
+    /// Marks one active share as failed at an external seam.
+    #[inline]
+    pub const fn fail(&mut self, share_id: u64) -> bool {
+        self.snapshot.fail(share_id)
     }
 
     /// Creates an idle endpoint coordinator.
@@ -149,6 +161,12 @@ impl Coordinator {
             Phase::AwaitingLocalConsent,
             Phase::Rejected,
         )
+    }
+
+    /// Removes one peer that is no longer visible during discovery.
+    #[inline]
+    pub fn remove_peer(&mut self, peer_id: &str) -> bool {
+        self.snapshot.remove_peer(peer_id)
     }
 
     /// Selects one observed peer for the active outbound share.

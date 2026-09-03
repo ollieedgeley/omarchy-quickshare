@@ -31,6 +31,8 @@ pub enum Phase {
     Cancelled,
     /// Every declared byte crossed the transfer seam.
     Completed,
+    /// The transfer stopped because a connection or storage operation failed.
+    Failed,
     /// The receiver rejected the offer before transfer.
     Rejected,
     /// Attachment bytes are crossing the transfer seam.
@@ -88,14 +90,38 @@ impl EndpointSnapshot {
     }
 
     /// Cancels the active share when its identifier matches.
-    pub(crate) fn cancel(&mut self, share_id: u64) -> bool {
+    pub(crate) const fn cancel(&mut self, share_id: u64) -> bool {
         let Some(active) = self.active_share.as_mut() else {
             return false;
         };
-        if active.id.get() != share_id || active.phase == Phase::Cancelled {
+        if active.id.get() != share_id || active.phase.is_terminal() {
             return false;
         }
         active.phase = Phase::Cancelled;
+        true
+    }
+
+    /// Clears one terminal share after clients have observed its result.
+    pub(crate) fn dismiss(&mut self, share_id: u64) -> bool {
+        let Some(active) = self.active_share.as_ref() else {
+            return false;
+        };
+        if active.id.get() != share_id || !active.phase.is_terminal() {
+            return false;
+        }
+        self.active_share = None;
+        true
+    }
+
+    /// Marks one active share as failed.
+    pub(crate) const fn fail(&mut self, share_id: u64) -> bool {
+        let Some(active) = self.active_share.as_mut() else {
+            return false;
+        };
+        if active.id.get() != share_id || active.phase.is_terminal() {
+            return false;
+        }
+        active.phase = Phase::Failed;
         true
     }
 
@@ -156,10 +182,32 @@ impl EndpointSnapshot {
         self.peers.iter().find(|peer| peer.is_pinned())
     }
 
+    /// Removes one peer that is no longer visible during discovery.
+    pub(crate) fn remove_peer(&mut self, peer_id: &str) -> bool {
+        let Some(index) =
+            self.peers.iter().position(|peer| peer.id() == peer_id)
+        else {
+            return false;
+        };
+        let _removed = self.peers.remove(index);
+        true
+    }
+
     /// Replaces the active share without changing observed peers.
     #[inline]
     pub(crate) fn set_active(&mut self, active_share: ShareSnapshot) {
         self.active_share = Some(active_share);
+    }
+}
+
+impl Phase {
+    /// Returns whether a share has reached a user-visible final result.
+    #[inline]
+    const fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Cancelled | Self::Completed | Self::Failed | Self::Rejected
+        )
     }
 }
 
