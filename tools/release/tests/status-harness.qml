@@ -5,6 +5,9 @@ ShellRoot {
   id: root
 
   property int checks: 0
+  property string snapshotJson: '{"response":{"type":"snapshot",'
+    + '"snapshot":{"active_share":{"id":7,"phase":"transferring"}}},'
+    + '"version":1}'
 
   function statesSettled() {
     return ready.protocolState !== "checking"
@@ -16,6 +19,8 @@ ShellRoot {
 
   function verifyStates() {
     var matches = ready.protocolState === "ready"
+      && ready.activeShare.id === 7
+      && ready.activeShare.phase === "transferring"
       && unavailable.protocolState === "unavailable"
       && incompatible.protocolState === "incompatible"
       && missing.protocolState === "missing"
@@ -40,6 +45,7 @@ ShellRoot {
     id: ready
     versionCommand: ["printf", "1"]
     runtimeCommand: ["true"]
+    statusCommand: ["printf", root.snapshotJson]
   }
 
   StatusProbe {

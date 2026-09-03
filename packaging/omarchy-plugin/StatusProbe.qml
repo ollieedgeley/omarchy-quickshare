@@ -5,8 +5,11 @@ QtObject {
   id: root
 
   property string protocolState: "checking"
+  property var activeShare: ({})
+  property var endpointSnapshot: ({})
   property int minimumProtocol: -1
   property int maximumProtocol: -1
+  property string statusOutput: ""
   property string versionOutput: ""
   property bool releaseReady: false
   property var versionCommand: [
@@ -18,6 +21,11 @@ QtObject {
     "env",
     "omarchy-quickshare",
     "--runtime-status",
+  ]
+  property var statusCommand: [
+    "env",
+    "omarchy-quickshare",
+    "--status-json",
   ]
   readonly property string releasePath:
     Qt.resolvedUrl("release.json").toString()
@@ -81,12 +89,51 @@ QtObject {
     root.runtimeProbe.running = true
   }
 
+  function acceptSnapshot(source) {
+    var envelope
+    try {
+      envelope = JSON.parse(source)
+    } catch (error) {
+      protocolState = "incompatible"
+      return
+    }
+    var response = envelope.response
+    var snapshot = response && response.snapshot
+    if (envelope.version < minimumProtocol
+        || envelope.version > maximumProtocol
+        || !response || response.type !== "snapshot"
+        || !snapshot || typeof snapshot !== "object") {
+      protocolState = "incompatible"
+      return
+    }
+    endpointSnapshot = snapshot
+    activeShare = snapshot.active_share || ({})
+    protocolState = "ready"
+  }
+
   function finishVersionProbe(exitCode) {
     if (exitCode !== 0) {
       protocolState = "missing"
       return
     }
     acceptProtocol(versionOutput)
+  }
+
+  function finishRuntimeProbe(exitCode) {
+    if (exitCode !== 0) {
+      protocolState = "unavailable"
+      return
+    }
+    statusOutput = ""
+    root.statusProbe.running = true
+  }
+
+  function finishStatusProbe(exitCode) {
+    if (exitCode !== 0) {
+      protocolState = "unavailable"
+      return
+    }
+    acceptSnapshot(statusOutput)
   }
 
   function refresh() {
@@ -120,7 +167,27 @@ QtObject {
   property Process runtimeProbe: Process {
     command: root.runtimeCommand
     onExited: function(exitCode) {
-      root.protocolState = exitCode === 0 ? "ready" : "unavailable"
+      root.finishRuntimeProbe(exitCode)
+    }
+  }
+
+  property Process statusProbe: Process {
+    command: root.statusCommand
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.statusOutput = String(text || "").trim()
+    }
+    onExited: function(exitCode) {
+      root.finishStatusProbe(exitCode)
+    }
+  }
+
+  property Timer refreshTimer: Timer {
+    interval: 1000
+    repeat: true
+    running: root.protocolState === "ready"
+    onTriggered: {
+      if (!root.statusProbe.running) root.statusProbe.running = true
     }
   }
 }
