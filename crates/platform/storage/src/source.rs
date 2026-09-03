@@ -2,7 +2,8 @@ use crate::Error;
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
-    io::{Read as _, Seek as _, SeekFrom},
+    io::{self, Read},
+    os::unix::fs::FileExt as _,
     path::Path,
 };
 
@@ -15,6 +16,35 @@ pub struct OutboundSource {
     length: u64,
     /// Basename captured when the source was accepted.
     name: OsString,
+}
+
+/// One independently positioned view of an accepted source descriptor.
+#[derive(Debug)]
+struct SourceReader {
+    /// Descriptor read without mutating its shared file cursor.
+    file: File,
+    /// Next byte offset owned only by this reader.
+    position: u64,
+}
+
+#[expect(
+    clippy::missing_trait_methods,
+    reason = "Default Read methods preserve this positional reader's semantics"
+)]
+impl Read for SourceReader {
+    #[inline]
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let read = self.file.read_at(buf, self.position)?;
+        let advance = u64::try_from(read).map_err(io::Error::other)?;
+        self.position =
+            self.position.checked_add(advance).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "source offset overflow",
+                )
+            })?;
+        Ok(read)
+    }
 }
 
 impl OutboundSource {
@@ -64,29 +94,19 @@ impl OutboundSource {
         })
     }
 
-    /// Reads the source only when its length still matches the accepted file.
+    /// Opens an independently positioned reader while the length is unchanged.
     ///
     /// # Errors
     ///
-    /// Returns an error when the source cannot be read or changed length.
-    #[expect(
-        clippy::verbose_file_reads,
-        reason = "Retained descriptor preserves validated file identity"
-    )]
+    /// Returns an error when the source cannot be cloned or changed length.
     #[inline]
-    pub fn read_all(&self) -> Result<Vec<u8>, Error> {
+    pub fn reader(&self) -> Result<impl Read, Error> {
         if self.file.metadata()?.len() != self.length {
             return Err(Error::SourceChanged);
         }
-        let mut file = self.file.try_clone()?;
-        let _position = file.seek(SeekFrom::Start(0))?;
-        let mut bytes = Vec::new();
-        let _bytes_read = file.read_to_end(&mut bytes)?;
-        if u64::try_from(bytes.len()).ok() != Some(self.length)
-            || file.metadata()?.len() != self.length
-        {
-            return Err(Error::SourceChanged);
-        }
-        Ok(bytes)
+        Ok(SourceReader {
+            file: self.file.try_clone()?,
+            position: 0,
+        })
     }
 }

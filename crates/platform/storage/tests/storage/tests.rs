@@ -11,6 +11,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use quickshare_storage::{OutboundSource, ReceiveTarget};
 use std::{
     env, fs,
+    io::{Read as _, Write as _},
     path::{Path, PathBuf},
     process,
     time::{SystemTime, UNIX_EPOCH},
@@ -62,7 +63,28 @@ fn outbound_source_reads_a_regular_file_with_its_basename() {
 
     assert_eq!(source.name(), Path::new("report.txt").as_os_str());
     assert_eq!(source.len(), 5);
-    assert_eq!(source.read_all().expect("read source"), b"hello");
+    let mut reader = source.reader().expect("source reader");
+    let mut bytes = [0_u8; 5];
+    reader.read_exact(&mut bytes).expect("read source");
+    assert_eq!(bytes, *b"hello");
+}
+
+#[test]
+fn outbound_source_readers_have_independent_positions() {
+    let directory = TestDirectory::new();
+    let source_path = directory.path().join("report.txt");
+    fs::write(&source_path, b"hello").expect("write source");
+    let source = OutboundSource::open(&source_path).expect("open source");
+    let mut first = source.reader().expect("first source reader");
+    let mut second = source.reader().expect("second source reader");
+
+    let mut first_byte = [0_u8; 1];
+    first.read_exact(&mut first_byte).expect("read first");
+    let mut complete = [0_u8; 5];
+    second.read_exact(&mut complete).expect("read second");
+
+    assert_eq!(first_byte, *b"h");
+    assert_eq!(complete, *b"hello");
 }
 
 #[test]
@@ -75,7 +97,7 @@ fn outbound_source_rejects_directories_and_changed_lengths() {
     let source = OutboundSource::open(&source_path).expect("open source");
     fs::write(&source_path, b"afterwards").expect("change source");
 
-    assert!(source.read_all().is_err());
+    assert!(source.reader().is_err());
 }
 
 #[test]

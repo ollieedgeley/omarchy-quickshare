@@ -10,8 +10,9 @@ use quickshare_network::{
     lan::{Listener, PublishedLanListener},
     local_ipv4_addresses,
 };
-use quickshare_sharing::{EndpointInfo, IncomingFile, MdnsInstance};
-use quickshare_sharing::{IncomingOffer, SharingSession};
+use quickshare_sharing::{
+    EndpointInfo, IncomingOffer, MdnsInstance, SharingSession,
+};
 use quickshare_storage::ReceiveTarget;
 
 use super::{ENDPOINT_ID, ENDPOINT_NAME, NetworkCommand, NetworkEvent};
@@ -62,14 +63,21 @@ fn receive_file_result(
         .map_err(|error| (io::Error::other(error), None))?;
     announce_offer(&offer, events).map_err(|error| (error, None))?;
     let share_id = wait_for_consent(commands).map_err(|error| (error, None))?;
+    let target = ReceiveTarget::downloads()
+        .map_err(|error| (io::Error::other(error), Some(share_id)))?;
+    let mut staged = target
+        .stage(offer.name())
+        .map_err(|error| (io::Error::other(error), Some(share_id)))?;
+    let bytes = u64::try_from(offer.size_bytes())
+        .map_err(|error| (io::Error::other(error), Some(share_id)))?;
     session
         .accept_incoming_offer()
         .map_err(|error| (io::Error::other(error), Some(share_id)))?;
-    let file = session
-        .receive_incoming_file(&offer)
+    session
+        .receive_incoming_file(&offer, &mut staged)
         .map_err(|error| (io::Error::other(error), Some(share_id)))?;
-    save_file(&file).map_err(|error| (error, Some(share_id)))?;
-    let bytes = u64::try_from(file.bytes().len())
+    let _destination = staged
+        .commit()
         .map_err(|error| (io::Error::other(error), Some(share_id)))?;
     Ok((bytes, share_id))
 }
@@ -108,15 +116,6 @@ fn wait_for_consent(commands: &Receiver<NetworkCommand>) -> io::Result<u64> {
             }
         }
     }
-}
-
-/// Persists a validated file without replacing an existing user file.
-fn save_file(file: &IncomingFile) -> io::Result<()> {
-    let target = ReceiveTarget::downloads().map_err(io::Error::other)?;
-    let mut staged = target.stage(file.name()).map_err(io::Error::other)?;
-    staged.write_all(file.bytes()).map_err(io::Error::other)?;
-    let _destination = staged.commit().map_err(io::Error::other)?;
-    Ok(())
 }
 
 /// Builds the Google-compatible DNS-SD record for the bound listener.

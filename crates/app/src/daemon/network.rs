@@ -361,12 +361,13 @@ fn outbound_event(share_id: u64, transfer: &OutboundTransfer) -> NetworkEvent {
     }
 }
 
-/// Sends one complete file over an encrypted account-free session.
+/// Streams one complete file over an encrypted account-free session.
 fn send_file(source: &OutboundSource, route: SocketAddrV4) -> io::Result<u64> {
     let name = source.name().to_str().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "file name is not UTF-8")
     })?;
-    let bytes = source.read_all().map_err(io::Error::other)?;
+    let mut reader = source.reader().map_err(io::Error::other)?;
+    let size = source.len();
     let stream = connect(route)?;
     let mut session =
         SharingSession::connect(stream, ENDPOINT_ID, ENDPOINT_NAME)
@@ -375,7 +376,7 @@ fn send_file(source: &OutboundSource, route: SocketAddrV4) -> io::Result<u64> {
         .exchange_account_free_pairing()
         .map_err(io::Error::other)?;
     session
-        .send_outgoing_file(name, &bytes)
+        .send_outgoing_file(name, size, &mut reader)
         .map_err(io::Error::other)?;
-    u64::try_from(bytes.len()).map_err(io::Error::other)
+    Ok(size)
 }

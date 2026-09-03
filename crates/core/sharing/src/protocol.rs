@@ -10,4 +10,4 @@ mod types;
 pub use advertisement::{EndpointInfo, MdnsInstance};
 pub use error::ProtocolError;
 pub use session::SharingSession;
-pub use types::{IncomingFile, IncomingOffer, PairingStatus};
+pub use types::{IncomingOffer, PairingStatus};

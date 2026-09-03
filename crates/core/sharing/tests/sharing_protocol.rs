@@ -23,6 +23,7 @@ use quickshare_wire::sharing::{
 use rand_core as _;
 use serde as _;
 use std::{
+    io::Cursor,
     net::{TcpListener, TcpStream},
     thread,
 };
@@ -176,9 +177,11 @@ fn account_free_pairing_chunks_one_file_across_connection_events() {
         let offer = session.receive_incoming_offer().expect("receive offer");
         assert_eq!(offer.name(), "note.txt");
         session.accept_incoming_offer().expect("accept offer");
-        let file = session.receive_incoming_file(&offer).expect("receive file");
-        assert_eq!(file.name(), "note.txt");
-        assert_eq!(file.bytes(), expected);
+        let mut received = Vec::new();
+        session
+            .receive_incoming_file(&offer, &mut received)
+            .expect("receive file");
+        assert_eq!(received, expected);
     });
 
     let stream = TcpStream::connect(address).expect("connect peer");
@@ -193,8 +196,13 @@ fn account_free_pairing_chunks_one_file_across_connection_events() {
         session.exchange_account_free_pairing().expect("pair"),
         PairingStatus::Unable
     );
+    let mut reader = Cursor::new(bytes);
     session
-        .send_outgoing_file("note.txt", &bytes)
+        .send_outgoing_file(
+            "note.txt",
+            u64::try_from(MULTI_FRAME_FILE_SIZE).expect("file size"),
+            &mut reader,
+        )
         .expect("send file after accept");
     receiver.join().expect("receiver completes");
 }

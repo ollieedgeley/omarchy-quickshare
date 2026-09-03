@@ -1,9 +1,12 @@
 use crate::Error;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::{
+    fmt,
+    sync::atomic::{AtomicU64, Ordering},
+};
 use std::{
     env,
     fs::{self, File, OpenOptions},
-    io::{self, Write as _},
+    io::{self, IoSlice, Write},
     path::{Component, Path, PathBuf},
     process,
 };
@@ -112,15 +115,44 @@ impl StagedFile {
         fs::remove_file(&self.staging)?;
         Ok(self.destination.clone())
     }
+}
 
-    /// Writes all bytes into the incomplete file.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the local filesystem rejects the write.
+#[expect(
+    clippy::missing_trait_methods,
+    reason = "Pinned Rust leaves two Write methods unstable; others delegate"
+)]
+impl Write for StagedFile {
     #[inline]
-    pub fn write_all(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        self.file.write_all(bytes).map_err(Error::from)
+    fn by_ref(&mut self) -> &mut Self
+    where
+        Self: Sized,
+    {
+        self
+    }
+
+    #[inline]
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+
+    #[inline]
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.file.write(buf)
+    }
+
+    #[inline]
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        self.file.write_all(buf)
+    }
+
+    #[inline]
+    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> io::Result<()> {
+        self.file.write_fmt(args)
+    }
+
+    #[inline]
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        self.file.write_vectored(bufs)
     }
 }
 

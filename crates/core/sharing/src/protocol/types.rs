@@ -44,28 +44,3 @@ impl IncomingOffer {
         self.payload_id
     }
 }
-
-/// A completely validated incoming file payload.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IncomingFile {
-    name: String,
-    bytes: Vec<u8>,
-}
-
-impl IncomingFile {
-    pub(in crate::protocol) const fn new(name: String, bytes: Vec<u8>) -> Self {
-        Self { name, bytes }
-    }
-
-    /// Returns the offered safe basename.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Returns the received file bytes after length and chunk checks.
-    #[must_use]
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-}

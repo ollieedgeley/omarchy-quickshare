@@ -1,12 +1,14 @@
 use crate::protocol::{
-    EndpointInfo, IncomingFile, IncomingOffer, PairingStatus, ProtocolError,
-    frames, offer,
+    EndpointInfo, IncomingOffer, PairingStatus, ProtocolError, frames, offer,
 };
 use quickshare_connections::{Connection, ConnectionOptions, Event};
 use quickshare_crypto::Handshake;
 use quickshare_wire::sharing::{Frame, connection_response_frame};
 use rand_core::{OsRng, RngCore as _};
-use std::net::TcpStream;
+use std::{
+    io::{Read, Write},
+    net::TcpStream,
+};
 
 const PAIRING_PAYLOAD_ID: i64 = 1;
 const INTRODUCTION_PAYLOAD_ID: i64 = 2;
@@ -116,45 +118,53 @@ impl SharingSession {
         Ok(())
     }
 
-    /// Receives a file payload without accepting unsafe names or chunks.
+    /// Receives a file payload into a caller-owned destination.
     ///
     /// # Errors
     ///
-    /// Returns an error when payload metadata, chunks, or lengths do not match.
-    pub fn receive_incoming_file(
+    /// Returns an error when payload metadata, chunks, lengths, or writes fail.
+    pub fn receive_incoming_file<Writer>(
         &mut self,
         offer: &IncomingOffer,
-    ) -> Result<IncomingFile, ProtocolError> {
+        writer: &mut Writer,
+    ) -> Result<(), ProtocolError>
+    where
+        Writer: Write,
+    {
         let (id, size) = self.receive_file_header(offer)?;
-        let bytes = self.receive_file_chunks(id, size)?;
-        Ok(IncomingFile::new(offer.name().into(), bytes))
+        self.receive_file_chunks(id, size, writer)
     }
 
-    /// Introduces one file, waits for consent, then sends its complete payload.
+    /// Introduces one file, waits for consent, then streams its payload.
     ///
     /// # Errors
     ///
-    /// Returns an error for unsafe names, peer rejection, or transfer failure.
-    pub fn send_outgoing_file(
+    /// Returns an error for unsafe names, invalid lengths, peer rejection, or
+    /// transfer failure.
+    pub fn send_outgoing_file<Reader>(
         &mut self,
         name: &str,
-        bytes: &[u8],
-    ) -> Result<(), ProtocolError> {
+        size: u64,
+        reader: &mut Reader,
+    ) -> Result<(), ProtocolError>
+    where
+        Reader: Read,
+    {
         if !offer::safe_name(name) {
             return Err(ProtocolError::InvalidOffer("unsafe file name"));
         }
-        let size = i64::try_from(bytes.len())
-            .map_err(|_| ProtocolError::InvalidPayload)?;
+        let wire_size =
+            i64::try_from(size).map_err(|_| ProtocolError::InvalidPayload)?;
         self.connection.send_sharing_frame(
             INTRODUCTION_PAYLOAD_ID,
-            &frames::introduction(name, size),
+            &frames::introduction(name, wire_size),
         )?;
         if Self::decode_response(&self.receive_bytes()?)?
             != connection_response_frame::Status::Accept
         {
             return Err(ProtocolError::Rejected);
         }
-        self.send_file_payload(name, bytes, size)
+        self.send_file_payload(name, reader, size, wire_size)
     }
 
     /// Decodes one Google file introduction fixture or received Sharing frame.
@@ -180,7 +190,7 @@ impl SharingSession {
     fn receive_file_header(
         &mut self,
         offer: &IncomingOffer,
-    ) -> Result<(i64, usize), ProtocolError> {
+    ) -> Result<(i64, u64), ProtocolError> {
         let Event::FileHeader {
             id,
             total_size,
@@ -195,17 +205,21 @@ impl SharingSession {
         {
             return Err(ProtocolError::InvalidPayload);
         }
-        usize::try_from(total_size)
+        u64::try_from(total_size)
             .map(|size| (id, size))
             .map_err(|_| ProtocolError::InvalidPayload)
     }
 
-    fn receive_file_chunks(
+    fn receive_file_chunks<Writer>(
         &mut self,
         id: i64,
-        size: usize,
-    ) -> Result<Vec<u8>, ProtocolError> {
-        let mut bytes = Vec::with_capacity(size);
+        size: u64,
+        writer: &mut Writer,
+    ) -> Result<(), ProtocolError>
+    where
+        Writer: Write,
+    {
+        let mut received = 0_u64;
         loop {
             let Event::FileChunk {
                 id: chunk_id,
@@ -216,51 +230,83 @@ impl SharingSession {
             else {
                 return Err(ProtocolError::InvalidPayload);
             };
-            let expected_offset = i64::try_from(bytes.len())
+            let expected_offset = i64::try_from(received)
                 .map_err(|_| ProtocolError::InvalidPayload)?;
+            let chunk_size = u64::try_from(chunk.len())
+                .map_err(|_| ProtocolError::InvalidPayload)?;
+            let next_received = received
+                .checked_add(chunk_size)
+                .ok_or(ProtocolError::InvalidPayload)?;
             if chunk_id != id
                 || offset != expected_offset
-                || bytes.len().saturating_add(chunk.len()) > size
+                || next_received > size
+                || (chunk.is_empty() && !is_last)
             {
                 return Err(ProtocolError::InvalidPayload);
             }
-            bytes.extend_from_slice(&chunk);
+            writer.write_all(&chunk)?;
+            received = next_received;
             if is_last {
-                return (bytes.len() == size)
-                    .then_some(bytes)
+                return (received == size)
+                    .then_some(())
                     .ok_or(ProtocolError::InvalidPayload);
             }
         }
     }
 
-    fn send_file_payload(
+    fn send_file_payload<Reader>(
         &mut self,
         name: &str,
-        bytes: &[u8],
-        size: i64,
-    ) -> Result<(), ProtocolError> {
+        reader: &mut Reader,
+        size: u64,
+        wire_size: i64,
+    ) -> Result<(), ProtocolError>
+    where
+        Reader: Read,
+    {
         self.connection.send_file_header(
             FILE_PAYLOAD_ID,
-            size,
+            wire_size,
             Some(name.into()),
         )?;
-        if bytes.is_empty() {
+        if size == 0 {
+            let mut extra = [0_u8; 1];
+            if reader.read(&mut extra)? != 0 {
+                return Err(ProtocolError::InvalidPayload);
+            }
             self.connection
-                .send_file_chunk(FILE_PAYLOAD_ID, 0, bytes, true)?;
+                .send_file_chunk(FILE_PAYLOAD_ID, 0, &[], true)?;
             return Ok(());
         }
-        let mut offset = 0_i64;
-        for chunk in bytes.chunks(FILE_CHUNK_SIZE) {
-            let chunk_size = i64::try_from(chunk.len())
+        let mut buffer = vec![0_u8; FILE_CHUNK_SIZE];
+        let mut offset = 0_u64;
+        while offset < size {
+            let remaining = size - offset;
+            let read_limit = usize::try_from(remaining)
+                .unwrap_or(FILE_CHUNK_SIZE)
+                .min(FILE_CHUNK_SIZE);
+            let read = reader.read(&mut buffer[..read_limit])?;
+            if read == 0 {
+                return Err(ProtocolError::InvalidPayload);
+            }
+            let read_size = u64::try_from(read)
                 .map_err(|_| ProtocolError::InvalidPayload)?;
             let next_offset = offset
-                .checked_add(chunk_size)
+                .checked_add(read_size)
                 .ok_or(ProtocolError::InvalidPayload)?;
+            let is_last = next_offset == size;
+            if is_last {
+                let mut extra = [0_u8; 1];
+                if reader.read(&mut extra)? != 0 {
+                    return Err(ProtocolError::InvalidPayload);
+                }
+            }
             self.connection.send_file_chunk(
                 FILE_PAYLOAD_ID,
-                offset,
-                chunk,
-                next_offset == size,
+                i64::try_from(offset)
+                    .map_err(|_| ProtocolError::InvalidPayload)?,
+                &buffer[..read],
+                is_last,
             )?;
             offset = next_offset;
         }
