@@ -16,6 +16,12 @@ const BINARY: &str = env!("CARGO_BIN_EXE_omarchy-quickshare");
 const ACTIVE_TEXT_SNAPSHOT: &str = include_str!(
     "../../../../tests/fixtures/control/v1/active-text-snapshot-response.jsonl"
 );
+const ACTIVE_FILE_SNAPSHOT: &str = include_str!(
+    "../../../../tests/fixtures/control/v1/active-file-snapshot-response.jsonl"
+);
+const ACTIVE_URL_SNAPSHOT: &str = include_str!(
+    "../../../../tests/fixtures/control/v1/active-url-snapshot-response.jsonl"
+);
 const RETRY_DELAY: Duration = Duration::from_millis(5);
 const START_TIMEOUT: Duration = Duration::from_secs(1);
 static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
@@ -57,12 +63,14 @@ impl DaemonProcessFixture {
     }
 
     fn wait_until_ready(&mut self) -> io::Result<()> {
-        let socket = self.root.join("omarchy-quickshare/control.sock");
         let deadline = Instant::now()
             .checked_add(START_TIMEOUT)
             .ok_or_else(|| io::Error::other("startup deadline overflowed"))?;
         while Instant::now() < deadline {
-            if socket.exists() {
+            if matches!(
+                runtime_status(&self.root),
+                Ok(status) if status.status.success()
+            ) {
                 return Ok(());
             }
             if self.child.try_wait()?.is_some() {
@@ -169,6 +177,66 @@ fn daemon_reports_submitted_text_in_its_public_snapshot() {
         "daemon rejected snapshot request"
     );
     assert_eq!(snapshot.stdout, ACTIVE_TEXT_SNAPSHOT.as_bytes());
+
+    let stop_result = fixture.stop();
+    assert!(stop_result.is_ok(), "failed to stop daemon");
+}
+
+#[test]
+fn daemon_reports_submitted_url_in_its_public_snapshot() {
+    let root = runtime_fixture_path();
+    let fixture_result = DaemonProcessFixture::start(root);
+    assert!(fixture_result.is_ok(), "failed to start daemon");
+    let Ok(fixture) = fixture_result else {
+        return;
+    };
+
+    let submission_result = run_command(
+        fixture.runtime_directory(),
+        &["https://example.test/share"],
+    );
+    assert!(submission_result.is_ok(), "failed to submit URL");
+    let snapshot_result =
+        run_command(fixture.runtime_directory(), &["--status-json"]);
+    assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
+    let Ok(snapshot) = snapshot_result else {
+        return;
+    };
+    assert_eq!(snapshot.stdout, ACTIVE_URL_SNAPSHOT.as_bytes());
+
+    let stop_result = fixture.stop();
+    assert!(stop_result.is_ok(), "failed to stop daemon");
+}
+
+#[test]
+fn daemon_reports_submitted_file_in_its_public_snapshot() {
+    let root = runtime_fixture_path();
+    let source = root.join("photo.jpg");
+    let directory_result = fs::create_dir_all(&root);
+    assert!(
+        directory_result.is_ok(),
+        "failed to create fixture directory"
+    );
+    let write_result = fs::write(&source, b"jpeg");
+    assert!(write_result.is_ok(), "failed to create fixture file");
+    let fixture_result = DaemonProcessFixture::start(root);
+    assert!(fixture_result.is_ok(), "failed to start daemon");
+    let Ok(fixture) = fixture_result else {
+        return;
+    };
+
+    let submission_result = run_command(
+        fixture.runtime_directory(),
+        &[source.to_string_lossy().as_ref()],
+    );
+    assert!(submission_result.is_ok(), "failed to submit file");
+    let snapshot_result =
+        run_command(fixture.runtime_directory(), &["--status-json"]);
+    assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
+    let Ok(snapshot) = snapshot_result else {
+        return;
+    };
+    assert_eq!(snapshot.stdout, ACTIVE_FILE_SNAPSHOT.as_bytes());
 
     let stop_result = fixture.stop();
     assert!(stop_result.is_ok(), "failed to stop daemon");

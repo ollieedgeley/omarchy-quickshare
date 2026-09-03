@@ -126,11 +126,19 @@ impl Daemon {
             Request::Status => {
                 return write_response(&mut stream, &ResponseEnvelope::ready());
             }
+            Request::SubmitFile { path } => {
+                let attachment = file_attachment(path)?;
+                let _share_id = self.sharing.queue_outbound(attachment);
+            }
             Request::SubmitText { text } => {
                 let _share_id =
                     self.sharing.queue_outbound(Attachment::text(text));
             }
-            Request::SubmitFile { .. } | Request::SubmitUrl { .. } | _ => {}
+            Request::SubmitUrl { url } => {
+                let _share_id =
+                    self.sharing.queue_outbound(Attachment::url(url));
+            }
+            _ => {}
         }
         self.queued.push(request);
         write_response(&mut stream, &ResponseEnvelope::queued())
@@ -162,6 +170,19 @@ impl Daemon {
         }
         Ok(())
     }
+}
+
+/// Builds public file facts after confirming the source still exists.
+#[expect(
+    clippy::single_call_fn,
+    reason = "File metadata validation stays outside control dispatch"
+)]
+fn file_attachment(path: &Path) -> io::Result<Attachment> {
+    let name = path.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "file path has no name")
+    })?;
+    let size_bytes = fs::metadata(path)?.len();
+    Ok(Attachment::file(&name.to_string_lossy(), size_bytes))
 }
 
 /// Removes an abandoned socket without replacing a running endpoint.
