@@ -10,6 +10,8 @@ pub enum ProtocolError {
     Decode(prost::DecodeError),
     /// Reading or writing the streamed file failed.
     Io(io::Error),
+    /// Either endpoint cancelled the active transfer.
+    Cancelled,
     /// The endpoint-info bytes violate the supported layout.
     InvalidAdvertisement,
     /// The Nearby LAN instance bytes violate the supported layout.
@@ -29,6 +31,9 @@ impl fmt::Display for ProtocolError {
         match self {
             Self::Connection(error) => {
                 write!(formatter, "Connections failed: {error}")
+            }
+            Self::Cancelled => {
+                formatter.write_str("file transfer was cancelled")
             }
             Self::Decode(error) => {
                 write!(formatter, "Sharing protobuf failed: {error}")

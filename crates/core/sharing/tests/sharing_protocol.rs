@@ -16,7 +16,7 @@ use prost::Message as _;
 use quickshare_connections::{Connection, ConnectionOptions};
 use quickshare_crypto::Handshake;
 use quickshare_sharing::{
-    EndpointInfo, MdnsInstance, PairingStatus, SharingSession,
+    EndpointInfo, MdnsInstance, PairingStatus, ProtocolError, SharingSession,
 };
 use quickshare_wire::sharing::{
     FileMetadata, Frame, IntroductionFrame, PairedKeyResultFrame, V1Frame,
@@ -206,7 +206,7 @@ fn account_free_pairing_chunks_one_file_across_connection_events() {
         session.accept_incoming_offer().expect("accept offer");
         let mut received = Vec::new();
         session
-            .receive_incoming_file(&offer, &mut received)
+            .receive_incoming_file(&offer, &mut received, || false)
             .expect("receive file");
         assert_eq!(received, expected);
     });
@@ -235,9 +235,102 @@ fn account_free_pairing_chunks_one_file_across_connection_events() {
             u64::try_from(MULTI_FRAME_FILE_SIZE).expect("file size"),
             &mut reader,
             || accepted.set(true),
+            || false,
         )
         .expect("send file after accept");
     assert!(accepted.get());
+    receiver.join().expect("receiver completes");
+}
+
+#[test]
+fn receiver_rejection_reaches_the_outbound_sender() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+    let address = listener.local_addr().expect("listener address");
+    let receiver = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept peer");
+        let connection = Connection::accept(
+            stream,
+            Handshake::responder(RESPONDER_RANDOM, RESPONDER_SECRET),
+            ConnectionOptions::new("remote", "Remote"),
+        )
+        .expect("establish peer session");
+        let mut session = SharingSession::new(connection);
+        let _pairing = session.exchange_account_free_pairing().expect("pair");
+        let _offer = session.receive_incoming_offer().expect("receive offer");
+        session.reject_incoming_offer().expect("reject offer");
+    });
+
+    let stream = TcpStream::connect(address).expect("connect peer");
+    let connection = Connection::connect(
+        stream,
+        Handshake::initiator(INITIATOR_RANDOM, INITIATOR_SECRET),
+        ConnectionOptions::new("local", "Omarchy"),
+    )
+    .expect("establish local session");
+    let mut session = SharingSession::new(connection);
+    let _pairing = session.exchange_account_free_pairing().expect("pair");
+    let error = session
+        .send_outgoing_file(
+            "rejected.txt",
+            1,
+            &mut Cursor::new([1_u8]),
+            || {},
+            || false,
+        )
+        .expect_err("peer rejection");
+    assert!(matches!(error, ProtocolError::Rejected));
+    receiver.join().expect("receiver completes");
+}
+
+#[test]
+fn outbound_cancellation_reaches_the_receiver_between_file_chunks() {
+    let bytes = vec![0xA5; MULTI_FRAME_FILE_SIZE];
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+    let address = listener.local_addr().expect("listener address");
+    let receiver = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept peer");
+        let connection = Connection::accept(
+            stream,
+            Handshake::responder(RESPONDER_RANDOM, RESPONDER_SECRET),
+            ConnectionOptions::new("remote", "Remote"),
+        )
+        .expect("establish peer session");
+        let mut session = SharingSession::new(connection);
+        let _pairing = session.exchange_account_free_pairing().expect("pair");
+        let offer = session.receive_incoming_offer().expect("receive offer");
+        session.accept_incoming_offer().expect("accept offer");
+        let mut received = Vec::new();
+        let error = session
+            .receive_incoming_file(&offer, &mut received, || false)
+            .expect_err("sender cancellation");
+        assert!(matches!(error, ProtocolError::Cancelled));
+        assert_eq!(received.len(), 0x0001_0000);
+    });
+
+    let stream = TcpStream::connect(address).expect("connect peer");
+    let connection = Connection::connect(
+        stream,
+        Handshake::initiator(INITIATOR_RANDOM, INITIATOR_SECRET),
+        ConnectionOptions::new("local", "Omarchy"),
+    )
+    .expect("establish local session");
+    let mut session = SharingSession::new(connection);
+    let _pairing = session.exchange_account_free_pairing().expect("pair");
+    let cancellation_checks = Cell::new(0_u8);
+    let error = session
+        .send_outgoing_file(
+            "cancelled.txt",
+            u64::try_from(MULTI_FRAME_FILE_SIZE).expect("file size"),
+            &mut Cursor::new(bytes),
+            || {},
+            || {
+                let checks = cancellation_checks.get();
+                cancellation_checks.set(checks.saturating_add(1));
+                checks == 3
+            },
+        )
+        .expect_err("local cancellation");
+    assert!(matches!(error, ProtocolError::Cancelled));
     receiver.join().expect("receiver completes");
 }
 

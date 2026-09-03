@@ -56,6 +56,15 @@ pub(in crate::protocol) fn decode_pairing(
         .map(|_| PairingStatus::Unable)
 }
 
+pub(in crate::protocol) fn is_cancel(
+    bytes: &[u8],
+) -> Result<bool, ProtocolError> {
+    let frame = Frame::decode(bytes)?;
+    Ok(frame.version == Some(1)
+        && frame.v1.and_then(|v1| v1.r#type)
+            == Some(v1_frame::FrameType::Cancel as i32))
+}
+
 pub(in crate::protocol) fn decode_response(
     bytes: &[u8],
 ) -> Result<connection_response_frame::Status, ProtocolError> {
@@ -98,12 +107,29 @@ pub(in crate::protocol) fn introduction(name: &str, size: i64) -> Frame {
     )
 }
 
+pub(in crate::protocol) fn cancel() -> Frame {
+    frame(v1_frame::FrameType::Cancel, V1Frame::default())
+}
+
 pub(in crate::protocol) fn accept_response() -> Frame {
     frame(
         v1_frame::FrameType::Response,
         V1Frame {
             connection_response: Some(ConnectionResponseFrame {
                 status: Some(connection_response_frame::Status::Accept as i32),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    )
+}
+
+pub(in crate::protocol) fn reject_response() -> Frame {
+    frame(
+        v1_frame::FrameType::Response,
+        V1Frame {
+            connection_response: Some(ConnectionResponseFrame {
+                status: Some(connection_response_frame::Status::Reject as i32),
                 ..Default::default()
             }),
             ..Default::default()

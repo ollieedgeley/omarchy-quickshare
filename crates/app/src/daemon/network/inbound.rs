@@ -11,14 +11,25 @@ use quickshare_network::{
     local_ipv4_addresses,
 };
 use quickshare_sharing::{
-    EndpointInfo, IncomingOffer, MdnsInstance, SharingSession,
+    EndpointInfo, IncomingOffer, MdnsInstance, ProtocolError, SharingSession,
 };
 use quickshare_storage::ReceiveTarget;
 
-use super::{ENDPOINT_ID, ENDPOINT_NAME, NetworkCommand, NetworkEvent};
+use super::{
+    ENDPOINT_ID, ENDPOINT_NAME, NetworkCommand, NetworkEvent,
+    TransferCancellation,
+};
 
 /// Hostname published with the first daemon identity.
 const HOSTNAME: &str = "omarchy-quickshare.local.";
+
+/// User decision returned to the blocked inbound session.
+enum Consent {
+    /// The local user approved the stable share identifier.
+    Accepted(u64),
+    /// The local user refused the stable share identifier.
+    Rejected(u64),
+}
 
 /// Creates and advertises the platform-owned incoming TCP listener.
 pub(super) fn open_listener(
@@ -34,11 +45,10 @@ pub(super) fn receive_file(
     stream: TcpStream,
     commands: &Receiver<NetworkCommand>,
     events: &Sender<NetworkEvent>,
+    cancellation: &TransferCancellation,
 ) -> NetworkEvent {
-    match receive_file_result(stream, commands, events) {
-        Ok((bytes, share_id)) => {
-            NetworkEvent::InboundCompleted { bytes, share_id }
-        }
+    match receive_file_result(stream, commands, events, cancellation) {
+        Ok(event) => event,
         Err((error, share_id)) => NetworkEvent::InboundFailed {
             reason: error.to_string(),
             share_id,
@@ -51,7 +61,8 @@ fn receive_file_result(
     stream: TcpStream,
     commands: &Receiver<NetworkCommand>,
     events: &Sender<NetworkEvent>,
-) -> Result<(u64, u64), (io::Error, Option<u64>)> {
+    cancellation: &TransferCancellation,
+) -> Result<NetworkEvent, (io::Error, Option<u64>)> {
     let mut session =
         SharingSession::accept(stream, ENDPOINT_ID, ENDPOINT_NAME)
             .map_err(|error| (io::Error::other(error), None))?;
@@ -63,7 +74,17 @@ fn receive_file_result(
         .map_err(|error| (io::Error::other(error), None))?;
     announce_offer(&offer, session.verification_code(), events)
         .map_err(|error| (error, None))?;
-    let share_id = wait_for_consent(commands).map_err(|error| (error, None))?;
+    let consent = wait_for_consent(commands).map_err(|error| (error, None))?;
+    let share_id = match consent {
+        Consent::Accepted(share_id) => share_id,
+        Consent::Rejected(share_id) => {
+            session
+                .reject_incoming_offer()
+                .map_err(|error| (io::Error::other(error), Some(share_id)))?;
+            cancellation.finish(share_id);
+            return Ok(NetworkEvent::InboundRejected { share_id });
+        }
+    };
     let target = ReceiveTarget::downloads()
         .map_err(|error| (io::Error::other(error), Some(share_id)))?;
     let mut staged = target
@@ -74,13 +95,23 @@ fn receive_file_result(
     session
         .accept_incoming_offer()
         .map_err(|error| (io::Error::other(error), Some(share_id)))?;
-    session
-        .receive_incoming_file(&offer, &mut staged)
-        .map_err(|error| (io::Error::other(error), Some(share_id)))?;
+    let transfer = session.receive_incoming_file(&offer, &mut staged, || {
+        cancellation.is_cancelled(share_id)
+    });
+    cancellation.finish(share_id);
+    match transfer {
+        Ok(()) => {}
+        Err(ProtocolError::Cancelled) => {
+            return Ok(NetworkEvent::InboundCancelled { share_id });
+        }
+        Err(error) => {
+            return Err((io::Error::other(error), Some(share_id)));
+        }
+    }
     let _destination = staged
         .commit()
         .map_err(|error| (io::Error::other(error), Some(share_id)))?;
-    Ok((bytes, share_id))
+    Ok(NetworkEvent::InboundCompleted { bytes, share_id })
 }
 
 /// Publishes the validated offer to the daemon state owner.
@@ -100,12 +131,17 @@ fn announce_offer(
         .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error))
 }
 
-/// Waits for the local-control owner to approve the pending sender.
-fn wait_for_consent(commands: &Receiver<NetworkCommand>) -> io::Result<u64> {
+/// Waits for the local-control owner to decide the pending sender.
+fn wait_for_consent(
+    commands: &Receiver<NetworkCommand>,
+) -> io::Result<Consent> {
     loop {
         match commands.recv() {
             Ok(NetworkCommand::AcceptInbound { share_id }) => {
-                return Ok(share_id);
+                return Ok(Consent::Accepted(share_id));
+            }
+            Ok(NetworkCommand::RejectInbound { share_id }) => {
+                return Ok(Consent::Rejected(share_id));
             }
             Ok(NetworkCommand::CloseVisibility) => {
                 return Err(io::Error::new(

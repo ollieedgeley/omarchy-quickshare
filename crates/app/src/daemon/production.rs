@@ -34,11 +34,17 @@ impl Daemon {
     )]
     fn apply_network_event(&mut self, event: NetworkEvent) {
         match event {
+            NetworkEvent::InboundCancelled { share_id } => {
+                let _cancelled = self.sharing.cancel(share_id);
+            }
             NetworkEvent::InboundCompleted { bytes, share_id } => {
                 let _recorded = self.sharing.record_progress(share_id, bytes);
             }
             NetworkEvent::InboundFailed { reason, share_id } => {
                 self.apply_inbound_failure(share_id, &reason);
+            }
+            NetworkEvent::InboundRejected { share_id } => {
+                let _rejected = self.sharing.reject_inbound(share_id);
             }
             NetworkEvent::InboundOffered {
                 name,
@@ -68,6 +74,10 @@ impl Daemon {
                     .sharing
                     .record_verification_code(share_id, &verification_code);
             }
+            NetworkEvent::OutboundCancelled { share_id } => {
+                let _cancelled = self.sharing.cancel(share_id);
+                self.outbound.finish(share_id);
+            }
             NetworkEvent::OutboundCompleted { bytes, share_id } => {
                 let _recorded = self.sharing.record_progress(share_id, bytes);
                 self.outbound.finish(share_id);
@@ -75,6 +85,10 @@ impl Daemon {
             NetworkEvent::OutboundFailed { reason, share_id } => {
                 eprintln!("outbound share {share_id} failed: {reason}");
                 let _failed = self.sharing.fail(share_id);
+                self.outbound.finish(share_id);
+            }
+            NetworkEvent::OutboundRejected { share_id } => {
+                let _rejected = self.sharing.reject_by_peer(share_id);
                 self.outbound.finish(share_id);
             }
             NetworkEvent::PeerSeen {
@@ -141,6 +155,15 @@ mod tests {
 
     use super::{Daemon, INBOUND_PEER_ID, INBOUND_PEER_NAME, NetworkEvent};
 
+    fn active_phase(daemon: &Daemon) -> Phase {
+        daemon
+            .sharing
+            .snapshot()
+            .active_share()
+            .expect("share remains visible")
+            .phase()
+    }
+
     #[test]
     fn inbound_offer_exposes_pin_until_local_consent() {
         let mut daemon = Daemon::new();
@@ -167,6 +190,83 @@ mod tests {
             .expect("accepted inbound share remains active");
         assert_eq!(accepted.phase(), Phase::Transferring);
         assert_eq!(accepted.verification_code(), None);
+    }
+
+    #[test]
+    fn inbound_terminal_events_preserve_rejection_and_cancellation() {
+        let mut inbound = Daemon::new();
+        inbound.apply_network_event(NetworkEvent::InboundOffered {
+            name: String::from("note.txt"),
+            size_bytes: 12,
+            verification_code: String::from("6251"),
+        });
+        let inbound_id = inbound
+            .sharing
+            .snapshot()
+            .active_share()
+            .expect("inbound offer")
+            .id()
+            .get();
+        inbound.apply_network_event(NetworkEvent::InboundRejected {
+            share_id: inbound_id,
+        });
+        assert_eq!(active_phase(&inbound), Phase::Rejected);
+
+        let mut cancelled = Daemon::new();
+        cancelled.apply_network_event(NetworkEvent::InboundOffered {
+            name: String::from("cancelled.txt"),
+            size_bytes: 12,
+            verification_code: String::from("9418"),
+        });
+        let cancelled_id = cancelled
+            .sharing
+            .snapshot()
+            .active_share()
+            .expect("inbound offer")
+            .id()
+            .get();
+        assert!(cancelled.sharing.accept_inbound(cancelled_id));
+        cancelled.apply_network_event(NetworkEvent::InboundCancelled {
+            share_id: cancelled_id,
+        });
+        assert_eq!(active_phase(&cancelled), Phase::Cancelled);
+    }
+
+    #[test]
+    fn outbound_terminal_events_preserve_rejection_and_cancellation() {
+        let mut daemon = Daemon::new();
+        daemon
+            .sharing
+            .observe_peer(INBOUND_PEER_ID, INBOUND_PEER_NAME);
+        let rejected_id = daemon
+            .sharing
+            .queue_outbound(Attachment::file("note.txt", 12));
+        assert!(
+            daemon
+                .sharing
+                .select_peer(rejected_id.get(), INBOUND_PEER_ID)
+        );
+        daemon.apply_network_event(NetworkEvent::OutboundRejected {
+            share_id: rejected_id.get(),
+        });
+        assert_eq!(active_phase(&daemon), Phase::Rejected);
+
+        assert!(daemon.sharing.dismiss(rejected_id.get()));
+        let cancelled_id = daemon
+            .sharing
+            .queue_outbound(Attachment::file("cancelled.txt", 12));
+        assert!(
+            daemon
+                .sharing
+                .select_peer(cancelled_id.get(), INBOUND_PEER_ID)
+        );
+        daemon.apply_network_event(NetworkEvent::OutboundAccepted {
+            share_id: cancelled_id.get(),
+        });
+        daemon.apply_network_event(NetworkEvent::OutboundCancelled {
+            share_id: cancelled_id.get(),
+        });
+        assert_eq!(active_phase(&daemon), Phase::Cancelled);
     }
 
     #[test]

@@ -276,6 +276,10 @@ impl Daemon {
             }
             Request::Cancel { share_id } => {
                 if self.sharing.cancel(*share_id) {
+                    if let Some(network) = &self.network {
+                        network.cancel_transfer(*share_id);
+                    }
+                    self.outbound.finish(*share_id);
                     ResponseEnvelope::cancelled()
                 } else {
                     ResponseEnvelope::not_found()
@@ -288,7 +292,11 @@ impl Daemon {
                 action_response(self.sharing.pin_peer(peer_id))
             }
             Request::Reject { share_id } => {
-                action_response(self.sharing.reject_inbound(*share_id))
+                let rejected = self.sharing.reject_inbound(*share_id);
+                if rejected && let Some(network) = &self.network {
+                    network.reject_inbound(*share_id)?;
+                }
+                action_response(rejected)
             }
             Request::SelectPeer { peer_id, share_id } => {
                 action_response(self.select_peer(*share_id, peer_id))

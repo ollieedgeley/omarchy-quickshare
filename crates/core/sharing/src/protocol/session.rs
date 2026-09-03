@@ -13,6 +13,7 @@ use std::{
 const PAIRING_PAYLOAD_ID: i64 = 1;
 const INTRODUCTION_PAYLOAD_ID: i64 = 2;
 const FILE_PAYLOAD_ID: i64 = 3;
+const CANCEL_PAYLOAD_ID: i64 = 4;
 const FILE_CHUNK_SIZE: usize = 0x0001_0000;
 
 /// Drives account-free Sharing over an encrypted Connections relationship.
@@ -124,21 +125,37 @@ impl SharingSession {
         Ok(())
     }
 
+    /// Writes the standard rejection response for the current inbound offer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the response cannot be sent.
+    pub fn reject_incoming_offer(&mut self) -> Result<(), ProtocolError> {
+        self.connection.send_sharing_frame(
+            INTRODUCTION_PAYLOAD_ID,
+            &frames::reject_response(),
+        )?;
+        Ok(())
+    }
+
     /// Receives a file payload into a caller-owned destination.
     ///
     /// # Errors
     ///
     /// Returns an error when payload metadata, chunks, lengths, or writes fail.
-    pub fn receive_incoming_file<Writer>(
+    pub fn receive_incoming_file<Writer, Cancelled>(
         &mut self,
         offer: &IncomingOffer,
         writer: &mut Writer,
+        mut is_cancelled: Cancelled,
     ) -> Result<(), ProtocolError>
     where
         Writer: Write,
+        Cancelled: FnMut() -> bool,
     {
+        self.stop_if_cancelled(&mut is_cancelled)?;
         let (id, size) = self.receive_file_header(offer)?;
-        self.receive_file_chunks(id, size, writer)
+        self.receive_file_chunks(id, size, writer, &mut is_cancelled)
     }
 
     /// Introduces one file, reports peer consent, then streams its payload.
@@ -148,22 +165,27 @@ impl SharingSession {
     /// Returns an error for unsafe names, invalid lengths, peer rejection, or
     /// transfer failure. The callback runs exactly once after peer acceptance
     /// and before the first payload frame.
-    pub fn send_outgoing_file<Reader, Accepted>(
+    pub fn send_outgoing_file<Reader, Accepted, Cancelled>(
         &mut self,
         name: &str,
         size: u64,
         reader: &mut Reader,
         on_accepted: Accepted,
+        mut is_cancelled: Cancelled,
     ) -> Result<(), ProtocolError>
     where
         Reader: Read,
         Accepted: FnOnce(),
+        Cancelled: FnMut() -> bool,
     {
         if !offer::safe_name(name) {
             return Err(ProtocolError::InvalidOffer("unsafe file name"));
         }
         let wire_size =
             i64::try_from(size).map_err(|_| ProtocolError::InvalidPayload)?;
+        if is_cancelled() {
+            return Err(ProtocolError::Cancelled);
+        }
         self.connection.send_sharing_frame(
             INTRODUCTION_PAYLOAD_ID,
             &frames::introduction(name, wire_size),
@@ -174,7 +196,8 @@ impl SharingSession {
             return Err(ProtocolError::Rejected);
         }
         on_accepted();
-        self.send_file_payload(name, reader, size, wire_size)
+        self.stop_if_cancelled(&mut is_cancelled)?;
+        self.send_file_payload(name, reader, size, wire_size, &mut is_cancelled)
     }
 
     /// Decodes one Google file introduction fixture or received Sharing frame.
@@ -201,11 +224,17 @@ impl SharingSession {
         &mut self,
         offer: &IncomingOffer,
     ) -> Result<(i64, u64), ProtocolError> {
+        let event = self.connection.receive()?;
+        if let Event::Bytes { bytes, .. } = &event
+            && frames::is_cancel(bytes)?
+        {
+            return Err(ProtocolError::Cancelled);
+        }
         let Event::FileHeader {
             id,
             total_size,
             name,
-        } = self.connection.receive()?
+        } = event
         else {
             return Err(ProtocolError::InvalidPayload);
         };
@@ -220,23 +249,32 @@ impl SharingSession {
             .map_err(|_| ProtocolError::InvalidPayload)
     }
 
-    fn receive_file_chunks<Writer>(
+    fn receive_file_chunks<Writer, Cancelled>(
         &mut self,
         id: i64,
         size: u64,
         writer: &mut Writer,
+        is_cancelled: &mut Cancelled,
     ) -> Result<(), ProtocolError>
     where
         Writer: Write,
+        Cancelled: FnMut() -> bool,
     {
         let mut received = 0_u64;
         loop {
+            self.stop_if_cancelled(is_cancelled)?;
+            let event = self.connection.receive()?;
+            if let Event::Bytes { bytes, .. } = &event
+                && frames::is_cancel(bytes)?
+            {
+                return Err(ProtocolError::Cancelled);
+            }
             let Event::FileChunk {
                 id: chunk_id,
                 offset,
                 bytes: chunk,
                 is_last,
-            } = self.connection.receive()?
+            } = event
             else {
                 return Err(ProtocolError::InvalidPayload);
             };
@@ -264,15 +302,17 @@ impl SharingSession {
         }
     }
 
-    fn send_file_payload<Reader>(
+    fn send_file_payload<Reader, Cancelled>(
         &mut self,
         name: &str,
         reader: &mut Reader,
         size: u64,
         wire_size: i64,
+        is_cancelled: &mut Cancelled,
     ) -> Result<(), ProtocolError>
     where
         Reader: Read,
+        Cancelled: FnMut() -> bool,
     {
         self.connection.send_file_header(
             FILE_PAYLOAD_ID,
@@ -280,6 +320,7 @@ impl SharingSession {
             Some(name.into()),
         )?;
         if size == 0 {
+            self.stop_if_cancelled(is_cancelled)?;
             let mut extra = [0_u8; 1];
             if reader.read(&mut extra)? != 0 {
                 return Err(ProtocolError::InvalidPayload);
@@ -291,6 +332,7 @@ impl SharingSession {
         let mut buffer = vec![0_u8; FILE_CHUNK_SIZE];
         let mut offset = 0_u64;
         while offset < size {
+            self.stop_if_cancelled(is_cancelled)?;
             let remaining = size - offset;
             let read_limit = usize::try_from(remaining)
                 .unwrap_or(FILE_CHUNK_SIZE)
@@ -325,9 +367,27 @@ impl SharingSession {
 
     fn receive_bytes(&mut self) -> Result<Vec<u8>, ProtocolError> {
         match self.connection.receive()? {
+            Event::Bytes { bytes, .. } if frames::is_cancel(&bytes)? => {
+                Err(ProtocolError::Cancelled)
+            }
             Event::Bytes { bytes, .. } => Ok(bytes),
             _ => Err(ProtocolError::InvalidFrame),
         }
+    }
+
+    fn stop_if_cancelled<Cancelled>(
+        &mut self,
+        is_cancelled: &mut Cancelled,
+    ) -> Result<(), ProtocolError>
+    where
+        Cancelled: FnMut() -> bool,
+    {
+        if !is_cancelled() {
+            return Ok(());
+        }
+        self.connection
+            .send_sharing_frame(CANCEL_PAYLOAD_ID, &frames::cancel())?;
+        Err(ProtocolError::Cancelled)
     }
 }
 
