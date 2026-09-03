@@ -180,6 +180,9 @@ test-local-install: ## Check local binary and systemd-user-service installation.
 install-local: ## Build, install, and start the local user service.
 	@node tools/release/local-install.mjs
 
+install-local-simulation: ## Install the local service with simulated peers.
+	@node tools/release/local-install.mjs --simulate
+
 plugin-export: ## Create the validated local plugin Git repository.
 	@node tools/release/plugin-export.mjs
 

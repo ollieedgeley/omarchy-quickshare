@@ -19,6 +19,8 @@ const RESTART = /^Restart=on-failure$/mu;
 const RESTART_DELAY = /^RestartSec=2s$/mu;
 const SERVICE_COMMAND =
   /^ExecStart=%h\/\.local\/bin\/omarchy-quickshare --daemon$/mu;
+const SIMULATED_SERVICE_COMMAND =
+  /^ExecStart=%h\/\.local\/bin\/omarchy-quickshare --daemon --simulate$/mu;
 const SERVICE_TARGET = /^WantedBy=default.target$/mu;
 
 function temporaryDirectory() {
@@ -38,7 +40,10 @@ function preparedSource(root) {
   mkdirSync(join(root, "target", "release"), { recursive: true });
   mkdirSync(join(root, "packaging", "systemd"), { recursive: true });
   writeFileSync(binary, "binary");
-  writeFileSync(service, "[Service]\nExecStart=example\n");
+  writeFileSync(
+    service,
+    "[Service]\nExecStart=%h/.local/bin/omarchy-quickshare --daemon\n",
+  );
   return { binary, service };
 }
 
@@ -132,4 +137,22 @@ test("user service runs the daemon and restarts after failures", () => {
   assert.match(service, RESTART);
   assert.match(service, RESTART_DELAY);
   assert.match(service, SERVICE_TARGET);
+});
+
+test("local installer can explicitly enable simulated peers", () => {
+  const root = temporaryDirectory();
+  const homeDirectory = temporaryDirectory();
+  preparedSource(root);
+  const calls = [];
+
+  installLocal({
+    homeDirectory,
+    root,
+    runCommand: commandRecorder(calls),
+    simulated: true,
+  });
+
+  const service = readFileSync(installedPaths(homeDirectory).service, "utf8");
+  assert.match(service, SIMULATED_SERVICE_COMMAND);
+  assertCommands(calls, root);
 });

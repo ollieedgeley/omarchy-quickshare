@@ -28,5 +28,13 @@ make plugin-export
 omarchy plugin add "file://$PWD/dist/omarchy-plugin" --enable --yes
 ```
 
+For local UI testing without a phone, install the deterministic peer mode:
+
+```sh
+make install-local-simulation
+```
+
+Running `make install-local` again restores the normal service mode.
+
 The native Arch package is not published yet. Building from the source checkout
 is the current fallback. The plugin never downloads or installs the binary.
