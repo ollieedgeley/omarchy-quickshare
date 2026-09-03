@@ -145,6 +145,10 @@ QtObject {
     acceptSnapshot(statusOutput)
   }
 
+  function pin(peerId) {
+    runAction(["--pin", String(peerId)])
+  }
+
   function refresh() {
     protocolState = "checking"
     versionOutput = ""

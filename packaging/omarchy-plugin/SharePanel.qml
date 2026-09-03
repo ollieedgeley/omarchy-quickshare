@@ -35,6 +35,7 @@ Item {
   signal acceptRequested(int shareId)
   signal cancelRequested(int shareId)
   signal peerSelected(int shareId, string peerId)
+  signal pinRequested(string peerId)
   signal rejectRequested(int shareId)
 
   function accept() {
@@ -47,6 +48,10 @@ Item {
 
   function choosePeer(peerId) {
     if (viewState === "choose_peer") peerSelected(activeShare.id, peerId)
+  }
+
+  function pinPeer(peerId) {
+    if (viewState === "choose_peer") pinRequested(peerId)
   }
 
   function reject() {
@@ -103,15 +108,28 @@ Item {
           Text {
             anchors.centerIn: parent
             color: root.foregroundColor
-            text: modelData.name
+            text: modelData.name + (modelData.pinned ? " · pinned" : "")
             textFormat: Text.PlainText
           }
 
           MouseArea {
             anchors.fill: parent
-            onClicked: root.choosePeer(modelData.id)
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+            onClicked: function(mouse) {
+              if (mouse.button === Qt.RightButton) {
+                root.pinPeer(modelData.id)
+              } else {
+                root.choosePeer(modelData.id)
+              }
+            }
           }
         }
+      }
+
+      Text {
+        color: root.mutedColor
+        text: "Right-click a device to pin it"
+        visible: root.peers.length > 0
       }
 
       Text {

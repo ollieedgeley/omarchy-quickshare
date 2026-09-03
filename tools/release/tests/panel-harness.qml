@@ -6,6 +6,7 @@ ShellRoot {
 
   property int acceptedShare: 0
   property int cancelledShare: 0
+  property string pinnedPeer: ""
   property string selectedPeer: ""
   property int selectedShare: 0
 
@@ -14,8 +15,10 @@ ShellRoot {
       && panel.peers.length === 1
       && panel.progressPercent === 0
     panel.choosePeer("pixel-8")
+    panel.pinPeer("pixel-8")
     var selected = root.selectedShare === 7
       && root.selectedPeer === "pixel-8"
+      && root.pinnedPeer === "pixel-8"
     panel.snapshot = incomingSnapshot("awaiting_local_consent", 0)
     var incoming = panel.viewState === "consent"
       && panel.attachmentLabel === "photo.jpg"
@@ -76,6 +79,9 @@ ShellRoot {
     onPeerSelected: function(shareId, peerId) {
       root.selectedShare = shareId
       root.selectedPeer = peerId
+    }
+    onPinRequested: function(peerId) {
+      root.pinnedPeer = peerId
     }
   }
 

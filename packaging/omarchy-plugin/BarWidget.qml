@@ -102,6 +102,9 @@ BarWidget {
         onPeerSelected: function(shareId, peerId) {
           status.sendTo(shareId, peerId)
         }
+        onPinRequested: function(peerId) {
+          status.pin(peerId)
+        }
         onRejectRequested: function(shareId) {
           status.reject(shareId)
         }
