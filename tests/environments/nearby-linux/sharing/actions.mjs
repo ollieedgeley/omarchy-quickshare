@@ -325,16 +325,6 @@ function variables() {
   };
 }
 
-async function waitForExpectedExits({ flow, receiver, sender, timeoutMs }) {
-  const waitOptions = { acceptedCodes: [1], timeoutMs };
-  const senderWait = sender.wait(waitOptions);
-  if (!flow.receiverTerminal) {
-    await senderWait;
-    return;
-  }
-  await Promise.all([receiver.wait(waitOptions), senderWait]);
-}
-
 async function runFlow(runner, context, flow) {
   const fixture = prepareFixture(flow.sender, flow.receiver, flow.payloadName);
   const receiver = runner.start({
@@ -358,10 +348,8 @@ async function runFlow(runner, context, flow) {
       receiver,
       sender,
     });
-    await waitForExpectedExits({
-      flow,
-      receiver,
-      sender,
+    await sender.wait({
+      acceptedCodes: [1],
       timeoutMs: context.timeoutMs,
     });
     return evidence({

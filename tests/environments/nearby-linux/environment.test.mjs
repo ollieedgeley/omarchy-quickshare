@@ -611,7 +611,7 @@ function createActionRunner() {
       const process = fakeProcess();
       process.wait = ({ acceptedCodes }) => {
         assert.deepEqual(acceptedCodes, [1]);
-        assert.notEqual(process.action, "hold");
+        assert.ok(!Object.hasOwn(process, "action"));
         process.waited = true;
         return Promise.resolve();
       };
