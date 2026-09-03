@@ -9,6 +9,9 @@
     )
 )]
 
+/// Local endpoint lifecycle and queue ownership.
+pub mod daemon;
+
 use std::env;
 use std::io;
 use std::io::{BufReader, Write};

@@ -50,6 +50,13 @@ impl Envelope {
             version: PROTOCOL_VERSION,
         }
     }
+
+    /// Returns the protocol version used by this command.
+    #[must_use]
+    #[inline]
+    pub const fn version(&self) -> u16 {
+        self.version
+    }
 }
 
 /// A command supported by the local endpoint.

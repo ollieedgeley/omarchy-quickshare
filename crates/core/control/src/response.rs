@@ -11,6 +11,16 @@ pub struct Envelope {
 }
 
 impl Envelope {
+    /// Creates a successful response for one queued share.
+    #[must_use]
+    #[inline]
+    pub const fn queued() -> Self {
+        Self {
+            response: Response::Queued,
+            version: crate::PROTOCOL_VERSION,
+        }
+    }
+
     /// Returns the endpoint's response.
     #[must_use]
     #[inline]

@@ -10,6 +10,8 @@ mod tests {
     use std::process;
     use std::thread::{self, JoinHandle};
 
+    use omarchy_quickshare::daemon::Daemon;
+
     const REQUEST_FIXTURE: &str = include_str!(
         "../../../../fixtures/control/v1/submit-text-request.jsonl"
     );
@@ -192,5 +194,49 @@ mod tests {
         assert_submission_from("photo.jpg", &fixture.root, &expected);
         let cleanup_result = fixture.cleanup();
         assert!(cleanup_result.is_ok(), "failed to clean file fixture");
+    }
+
+    #[test]
+    fn real_local_endpoint_owns_the_queued_share() {
+        let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let root = env::temp_dir().join(format!(
+            "omarchy-quickshare-endpoint-{}-{sequence}",
+            process::id()
+        ));
+        let setup_result = fs::create_dir_all(&root);
+        assert!(setup_result.is_ok(), "failed to create endpoint fixture");
+        let socket = root.join("control.sock");
+        let listener_result = UnixListener::bind(&socket);
+        assert!(listener_result.is_ok(), "failed to bind endpoint fixture");
+        let Ok(listener) = listener_result else {
+            return;
+        };
+        let worker = thread::spawn(move || {
+            let mut endpoint = Daemon::new();
+            endpoint.serve_next(&listener)?;
+            io::Result::Ok(endpoint)
+        });
+        let mut output = Vec::new();
+        let arguments = vec![String::from("hello from Omarchy")];
+
+        let run_result =
+            omarchy_quickshare::run(&arguments, &root, &socket, &mut output);
+
+        assert!(run_result.is_ok(), "submission failed: {run_result:?}");
+        let joined = worker
+            .join()
+            .map_err(|_panic| io::Error::other("local endpoint panicked"));
+        assert!(joined.is_ok(), "failed to join local endpoint");
+        let Ok(endpoint_result) = joined else {
+            return;
+        };
+        assert!(endpoint_result.is_ok(), "local endpoint failed");
+        let Ok(endpoint) = endpoint_result else {
+            return;
+        };
+        assert_eq!(endpoint.queued_count(), 1);
+        assert_eq!(output, EXPECTED_OUTPUT);
+        let cleanup_result = fs::remove_dir_all(root);
+        assert!(cleanup_result.is_ok(), "failed to clean endpoint fixture");
     }
 }
