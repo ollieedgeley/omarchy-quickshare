@@ -25,4 +25,12 @@ preview that displays the installed binary's compatibility without claiming
 that device discovery or transfers work. After committing, `make plugin-export`
 creates its validated local Git repository under `dist/omarchy-plugin`.
 
+## Local daemon install
+
+Run `make install-local` to build the locked release binary, install it under
+`~/.local/bin`, install the systemd user unit under `~/.config/systemd/user`,
+then reload, enable, and start `omarchy-quickshare.service`. It uses only
+`systemctl --user`; no root access is required. The service runs the installed
+binary with `--daemon` and restarts after failures.
+
 Start with [CONTEXT.md](CONTEXT.md), then follow the task-specific links in [AGENTS.md](AGENTS.md).

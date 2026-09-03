@@ -25,7 +25,8 @@ REPOSITORY_FILES = git ls-files --cached --others --exclude-standard -z
 .PHONY: lint-dbus
 .PHONY: lint-bluetooth-radio lint-network lint-android
 .PHONY: test test-rust test-contracts test-tooling test-ast-rules
-.PHONY: test-source-cache test-plugin-release plugin-export
+.PHONY: test-source-cache test-plugin-release test-local-install plugin-export
+.PHONY: install-local
 .PHONY: test-oracle-toolchain test-oracle-reference
 .PHONY: test-nearshare-reference test-nearby-linux-tooling
 .PHONY: test-nearby-linux-connections test-nearby-linux-sharing
@@ -172,6 +173,12 @@ test-tooling: ## Run quality-gate and hook contract tests.
 test-plugin-release: ## Check the plugin export and native status states.
 	@QUICKSHELL=$(QUICKSHELL) $(TIMEOUT) node --test \
 		tools/release/tests/plugin-release-contract.test.mjs
+
+test-local-install: ## Check local binary and systemd-user-service installation.
+	@$(TIMEOUT) node --test tools/release/tests/local-install-contract.test.mjs
+
+install-local: ## Build, install, and start the local user service.
+	@node tools/release/local-install.mjs
 
 plugin-export: ## Create the validated local plugin Git repository.
 	@node tools/release/plugin-export.mjs

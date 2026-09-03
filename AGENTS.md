@@ -103,6 +103,8 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make test-rust` runs workspace Rust tests; `make test-tooling` runs quality-gate and hook contract tests.
 - `make test-plugin-release` checks the allowlisted plugin export and every
   native availability state through Quick Shell.
+- `make test-local-install` checks local binary installation and the systemd
+  user-service lifecycle; `make install-local` performs the local install.
 - `make test-contracts` runs shared transfer scenarios against fast doubles; simulator adapters consume the same scenarios.
 - `make test-nearshare-reference` runs the pinned diverse LAN peer through discovery, encryption, both transfer roles, and byte-integrity checks.
 - `make diverse-lan-{up,down}` measures the isolated NearShare↔Google-derived LAN lifecycle.

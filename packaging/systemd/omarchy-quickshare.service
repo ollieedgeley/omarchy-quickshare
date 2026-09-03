@@ -1,0 +1,10 @@
+[Unit]
+Description=Omarchy Quick Share local daemon
+
+[Service]
+ExecStart=%h/.local/bin/omarchy-quickshare --daemon
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=default.target
