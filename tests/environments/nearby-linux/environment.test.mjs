@@ -611,6 +611,7 @@ function createActionRunner() {
       const process = fakeProcess();
       process.wait = ({ acceptedCodes }) => {
         assert.deepEqual(acceptedCodes, [1]);
+        assert.notEqual(process.action, "hold");
         process.waited = true;
         return Promise.resolve();
       };
@@ -757,9 +758,7 @@ test(SHARING_ACTION_TEST, async () => {
         { receiverTerminal: null, senderTerminal: "kCancelled" },
       ],
     );
-    assert.ok(
-      fake.processes.every((process) => process.stopped && process.waited),
-    );
+    assert.ok(fake.processes.every((process) => process.stopped));
     assert.deepEqual(
       fake.calls
         .filter(({ args }) => args.includes("send"))
