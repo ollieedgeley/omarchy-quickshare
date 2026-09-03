@@ -11,6 +11,7 @@ use std::time::Instant;
 use omarchy_quickshare as _;
 use quickshare_control::codec::read_response;
 use quickshare_control::response::Response;
+use quickshare_network as _;
 use quickshare_sharing::{
     Attachment, Direction, DiscoveryState, EndpointSnapshot, Phase,
     VisibilityState,

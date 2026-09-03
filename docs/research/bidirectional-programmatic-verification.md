@@ -86,6 +86,18 @@ the positive payload ID to that required attachment field. The immutable source
 cache remains unchanged, and a contract test fails if the pinned construction
 site drifts.
 
+`make test-rust-lan` rebuilds the current daemon into the isolated LAN image,
+then runs the Rust daemon against the pinned Google-derived Sharing peer in
+each direction. The two child gates separately prove DNS-SD discovery, a live
+TCP relationship, UKEY2 and encrypted Connections frames, account-free Sharing
+consent, terminal completion, and identical source and destination SHA-256.
+This is direct interoperability evidence for file transfer over the simulated
+same-LAN route. It does not cover a physical phone, text or URL attachments,
+another transport, or Google account trust.
+
+The account-free path encrypts the session but does not authenticate a durable
+peer identity. Local consent remains required before an inbound file is saved.
+
 QNearbyShare is a possible extra diversity peer, but not a required gate. Its last source change is older, its automated protocol coverage is small, and it documents that newer Android Quick Share receivers cannot be triggered. Requiring it would add maintenance without closing a distinct proven gap. [Source](https://github.com/vicr123/QNearbyShare/tree/e0917fdf80c866cb61a979a964900b3b3983eb76)
 
 ## Android automation

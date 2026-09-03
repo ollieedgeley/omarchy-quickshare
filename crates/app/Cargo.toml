@@ -9,7 +9,9 @@ publish = false
 
 [dependencies]
 quickshare-control = { path = "../core/control" }
+quickshare-network = { path = "../platform/network" }
 quickshare-sharing = { path = "../core/sharing" }
+quickshare-storage = { path = "../platform/storage" }
 
 [lints]
 workspace = true

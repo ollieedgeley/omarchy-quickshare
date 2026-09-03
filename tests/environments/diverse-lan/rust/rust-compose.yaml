@@ -1,0 +1,75 @@
+name: omarchy-quickshare-rust-lan
+
+services:
+  google:
+    image: ${NEARBY_LINUX_IMAGE:?set NEARBY_LINUX_IMAGE}
+    cap_drop: [ALL]
+    cap_add:
+      [
+        CHOWN,
+        DAC_OVERRIDE,
+        NET_ADMIN,
+        NET_BIND_SERVICE,
+        NET_RAW,
+        SETGID,
+        SETUID,
+      ]
+    hostname: Google-B
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /run:rw,nosuid,nodev,size=16m
+      - /tmp:rw,nosuid,nodev,size=64m
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          dbus-send --system --print-reply --dest=org.bluez /org/bluez/hci0
+          org.freedesktop.DBus.Properties.Get string:org.bluez.Adapter1
+          string:Powered && dbus-send --system --print-reply
+          --dest=org.freedesktop.NetworkManager /org/freedesktop/NetworkManager
+          org.freedesktop.DBus.Peer.Ping && nmcli --get-values STATE general
+          | grep --fixed-strings --quiet connected && avahi-daemon --check
+      interval: 1s
+      timeout: 1s
+      retries: 20
+      start_period: 1s
+    volumes:
+      - type: bind
+        source: ${GOOGLE_CASE_DIR:?set Google case directory}
+        target: /cases
+    networks:
+      rust_lan:
+        ipv4_address: 172.30.46.11
+
+  rust:
+    build:
+      context: ${RUST_LAN_CONTEXT:?set Rust LAN context}
+      dockerfile: tests/environments/diverse-lan/rust/Dockerfile.rust-peer
+    image: omarchy-quickshare/rust-lan-peer:development
+    command: [infinity]
+    environment:
+      XDG_DOWNLOAD_DIR: /cases/received
+      XDG_RUNTIME_DIR: /run/quickshare
+    hostname: Omarchy-Rust
+    entrypoint: [/bin/sleep]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /run/quickshare:rw,nosuid,nodev,size=16m
+      - /tmp:rw,nosuid,nodev,size=64m
+    volumes:
+      - type: bind
+        source: ${RUST_CASE_DIR:?set Rust case directory}
+        target: /cases
+    networks:
+      rust_lan:
+        ipv4_address: 172.30.46.10
+
+networks:
+  rust_lan:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.46.0/24

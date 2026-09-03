@@ -1,5 +1,6 @@
 .cache/
 .codegraph/
+Handoff.md
 dist/
 node_modules/
 reports/

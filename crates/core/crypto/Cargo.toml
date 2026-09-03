@@ -1,0 +1,22 @@
+[package]
+name = "quickshare-crypto"
+version = "0.0.0"
+description = "UKEY2 and D2D cryptography for Quick Share"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+aes.workspace = true
+cbc.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
+p256.workspace = true
+prost.workspace = true
+quickshare-wire = { path = "../wire" }
+rand_core.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

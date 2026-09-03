@@ -1,0 +1,17 @@
+[package]
+name = "quickshare-connections"
+version = "0.0.0"
+description = "Encrypted Nearby Connections sessions for Quick Share"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+prost.workspace = true
+quickshare-crypto = { path = "../crypto" }
+quickshare-wire = { path = "../wire" }
+rand_core.workspace = true
+
+[lints]
+workspace = true

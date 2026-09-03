@@ -1,5 +1,9 @@
 //! Local endpoint lifecycle and outbound queue ownership.
 
+mod network;
+mod outbound;
+mod production;
+
 use core::time::Duration;
 use std::io::{self, BufReader};
 use std::os::unix::fs::PermissionsExt as _;
@@ -13,6 +17,10 @@ use quickshare_control::codec::{read_request, write_response};
 use quickshare_control::request::{Envelope as RequestEnvelope, Request};
 use quickshare_control::response::{Envelope as ResponseEnvelope, Response};
 use quickshare_sharing::{Attachment, Coordinator};
+use quickshare_storage::OutboundSource;
+
+use self::network::NetworkWorker;
+use self::outbound::OutboundState;
 
 /// Owner-only mode for the control socket directory.
 const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
@@ -22,6 +30,10 @@ const PRIVATE_SOCKET_MODE: u32 = 0o600;
 /// The same-user local endpoint state.
 #[derive(Debug, Default)]
 pub struct Daemon {
+    /// Production network worker, omitted by in-process and simulated daemons.
+    network: Option<NetworkWorker>,
+    /// Production-only file paths and discovered LAN routes.
+    outbound: OutboundState,
     /// Outbound shares accepted from local clients.
     queued: Vec<RequestEnvelope>,
     /// User-visible share lifecycle state.
@@ -76,6 +88,10 @@ impl Drop for ControlSocket {
     }
 }
 
+#[expect(
+    clippy::multiple_inherent_impl,
+    reason = "Production network behavior stays in its owned daemon submodule"
+)]
 impl Daemon {
     /// Applies endpoint discovery and visibility controls.
     #[expect(
@@ -83,25 +99,42 @@ impl Daemon {
         clippy::wildcard_enum_match_arm,
         reason = "Borrowed non-exhaustive requests require an unhandled case"
     )]
-    const fn endpoint_response(
+    fn endpoint_response(
         &mut self,
         request: &Request,
-    ) -> Option<ResponseEnvelope> {
+    ) -> io::Result<Option<ResponseEnvelope>> {
         match request {
-            Request::CloseVisibility => self.sharing.close_visibility(),
-            Request::Discover => self.sharing.start_discovery(),
-            Request::OpenVisibility => self.sharing.open_visibility(),
+            Request::CloseVisibility => {
+                self.sharing.close_visibility();
+                if let Some(network) = &self.network {
+                    network.close_visibility()?;
+                }
+            }
+            Request::Discover => {
+                self.sharing.start_discovery();
+                if let Some(network) = &self.network {
+                    network.discover()?;
+                }
+            }
+            Request::OpenVisibility => {
+                self.sharing.open_visibility();
+                if let Some(network) = &self.network {
+                    network.open_visibility()?;
+                }
+            }
             Request::StopDiscovery => self.sharing.stop_discovery(),
-            _ => return None,
+            _ => return Ok(None),
         }
-        Some(ResponseEnvelope::applied())
+        Ok(Some(ResponseEnvelope::applied()))
     }
 
     /// Creates an empty local endpoint.
     #[must_use]
     #[inline]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
+            network: None,
+            outbound: OutboundState::default(),
             queued: Vec::new(),
             sharing: Coordinator::new(),
             simulated: false,
@@ -109,9 +142,8 @@ impl Daemon {
     }
 
     /// Queues one validated attachment and reports its stable identifier.
-    fn queue_attachment(&mut self, attachment: Attachment) -> ResponseEnvelope {
-        let share_id = self.sharing.queue_outbound(attachment);
-        ResponseEnvelope::queued(share_id.get())
+    fn queue_attachment(&mut self, attachment: Attachment) -> u64 {
+        self.sharing.queue_outbound(attachment).get()
     }
 
     /// Returns the number of outbound shares owned by the endpoint.
@@ -130,10 +162,10 @@ impl Daemon {
         &mut self,
         request: &Request,
     ) -> io::Result<ResponseEnvelope> {
-        if let Some(response) = self.endpoint_response(request) {
+        if let Some(response) = self.endpoint_response(request)? {
             return Ok(response);
         }
-        if let Some(response) = self.share_response(request) {
+        if let Some(response) = self.share_response(request)? {
             return Ok(response);
         }
         match request {
@@ -142,14 +174,23 @@ impl Daemon {
             }
             Request::Status => Ok(ResponseEnvelope::ready()),
             Request::SubmitFile { path } => {
-                let attachment = file_attachment(path)?;
-                Ok(self.queue_attachment(attachment))
+                let source =
+                    OutboundSource::open(path).map_err(io::Error::other)?;
+                let attachment = Attachment::file(
+                    &source.name().to_string_lossy(),
+                    source.len(),
+                );
+                let share_id = self.queue_attachment(attachment);
+                self.outbound.remember_file(share_id, source);
+                Ok(ResponseEnvelope::queued(share_id))
             }
             Request::SubmitText { text } => {
-                Ok(self.queue_attachment(Attachment::text(text)))
+                let share_id = self.queue_attachment(Attachment::text(text));
+                Ok(ResponseEnvelope::queued(share_id))
             }
             Request::SubmitUrl { url } => {
-                Ok(self.queue_attachment(Attachment::url(url)))
+                let share_id = self.queue_attachment(Attachment::url(url));
+                Ok(ResponseEnvelope::queued(share_id))
             }
             Request::SimulateFail { .. }
             | Request::SimulateIncomingFile { .. }
@@ -171,6 +212,7 @@ impl Daemon {
     /// Returns an error when listener configuration or a client fails.
     #[inline]
     pub fn serve_next(&mut self, listener: &UnixListener) -> io::Result<()> {
+        self.apply_network_events()?;
         let (mut stream, _address) = listener.accept()?;
         let mut reader = BufReader::new(stream.try_clone()?);
         let request = read_request(&mut reader)?;
@@ -223,10 +265,14 @@ impl Daemon {
     fn share_response(
         &mut self,
         request: &Request,
-    ) -> Option<ResponseEnvelope> {
+    ) -> io::Result<Option<ResponseEnvelope>> {
         let response = match request {
             Request::Accept { share_id } => {
-                action_response(self.sharing.accept_inbound(*share_id))
+                let accepted = self.sharing.accept_inbound(*share_id);
+                if accepted && let Some(network) = &self.network {
+                    network.accept_inbound(*share_id)?;
+                }
+                action_response(accepted)
             }
             Request::Cancel { share_id } => {
                 if self.sharing.cancel(*share_id) {
@@ -245,11 +291,11 @@ impl Daemon {
                 action_response(self.sharing.reject_inbound(*share_id))
             }
             Request::SelectPeer { peer_id, share_id } => {
-                action_response(self.sharing.select_peer(*share_id, peer_id))
+                action_response(self.select_peer(*share_id, peer_id))
             }
-            _ => return None,
+            _ => return Ok(None),
         };
-        Some(response)
+        Ok(Some(response))
     }
 
     /// Creates an endpoint backed by deterministic local peers.
@@ -257,6 +303,8 @@ impl Daemon {
     #[inline]
     pub fn simulated() -> Self {
         let mut endpoint = Self {
+            network: None,
+            outbound: OutboundState::default(),
             queued: Vec::new(),
             sharing: Coordinator::new(),
             simulated: true,
@@ -318,6 +366,18 @@ impl Daemon {
         }
         action_response(self.simulation_applied(request))
     }
+
+    /// Attaches the production network worker to an otherwise empty daemon.
+    #[expect(
+        clippy::single_call_fn,
+        reason = "Only production startup attaches the real worker"
+    )]
+    fn with_network_worker(network: NetworkWorker) -> Self {
+        Self {
+            network: Some(network),
+            ..Self::new()
+        }
+    }
 }
 
 /// Converts a state transition result into a control response.
@@ -330,18 +390,6 @@ const fn action_response(applied: bool) -> ResponseEnvelope {
 }
 
 /// Builds public file facts after confirming the source still exists.
-#[expect(
-    clippy::single_call_fn,
-    reason = "File metadata validation stays outside control dispatch"
-)]
-fn file_attachment(path: &Path) -> io::Result<Attachment> {
-    let name = path.file_name().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "file path has no name")
-    })?;
-    let size_bytes = fs::metadata(path)?.len();
-    Ok(Attachment::file(&name.to_string_lossy(), size_bytes))
-}
-
 /// Removes an abandoned socket without replacing a running endpoint.
 #[expect(
     clippy::single_call_fn,
@@ -376,7 +424,8 @@ fn remove_stale_socket(path: &Path) -> io::Result<()> {
 #[inline]
 pub fn run(socket_path: &Path) -> io::Result<()> {
     let socket = ControlSocket::bind(socket_path)?;
-    Daemon::new().serve_until(&socket.listener, || false)
+    let network = NetworkWorker::start()?;
+    Daemon::with_network_worker(network).serve_until(&socket.listener, || false)
 }
 
 /// Runs a deterministic local peer for complete application testing.

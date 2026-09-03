@@ -8,6 +8,12 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+base64.workspace = true
+prost.workspace = true
+quickshare-connections = { path = "../connections" }
+quickshare-crypto = { path = "../crypto" }
+quickshare-wire = { path = "../wire" }
+rand_core.workspace = true
 serde.workspace = true
 
 [lints]

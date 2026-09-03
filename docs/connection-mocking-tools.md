@@ -492,3 +492,9 @@ Build the oracle before the transfer engine grows. The first milestone should co
 6. one privileged BlueZ virtual-controller job
 
 That milestone answers the riskiest question early: can our independent Rust state machine complete a live encrypted session with Google's implementation? If it can, the radio adapters become isolated Linux integration work rather than protocol guesswork.
+
+The live LAN portion of this milestone is implemented by
+`make test-rust-lan`. Its direction-specific child gates run the production
+daemon against the pinned Google-derived Sharing process and compare complete
+file hashes. The remaining transport and fault rows keep their own readiness
+thresholds; a green LAN route does not imply that they are implemented.

@@ -15,7 +15,7 @@ RUFF ?= $(CURDIR)/.cache/tools/ruff-0.16.0/ruff
 QUICKSHELL ?= quickshell
 REPOSITORY_FILES = git ls-files --cached --others --exclude-standard -z
 
-.PHONY: help setup hooks-install ruff-provision sources-fetch
+.PHONY: help setup hooks-install ruff-provision sources-fetch wire-codegen
 .PHONY: format format-app format-tooling
 .PHONY: format-check format-app-check format-tooling-check check
 .PHONY: lint-rust lint-javascript lint-python lint-ast lint-docs
@@ -28,7 +28,8 @@ REPOSITORY_FILES = git ls-files --cached --others --exclude-standard -z
 .PHONY: test-source-cache test-plugin-release test-local-install plugin-export
 .PHONY: install-local
 .PHONY: test-oracle-toolchain test-oracle-reference
-.PHONY: test-nearshare-reference test-nearby-linux-tooling
+.PHONY: test-nearshare-reference test-nearby-linux-tooling rust-lan-provision
+.PHONY: test-rust-lan test-rust-lan-outbound test-rust-lan-inbound
 .PHONY: test-nearby-linux-connections test-nearby-linux-sharing
 .PHONY: test-nearby-linux-sharing-actions sharing-fixtures-update
 .PHONY: test-nearby-linux-sharing-fixtures
@@ -78,6 +79,9 @@ ruff-provision: ## Install the pinned standalone Python quality tool.
 
 sources-fetch: ## Download, hash-check, and extract every pinned test source.
 	@node tools/gates/sources.mjs fetch
+
+wire-codegen: ## Regenerate committed Nearby and UKEY2 Rust bindings.
+	@tools/codegen/generate-wire.sh
 
 format: format-app format-tooling ## Rewrite files with pinned formatters.
 
@@ -199,6 +203,10 @@ test-oracle-toolchain: ## Test the prepared oracle toolchain.
 
 test-oracle-reference: ## Test UKEY2 and a secure-session exchange.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs reference-self-test
+	@UKEY2_SHELL="$(CURDIR)/.cache/test-env/oracle/bin/ukey2_shell" \
+		RUSTFLAGS="--cfg quickshare_oracle_reference" \
+		$(TIMEOUT) cargo test -p quickshare-crypto --test oracle_interop \
+		--locked
 
 test-nearshare-reference: ## Test full LAN Sharing in both peer roles.
 	@trap 'node tests/environments/nearshare/environment.mjs down' EXIT; \
@@ -236,6 +244,20 @@ test-diverse-lan: ## Exchange bytes across diverse same-LAN reference peers.
 	@trap 'node tests/environments/diverse-lan/environment.mjs down' EXIT; \
 		node tests/environments/diverse-lan/environment.mjs up; \
 		$(TIMEOUT) node tests/environments/diverse-lan/environment.mjs self-test
+
+rust-lan-provision: ## Build the current Rust daemon into the LAN test image.
+	@node tests/environments/diverse-lan/rust/rust-lan.mjs provision
+
+test-rust-lan: rust-lan-provision test-rust-lan-outbound
+test-rust-lan: test-rust-lan-inbound ## Verify daemon LAN transfers both ways.
+
+test-rust-lan-outbound: ## Send from Rust to the Google-derived LAN peer.
+	@$(TIMEOUT) node --test \
+		tests/environments/diverse-lan/rust/rust-lan-outbound.e2e.mjs
+
+test-rust-lan-inbound: ## Receive from the Google-derived LAN peer in Rust.
+	@$(TIMEOUT) node --test \
+		tests/environments/diverse-lan/rust/rust-lan-inbound.e2e.mjs
 
 test-oracle-bluetooth: ## Check Google's simulated Bluetooth Classic medium.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs \
@@ -353,7 +375,7 @@ verify: verify-app verify-tooling test-source-cache
 verify: test-oracle-toolchain test-oracle-reference test-nearshare-reference
 verify: test-nearby-linux-connections test-nearby-linux-sharing
 verify: test-nearby-linux-sharing-actions test-nearby-linux-sharing-fixtures
-verify: test-diverse-lan
+verify: test-diverse-lan test-rust-lan
 verify: test-oracle-bluetooth test-oracle-ble test-oracle-lan
 verify: test-oracle-hotspot test-oracle-wifi-direct test-oracle-bwu-handler
 verify: test-oracle-bwu-fallback test-proxy-toxiproxy

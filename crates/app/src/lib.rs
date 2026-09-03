@@ -9,6 +9,8 @@
     )
 )]
 
+extern crate alloc;
+
 /// Local endpoint lifecycle and queue ownership.
 pub mod daemon;
 
@@ -22,6 +24,7 @@ use quickshare_control::PROTOCOL_VERSION;
 use quickshare_control::codec::{read_response, write_request, write_response};
 use quickshare_control::request::Envelope as RequestEnvelope;
 use quickshare_control::response::{Envelope as ResponseEnvelope, Response};
+use quickshare_network as _;
 
 /// Parses one state-changing CLI command.
 #[expect(

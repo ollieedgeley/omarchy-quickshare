@@ -98,7 +98,13 @@ const clippyArgs = [
   ...clippyGroups.flatMap((group) => ["-D", `clippy::${group}`]),
   ...Object.keys(exceptions).flatMap((lint) => ["-A", `clippy::${lint}`]),
 ];
-run("cargo", clippyArgs, { cwd: ROOT });
+run("cargo", clippyArgs, {
+  cwd: ROOT,
+  env: {
+    ...process.env,
+    RUSTFLAGS: "--cfg quickshare_oracle_reference",
+  },
+});
 
 run(
   "cargo",

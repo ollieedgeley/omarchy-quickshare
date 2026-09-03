@@ -109,6 +109,8 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make test-nearshare-reference` runs the pinned diverse LAN peer through discovery, encryption, both transfer roles, and byte-integrity checks.
 - `make diverse-lan-{up,down}` measures the isolated NearShare↔Google-derived LAN lifecycle.
 - `make test-diverse-lan` checks simulated/reference mDNS, PIN fingerprints, both transfer roles, SHA-256 bytes, and a clean repeat.
+- `make rust-lan-provision` rebuilds the current daemon test image; `make test-rust-lan-{outbound,inbound}` checks one encrypted Google-derived LAN direction and exact file bytes.
+- `make test-rust-lan` rebuilds that image and runs both daemon directions; use it before claiming live LAN interoperability.
 - `make lint-nearby-linux` and `make test-nearby-linux-tooling` check the
   Google-derived peer definition and its fast contract tests.
 - `make test-nearby-linux-connections`, `make test-nearby-linux-sharing`, and
