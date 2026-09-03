@@ -54,4 +54,10 @@ impl PeerSnapshot {
     pub(crate) fn rename(&mut self, name: &str) {
         name.clone_into(&mut self.name);
     }
+
+    /// Changes whether outbound shares prefer this peer.
+    #[inline]
+    pub(crate) const fn set_pinned(&mut self, pinned: bool) {
+        self.pinned = pinned;
+    }
 }

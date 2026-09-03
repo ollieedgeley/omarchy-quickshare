@@ -88,19 +88,30 @@ impl Coordinator {
         Some(share_id)
     }
 
+    /// Pins exactly one observed peer for future outbound shares.
+    #[inline]
+    pub fn pin_peer(&mut self, peer_id: &str) -> bool {
+        self.snapshot.pin_peer(peer_id)
+    }
+
     /// Queues one outbound attachment and returns its stable identifier.
     #[must_use]
     #[inline]
     pub fn queue_outbound(&mut self, attachment: Attachment) -> ShareId {
         let share_id = self.next_id();
         let total_bytes = attachment.byte_len();
-        self.snapshot.set_active(ShareSnapshot::new(
+        let pinned_peer = self.snapshot.pinned_peer().cloned();
+        let mut share = ShareSnapshot::new(
             attachment,
             Direction::Outbound,
             share_id,
             Phase::WaitingForPeer,
             total_bytes,
-        ));
+        );
+        if let Some(peer) = pinned_peer {
+            share.select_peer(peer, Phase::AwaitingPeerConsent);
+        }
+        self.snapshot.set_active(share);
         share_id
     }
 

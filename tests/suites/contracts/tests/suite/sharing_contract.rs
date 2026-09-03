@@ -82,6 +82,36 @@ mod tests {
     }
 
     #[test]
+    fn pinned_peer_is_the_only_automatic_outbound_target() {
+        let mut coordinator = Coordinator::new();
+        coordinator.observe_peer("pixel-8", "Ollie's Pixel");
+        coordinator.observe_peer("galaxy-tab", "Galaxy Tab");
+
+        assert!(coordinator.pin_peer("pixel-8"));
+        assert!(coordinator.pin_peer("galaxy-tab"));
+        let share_id = coordinator.queue_outbound(Attachment::text("hello"));
+
+        let peers = coordinator.snapshot().peers();
+        let pinned = peers
+            .iter()
+            .filter(|peer| peer.is_pinned())
+            .map(quickshare_sharing::PeerSnapshot::id)
+            .collect::<Vec<_>>();
+        assert_eq!(pinned, ["galaxy-tab"]);
+        let active_result = coordinator.snapshot().active_share();
+        assert!(active_result.is_some(), "pinned share is not visible");
+        let Some(active) = active_result else {
+            return;
+        };
+        assert_eq!(active.id(), share_id);
+        assert_eq!(active.phase(), Phase::AwaitingPeerConsent);
+        assert_eq!(
+            active.peer().map(quickshare_sharing::PeerSnapshot::id),
+            Some("galaxy-tab"),
+        );
+    }
+
+    #[test]
     fn inbound_share_waits_for_consent_then_completes() {
         let mut coordinator = Coordinator::new();
         coordinator.observe_peer("pixel-8", "Ollie's Pixel");

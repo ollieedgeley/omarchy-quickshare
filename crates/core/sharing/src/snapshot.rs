@@ -138,6 +138,24 @@ impl EndpointSnapshot {
         &self.peers
     }
 
+    /// Pins exactly one known peer.
+    pub(crate) fn pin_peer(&mut self, peer_id: &str) -> bool {
+        if self.peer(peer_id).is_none() {
+            return false;
+        }
+        for peer in &mut self.peers {
+            peer.set_pinned(peer.id() == peer_id);
+        }
+        true
+    }
+
+    /// Returns the preferred outbound peer, when one is visible.
+    #[must_use]
+    #[inline]
+    pub(crate) fn pinned_peer(&self) -> Option<&PeerSnapshot> {
+        self.peers.iter().find(|peer| peer.is_pinned())
+    }
+
     /// Replaces the active share without changing observed peers.
     #[inline]
     pub(crate) fn set_active(&mut self, active_share: ShareSnapshot) {
