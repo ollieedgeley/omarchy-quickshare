@@ -115,6 +115,9 @@ impl Daemon {
                     ResponseEnvelope::not_found()
                 })
             }
+            Request::PinPeer { peer_id } => {
+                Ok(action_response(self.sharing.pin_peer(peer_id)))
+            }
             Request::Reject { share_id } => {
                 Ok(action_response(self.sharing.reject_inbound(*share_id)))
             }
@@ -234,6 +237,7 @@ impl Daemon {
             } => self.sharing.record_progress(*share_id, *transferred_bytes),
             Request::Accept { .. }
             | Request::Cancel { .. }
+            | Request::PinPeer { .. }
             | Request::Reject { .. }
             | Request::SelectPeer { .. }
             | Request::Snapshot

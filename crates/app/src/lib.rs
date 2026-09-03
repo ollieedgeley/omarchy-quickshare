@@ -40,6 +40,9 @@ fn action_request(arguments: &[String]) -> io::Result<Option<RequestEnvelope>> {
         [flag, value] if flag == "--cancel" => {
             RequestEnvelope::cancel(parse_number(value, "share ID")?)
         }
+        [flag, peer_id] if flag == "--pin" => {
+            RequestEnvelope::pin_peer(peer_id)
+        }
         [flag, value] if flag == "--reject" => {
             RequestEnvelope::reject(parse_number(value, "share ID")?)
         }

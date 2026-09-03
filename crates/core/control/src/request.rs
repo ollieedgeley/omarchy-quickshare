@@ -35,6 +35,18 @@ impl Envelope {
         }
     }
 
+    /// Creates a request to prefer one observed peer for future shares.
+    #[must_use]
+    #[inline]
+    pub fn pin_peer(peer_id: &str) -> Self {
+        Self {
+            request: Request::PinPeer {
+                peer_id: String::from(peer_id),
+            },
+            version: PROTOCOL_VERSION,
+        }
+    }
+
     /// Creates a request to reject one inbound share.
     #[must_use]
     #[inline]
@@ -181,6 +193,11 @@ pub enum Request {
     Cancel {
         /// Identifier returned when the share was queued.
         share_id: u64,
+    },
+    /// Prefer one observed peer for future outbound shares.
+    PinPeer {
+        /// Stable identifier advertised by the peer.
+        peer_id: String,
     },
     /// Reject an inbound share after showing it to the local user.
     Reject {

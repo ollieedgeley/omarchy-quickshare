@@ -52,10 +52,6 @@ impl DaemonProcessFixture {
         Self::start_with(root, &["--daemon"])
     }
 
-    #[expect(
-        clippy::single_call_fn,
-        reason = "The process contract has one complete simulated lifecycle"
-    )]
     fn start_simulated(root: PathBuf) -> io::Result<Self> {
         Self::start_with(root, &["--daemon", "--simulate"])
     }
@@ -316,7 +312,7 @@ fn daemon_cancels_the_active_share_by_identifier() {
 }
 
 #[test]
-fn simulated_daemon_runs_outbound_and_inbound_transfers() {
+fn simulated_daemon_runs_an_outbound_transfer_with_a_pinned_peer() {
     let root = runtime_fixture_path();
     let fixture_result = DaemonProcessFixture::start_simulated(root);
     assert!(fixture_result.is_ok(), "failed to start simulated daemon");
@@ -330,8 +326,13 @@ fn simulated_daemon_runs_outbound_and_inbound_transfers() {
     };
     assert_eq!(initial.peers().len(), 2);
 
+    assert_command(fixture.runtime_directory(), &["--pin", "galaxy-tab"]);
     assert_command(fixture.runtime_directory(), &["hello"]);
-    assert_command(fixture.runtime_directory(), &["--send-to", "1", "pixel-8"]);
+    assert_active_peer(
+        fixture.runtime_directory(),
+        "galaxy-tab",
+        Phase::AwaitingPeerConsent,
+    );
     assert_command(
         fixture.runtime_directory(),
         &["--simulate-peer-accept", "1"],
@@ -345,20 +346,31 @@ fn simulated_daemon_runs_outbound_and_inbound_transfers() {
         Direction::Outbound,
         Phase::Completed,
     );
+    let stop_result = fixture.stop();
+    assert!(stop_result.is_ok(), "failed to stop simulated daemon");
+}
 
+#[test]
+fn simulated_daemon_runs_an_inbound_transfer() {
+    let root = runtime_fixture_path();
+    let fixture_result = DaemonProcessFixture::start_simulated(root);
+    assert!(fixture_result.is_ok(), "failed to start simulated daemon");
+    let Ok(fixture) = fixture_result else {
+        return;
+    };
     assert_command(
         fixture.runtime_directory(),
         &["--simulate-incoming-text", "from phone"],
     );
-    assert_phase(
+    assert_active_peer(
         fixture.runtime_directory(),
-        Direction::Inbound,
+        "pixel-8",
         Phase::AwaitingLocalConsent,
     );
-    assert_command(fixture.runtime_directory(), &["--accept", "2"]);
+    assert_command(fixture.runtime_directory(), &["--accept", "1"]);
     assert_command(
         fixture.runtime_directory(),
-        &["--simulate-progress", "2", "10"],
+        &["--simulate-progress", "1", "10"],
     );
     assert_phase(
         fixture.runtime_directory(),
@@ -376,6 +388,26 @@ fn assert_command(runtime_directory: &Path, arguments: &[&str]) {
         return;
     };
     assert!(output.status.success(), "command rejected: {arguments:?}");
+}
+
+fn assert_active_peer(runtime_directory: &Path, peer_id: &str, phase: Phase) {
+    let snapshot_result = endpoint_snapshot(runtime_directory);
+    assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
+    let Ok(snapshot) = snapshot_result else {
+        return;
+    };
+    let active_result = snapshot.active_share();
+    assert!(active_result.is_some(), "active share is not visible");
+    let Some(active) = active_result else {
+        return;
+    };
+    let peer_result = active.peer();
+    assert!(peer_result.is_some(), "active peer is not visible");
+    let Some(peer) = peer_result else {
+        return;
+    };
+    assert_eq!(peer.id(), peer_id);
+    assert_eq!(active.phase(), phase);
 }
 
 fn assert_phase(runtime_directory: &Path, direction: Direction, phase: Phase) {
