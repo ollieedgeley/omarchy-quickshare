@@ -24,6 +24,9 @@ const RAW_OUTPUT_ARTIFACT_PATTERN = /stdout.*recordFailureArtifact/u;
 const SELECTED_COUNT_EVENT_PATTERN = /selected-\$\{selectedCount\}/u;
 const GTEST_COUNT_MISMATCH_PATTERN = /expected 3 selected cases, observed 2/u;
 const MISMATCHED_SELECTED_CASES = 3;
+const REFERENCE_LIFECYCLE_PATTERN =
+  /reference-up[\s\S]*test-oracle-bluetooth[\s\S]*reference-down/u;
+const REFERENCE_EXEC_PATTERN = /\["exec", REFERENCE_CONTAINER/u;
 
 function inputs() {
   return {
@@ -38,6 +41,14 @@ test("oracle Rust test uses the prepared cache outside its worktree", () => {
   assert.ok(
     makefile.includes('UKEY2_SHELL="$(TEST_ENV_CACHE)/oracle/bin/ukey2_shell"'),
   );
+});
+test("complete verification reuses one oracle reference container", () => {
+  const makefile = readFileSync(join(ROOT, "Makefile"), "utf8");
+  const source = readFileSync(join(DIRECTORY, "environment.mjs"), "utf8");
+  assert.match(makefile, REFERENCE_LIFECYCLE_PATTERN);
+  assert.ok(source.includes('mode === "reference-up"'));
+  assert.ok(source.includes('mode === "reference-down"'));
+  assert.match(source, REFERENCE_EXEC_PATTERN);
 });
 
 test("oracle medium self-tests pass selected GTest filters to Bazel", () => {

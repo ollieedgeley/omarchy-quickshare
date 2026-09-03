@@ -36,6 +36,7 @@ const ARTIFACTS = join(REFERENCE, "bin");
 const FIXTURE_GENERATOR = join(ROOT, "tools", "oracle", "sharing-fixtures");
 const STATE_PATH = join(REFERENCE, "image.json");
 const CONTAINER = "omarchy-quickshare-oracle";
+const REFERENCE_CONTAINER = "omarchy-quickshare-oracle-reference";
 const START_LIMIT_MS = 60_000;
 const START_GOAL_MS = 30_000;
 const REFERENCE_TARGET_COUNT = 5;
@@ -207,14 +208,14 @@ function dockerOutput(args, allowFailure = false) {
   return { status: result.status, stdout: result.stdout.trim() };
 }
 
-function inspectContainer() {
-  return dockerOutput(["container", "inspect", CONTAINER], true).status === 0;
+function inspectContainer(name = CONTAINER) {
+  return dockerOutput(["container", "inspect", name], true).status === 0;
 }
 
-function runningContainer() {
+function runningContainer(name = CONTAINER) {
   return (
     dockerOutput(
-      ["container", "inspect", "--format", "{{.State.Running}}", CONTAINER],
+      ["container", "inspect", "--format", "{{.State.Running}}", name],
       true,
     ).stdout === "true"
   );
@@ -287,10 +288,8 @@ function prepareReference(manifest, fingerprint) {
   });
 }
 
-function referenceContainerArgs(manifest, network, artifacts = false) {
+function referenceRuntimeArgs(manifest, network, artifacts = false) {
   const args = [
-    "run",
-    "--rm",
     `--network=${network}`,
     "--user",
     `${process.getuid()}:${process.getgid()}`,
@@ -308,6 +307,17 @@ function referenceContainerArgs(manifest, network, artifacts = false) {
   }
   args.push("--workdir", "/workspace", manifest.image);
   return args;
+}
+
+function referenceContainerArgs(manifest, network, artifacts = false) {
+  return ["run", "--rm", ...referenceRuntimeArgs(manifest, network, artifacts)];
+}
+
+function selectedGtestContainerArgs(manifest) {
+  if (runningContainer(REFERENCE_CONTAINER)) {
+    return ["exec", REFERENCE_CONTAINER];
+  }
+  return referenceContainerArgs(manifest, "none");
 }
 
 const REPOSITORY_OVERRIDES = [
@@ -413,7 +423,7 @@ function testSelectedGtest(manifest, configuration) {
     runSelectedGtest(
       docker,
       [
-        ...referenceContainerArgs(manifest, "none"),
+        ...selectedGtestContainerArgs(manifest),
         "bazel",
         "--output_user_root=/bazel/user",
         "test",
@@ -561,6 +571,37 @@ function down() {
   }
   enforceLifecycle("oracle teardown", started);
 }
+function referenceUp(manifest, fingerprint) {
+  const started = Date.now();
+  assertPrepared(manifest, fingerprint);
+  if (
+    inspectContainer(REFERENCE_CONTAINER) &&
+    !runningContainer(REFERENCE_CONTAINER)
+  ) {
+    docker(["container", "rm", REFERENCE_CONTAINER]);
+  }
+  if (!runningContainer(REFERENCE_CONTAINER)) {
+    docker([
+      "run",
+      "--detach",
+      "--name",
+      REFERENCE_CONTAINER,
+      ...referenceRuntimeArgs(manifest, "none"),
+      "sleep",
+      "infinity",
+    ]);
+  }
+  docker(["exec", REFERENCE_CONTAINER, "test", "-w", "/workspace"]);
+  enforceLifecycle("oracle reference startup", started);
+}
+
+function referenceDown() {
+  const started = Date.now();
+  if (inspectContainer(REFERENCE_CONTAINER)) {
+    docker(["container", "rm", "--force", REFERENCE_CONTAINER]);
+  }
+  enforceLifecycle("oracle reference teardown", started);
+}
 
 function selfTest(manifest) {
   if (!runningContainer()) {
@@ -602,6 +643,10 @@ function main() {
     prepareReference(manifest, fingerprint);
   } else if (mode === "reference-self-test") {
     selfTestReference(manifest);
+  } else if (mode === "reference-up") {
+    referenceUp(manifest, fingerprint);
+  } else if (mode === "reference-down") {
+    referenceDown();
   } else if (mode === "medium-self-test") {
     selfTestMedium(manifest, process.argv[3]);
   } else if (mode === "bwu-handler-self-test") {

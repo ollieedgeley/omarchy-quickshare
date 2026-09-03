@@ -380,13 +380,20 @@ verify: format-check lint-structure lint-javascript lint-python lint-docs \
 	test-oracle-toolchain test-oracle-reference test-nearshare-reference \
 	test-nearby-linux-connections test-nearby-linux-sharing \
 	test-nearby-linux-sharing-actions test-nearby-linux-sharing-fixtures \
-	test-diverse-lan test-rust-lan test-oracle-bluetooth test-oracle-ble \
-	test-oracle-lan test-oracle-hotspot test-oracle-wifi-direct \
-	test-oracle-bwu-handler test-oracle-bwu-fallback test-proxy-toxiproxy \
+	test-diverse-lan test-rust-lan test-proxy-toxiproxy \
 	test-dbus-bluez test-dbus-networkmanager test-bluetooth-controller \
 	test-bluetooth-ble test-bluetooth-classic test-network-wmediumd \
 	test-network-netem test-network-lan test-network-hotspot-client \
 	test-network-hotspot-owner test-network-wifi-direct-client
+	@set -Eeuo pipefail; \
+		trap 'node tests/environments/oracle/environment.mjs \
+			reference-down' EXIT; \
+		node tests/environments/oracle/environment.mjs reference-up; \
+		$(MAKE) test-oracle-bluetooth test-oracle-ble test-oracle-lan \
+			test-oracle-hotspot test-oracle-wifi-direct \
+			test-oracle-bwu-handler test-oracle-bwu-fallback; \
+		trap - EXIT; \
+		node tests/environments/oracle/environment.mjs reference-down
 
 build: ## Build the complete locked workspace after verification.
 	@$(TIMEOUT) cargo build --workspace --all-targets --all-features --locked
