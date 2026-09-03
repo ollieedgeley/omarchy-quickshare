@@ -1,6 +1,9 @@
 #[cfg(test)]
 mod tests {
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    extern crate alloc;
+
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::env;
     use std::fs;
     use std::io::{self, BufReader};
@@ -334,5 +337,53 @@ mod tests {
         };
         assert_eq!(endpoint.queued_count(), 0);
         assert_eq!(output, b"available\n");
+    }
+
+    #[test]
+    fn local_endpoint_remains_ready_across_control_connections() {
+        let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let root = env::temp_dir().join(format!(
+            "omarchy-quickshare-running-{}-{sequence}",
+            process::id()
+        ));
+        let create_result = fs::create_dir_all(&root);
+        assert!(create_result.is_ok(), "failed to create endpoint fixture");
+        let socket = root.join("control.sock");
+        let listener_result = UnixListener::bind(&socket);
+        assert!(listener_result.is_ok(), "failed to bind endpoint fixture");
+        let Ok(listener) = listener_result else {
+            return;
+        };
+        let stopped = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stopped);
+        let worker = thread::spawn(move || {
+            let mut endpoint = Daemon::new();
+            endpoint
+                .serve_until(&listener, || worker_stop.load(Ordering::Relaxed))
+        });
+
+        for _request in 0_usize..2_usize {
+            let mut output = Vec::new();
+            let result = omarchy_quickshare::run(
+                &[String::from("--runtime-status")],
+                Path::new("."),
+                &socket,
+                &mut output,
+            );
+            assert!(result.is_ok(), "runtime query failed: {result:?}");
+            assert_eq!(output, b"available\n");
+        }
+
+        stopped.store(true, Ordering::Relaxed);
+        let endpoint_result = worker
+            .join()
+            .map_err(|_panic| io::Error::other("local endpoint panicked"));
+        assert!(endpoint_result.is_ok(), "local endpoint failed to stop");
+        let Ok(run_result) = endpoint_result else {
+            return;
+        };
+        assert!(run_result.is_ok(), "local endpoint returned an error");
+        let cleanup_result = fs::remove_dir_all(root);
+        assert!(cleanup_result.is_ok(), "failed to clean endpoint fixture");
     }
 }

@@ -131,6 +131,9 @@ pub fn run_from_environment() -> io::Result<()> {
                 "XDG_RUNTIME_DIR is not available",
             )
         })?;
+    if matches!(arguments.as_slice(), [argument] if argument == "--daemon") {
+        return daemon::run(&socket_path);
+    }
     let stdout = io::stdout();
     run(
         &arguments,
