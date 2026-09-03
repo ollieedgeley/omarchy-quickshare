@@ -12,6 +12,7 @@ ESLINT ?= $(NODE_BIN)/eslint
 PRETTIER ?= $(NODE_BIN)/prettier
 MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 RUFF ?= $(CURDIR)/.cache/tools/ruff-0.16.0/ruff
+TEST_ENV_CACHE ?= $(CURDIR)/.cache/test-env
 QUICKSHELL ?= quickshell
 REPOSITORY_FILES = git ls-files --cached --others --exclude-standard -z
 
@@ -203,7 +204,7 @@ test-oracle-toolchain: ## Test the prepared oracle toolchain.
 
 test-oracle-reference: ## Test UKEY2 and a secure-session exchange.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs reference-self-test
-	@UKEY2_SHELL="$(CURDIR)/.cache/test-env/oracle/bin/ukey2_shell" \
+	@UKEY2_SHELL="$(TEST_ENV_CACHE)/oracle/bin/ukey2_shell" \
 		RUSTFLAGS="--cfg quickshare_oracle_reference" \
 		$(TIMEOUT) cargo test -p quickshare-crypto --test oracle_interop \
 		--locked
