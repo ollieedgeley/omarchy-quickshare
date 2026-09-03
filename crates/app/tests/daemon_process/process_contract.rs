@@ -22,6 +22,10 @@ const ACTIVE_FILE_SNAPSHOT: &str = include_str!(
 const ACTIVE_URL_SNAPSHOT: &str = include_str!(
     "../../../../tests/fixtures/control/v1/active-url-snapshot-response.jsonl"
 );
+const CANCELLED_TEXT_SNAPSHOT: &str = include_str!(concat!(
+    "../../../../tests/fixtures/control/v1/",
+    "cancelled-text-snapshot-response.jsonl"
+));
 const RETRY_DELAY: Duration = Duration::from_millis(5);
 const START_TIMEOUT: Duration = Duration::from_secs(1);
 static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
@@ -237,6 +241,41 @@ fn daemon_reports_submitted_file_in_its_public_snapshot() {
         return;
     };
     assert_eq!(snapshot.stdout, ACTIVE_FILE_SNAPSHOT.as_bytes());
+
+    let stop_result = fixture.stop();
+    assert!(stop_result.is_ok(), "failed to stop daemon");
+}
+
+#[test]
+fn daemon_cancels_the_active_share_by_identifier() {
+    let root = runtime_fixture_path();
+    let fixture_result = DaemonProcessFixture::start(root);
+    assert!(fixture_result.is_ok(), "failed to start daemon");
+    let Ok(fixture) = fixture_result else {
+        return;
+    };
+    let submission_result =
+        run_command(fixture.runtime_directory(), &["hello"]);
+    assert!(submission_result.is_ok(), "failed to submit text");
+
+    let cancellation_result =
+        run_command(fixture.runtime_directory(), &["--cancel", "1"]);
+    assert!(cancellation_result.is_ok(), "failed to run cancellation");
+    let Ok(cancellation) = cancellation_result else {
+        return;
+    };
+    assert!(
+        cancellation.status.success(),
+        "daemon rejected cancellation"
+    );
+    assert_eq!(cancellation.stdout, b"Share cancelled.\n");
+    let snapshot_result =
+        run_command(fixture.runtime_directory(), &["--status-json"]);
+    assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
+    let Ok(snapshot) = snapshot_result else {
+        return;
+    };
+    assert_eq!(snapshot.stdout, CANCELLED_TEXT_SNAPSHOT.as_bytes());
 
     let stop_result = fixture.stop();
     assert!(stop_result.is_ok(), "failed to stop daemon");

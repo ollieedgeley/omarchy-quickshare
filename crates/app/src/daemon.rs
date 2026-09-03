@@ -117,6 +117,14 @@ impl Daemon {
             ));
         }
         match request.request() {
+            Request::Cancel { share_id } => {
+                let response = if self.sharing.cancel(*share_id) {
+                    ResponseEnvelope::cancelled()
+                } else {
+                    ResponseEnvelope::not_found()
+                };
+                return write_response(&mut stream, &response);
+            }
             Request::Snapshot => {
                 return write_response(
                     &mut stream,

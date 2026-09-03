@@ -13,6 +13,12 @@ pub struct Coordinator {
 }
 
 impl Coordinator {
+    /// Cancels the active share when its identifier matches.
+    #[inline]
+    pub fn cancel(&mut self, share_id: u64) -> bool {
+        self.snapshot.cancel(share_id)
+    }
+
     /// Creates an idle endpoint coordinator.
     #[must_use]
     #[inline]

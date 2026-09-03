@@ -1,0 +1,1 @@
+{"response":{"type":"snapshot","snapshot":{"active_share":{"attachment":{"type":"text","value":"hello"},"direction":"outbound","id":1,"phase":"cancelled","total_bytes":5,"transferred_bytes":0}}},"version":1}

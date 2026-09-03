@@ -21,7 +21,24 @@ use std::path::{Path, PathBuf};
 use quickshare_control::PROTOCOL_VERSION;
 use quickshare_control::codec::{read_response, write_request, write_response};
 use quickshare_control::request::Envelope as RequestEnvelope;
-use quickshare_control::response::Response;
+use quickshare_control::response::{Envelope as ResponseEnvelope, Response};
+
+/// Exchanges one validated request with the local endpoint.
+fn exchange(
+    socket_path: &Path,
+    request: &RequestEnvelope,
+) -> io::Result<ResponseEnvelope> {
+    let mut stream = UnixStream::connect(socket_path)?;
+    write_request(&mut stream, request)?;
+    let response = read_response(&mut BufReader::new(stream))?;
+    if response.version() != PROTOCOL_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "endpoint uses an unsupported control protocol",
+        ));
+    }
+    Ok(response)
+}
 
 /// Classifies one command argument without contacting the local endpoint.
 #[expect(
@@ -85,12 +102,8 @@ where
         return writeln!(output, "{PROTOCOL_VERSION}");
     }
     if matches!(arguments, [argument] if argument == "--runtime-status") {
-        let mut stream = UnixStream::connect(socket_path)?;
-        write_request(&mut stream, &RequestEnvelope::status())?;
-        let response = read_response(&mut BufReader::new(stream))?;
-        if response.version() == PROTOCOL_VERSION
-            && matches!(response.response(), Response::Ready)
-        {
+        let response = exchange(socket_path, &RequestEnvelope::status())?;
+        if matches!(response.response(), Response::Ready) {
             return writeln!(output, "available");
         }
         return Err(io::Error::new(
@@ -99,30 +112,38 @@ where
         ));
     }
     if matches!(arguments, [argument] if argument == "--status-json") {
-        let mut stream = UnixStream::connect(socket_path)?;
-        write_request(&mut stream, &RequestEnvelope::snapshot())?;
-        let response = read_response(&mut BufReader::new(stream))?;
-        if response.version() != PROTOCOL_VERSION {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "endpoint uses an unsupported control protocol",
-            ));
-        }
+        let response = exchange(socket_path, &RequestEnvelope::snapshot())?;
         return write_response(output, &response);
     }
-    let request = request(arguments, current_directory)?;
-    let mut stream = UnixStream::connect(socket_path)?;
-    write_request(&mut stream, &request)?;
-    let response = read_response(&mut BufReader::new(stream))?;
-    if response.version() != PROTOCOL_VERSION {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "endpoint uses an unsupported control protocol",
-        ));
+    if let [flag, value] = arguments
+        && flag == "--cancel"
+    {
+        let share_id = value.parse::<u64>().map_err(|_error| {
+            io::Error::new(io::ErrorKind::InvalidInput, "invalid share ID")
+        })?;
+        let response =
+            exchange(socket_path, &RequestEnvelope::cancel(share_id))?;
+        return match response.response() {
+            Response::Cancelled => writeln!(output, "Share cancelled."),
+            Response::NotFound
+            | Response::Queued
+            | Response::Ready
+            | Response::Snapshot { .. }
+            | _ => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "active share was not found",
+            )),
+        };
     }
+    let request = request(arguments, current_directory)?;
+    let response = exchange(socket_path, &request)?;
     match response.response() {
         Response::Queued => writeln!(output, "Share queued."),
-        Response::Ready | Response::Snapshot { .. } | _ => Err(io::Error::new(
+        Response::Cancelled
+        | Response::NotFound
+        | Response::Ready
+        | Response::Snapshot { .. }
+        | _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "endpoint returned an unsupported response",
         )),

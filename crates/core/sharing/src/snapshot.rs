@@ -22,6 +22,8 @@ pub enum Direction {
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
+    /// The user stopped the share before completion.
+    Cancelled,
     /// The endpoint is discovering a peer for the share.
     WaitingForPeer,
 }
@@ -58,6 +60,18 @@ impl EndpointSnapshot {
     #[inline]
     pub const fn active_share(&self) -> Option<&ShareSnapshot> {
         self.active_share.as_ref()
+    }
+
+    /// Cancels the active share when its identifier matches.
+    pub(crate) fn cancel(&mut self, share_id: u64) -> bool {
+        let Some(active) = self.active_share.as_mut() else {
+            return false;
+        };
+        if active.id.get() != share_id || active.phase == Phase::Cancelled {
+            return false;
+        }
+        active.phase = Phase::Cancelled;
+        true
     }
 
     /// Returns an idle endpoint state.

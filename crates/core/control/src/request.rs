@@ -15,6 +15,16 @@ pub struct Envelope {
 }
 
 impl Envelope {
+    /// Creates a request to cancel one active share.
+    #[must_use]
+    #[inline]
+    pub const fn cancel(share_id: u64) -> Self {
+        Self {
+            request: Request::Cancel { share_id },
+            version: PROTOCOL_VERSION,
+        }
+    }
+
     /// Returns the command carried by this envelope.
     #[must_use]
     #[inline]
@@ -91,6 +101,11 @@ impl Envelope {
 #[serde(deny_unknown_fields, rename_all = "snake_case", tag = "type")]
 #[non_exhaustive]
 pub enum Request {
+    /// Cancel an active share by its local identifier.
+    Cancel {
+        /// Identifier returned when the share was queued.
+        share_id: u64,
+    },
     /// Read the endpoint's current public state.
     Snapshot,
     /// Check whether the local endpoint can accept commands.

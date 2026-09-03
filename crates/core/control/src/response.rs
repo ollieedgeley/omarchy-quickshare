@@ -12,6 +12,26 @@ pub struct Envelope {
 }
 
 impl Envelope {
+    /// Creates a response confirming a cancelled share.
+    #[must_use]
+    #[inline]
+    pub const fn cancelled() -> Self {
+        Self {
+            response: Response::Cancelled,
+            version: crate::PROTOCOL_VERSION,
+        }
+    }
+
+    /// Creates a response for a share identifier that is not active.
+    #[must_use]
+    #[inline]
+    pub const fn not_found() -> Self {
+        Self {
+            response: Response::NotFound,
+            version: crate::PROTOCOL_VERSION,
+        }
+    }
+
     /// Creates a successful response for one queued share.
     #[must_use]
     #[inline]
@@ -64,6 +84,10 @@ impl Envelope {
 #[serde(deny_unknown_fields, rename_all = "snake_case", tag = "type")]
 #[non_exhaustive]
 pub enum Response {
+    /// The endpoint cancelled the requested share.
+    Cancelled,
+    /// No active share matched the requested identifier.
+    NotFound,
     /// The endpoint queued the command for processing.
     Queued,
     /// The local endpoint is ready to accept commands.

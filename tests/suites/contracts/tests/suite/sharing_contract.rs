@@ -21,4 +21,37 @@ mod tests {
         assert_eq!(active.transferred_bytes(), 0);
         assert_eq!(active.total_bytes(), 5);
     }
+
+    #[test]
+    fn active_share_can_be_cancelled_by_its_identifier() {
+        let mut coordinator = Coordinator::new();
+        let share_id = coordinator.queue_outbound(Attachment::text("hello"));
+
+        let cancelled = coordinator.cancel(share_id.get());
+
+        assert!(cancelled, "active share was not cancelled");
+        let active_result = coordinator.snapshot().active_share();
+        assert!(active_result.is_some(), "cancelled share is not visible");
+        let Some(active) = active_result else {
+            return;
+        };
+        assert_eq!(active.phase(), Phase::Cancelled);
+        assert_eq!(active.transferred_bytes(), 0);
+    }
+
+    #[test]
+    fn unrelated_share_identifier_cannot_cancel_the_active_share() {
+        let mut coordinator = Coordinator::new();
+        let share_id = coordinator.queue_outbound(Attachment::text("hello"));
+
+        let cancelled = coordinator.cancel(share_id.get() + 1);
+
+        assert!(!cancelled, "unrelated share cancelled active work");
+        let active_result = coordinator.snapshot().active_share();
+        assert!(active_result.is_some(), "active share disappeared");
+        let Some(active) = active_result else {
+            return;
+        };
+        assert_eq!(active.phase(), Phase::WaitingForPeer);
+    }
 }
