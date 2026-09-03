@@ -11,7 +11,7 @@ use std::time::Instant;
 use omarchy_quickshare as _;
 use quickshare_control::codec::read_response;
 use quickshare_control::response::Response;
-use quickshare_sharing::{Direction, EndpointSnapshot, Phase};
+use quickshare_sharing::{Attachment, Direction, EndpointSnapshot, Phase};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_omarchy-quickshare");
 const ACTIVE_TEXT_SNAPSHOT: &str = include_str!(
@@ -381,6 +381,109 @@ fn simulated_daemon_runs_an_inbound_transfer() {
     assert!(stop_result.is_ok(), "failed to stop simulated daemon");
 }
 
+#[test]
+fn simulated_daemon_exposes_peer_rejection_and_dismissal() {
+    let root = runtime_fixture_path();
+    let fixture_result = DaemonProcessFixture::start_simulated(root);
+    assert!(fixture_result.is_ok(), "failed to start simulated daemon");
+    let Ok(fixture) = fixture_result else {
+        return;
+    };
+    assert_command(fixture.runtime_directory(), &["hello"]);
+    assert_command(fixture.runtime_directory(), &["--send-to", "1", "pixel-8"]);
+    assert_command(
+        fixture.runtime_directory(),
+        &["--simulate-peer-reject", "1"],
+    );
+    assert_phase(
+        fixture.runtime_directory(),
+        Direction::Outbound,
+        Phase::Rejected,
+    );
+    assert_command(fixture.runtime_directory(), &["--dismiss", "1"]);
+    assert_idle(fixture.runtime_directory());
+    assert!(fixture.stop().is_ok(), "failed to stop simulated daemon");
+}
+
+#[test]
+fn simulated_daemon_exposes_failure_and_dismissal() {
+    let root = runtime_fixture_path();
+    let fixture_result = DaemonProcessFixture::start_simulated(root);
+    assert!(fixture_result.is_ok(), "failed to start simulated daemon");
+    let Ok(fixture) = fixture_result else {
+        return;
+    };
+    assert_command(fixture.runtime_directory(), &["hello"]);
+    assert_command(fixture.runtime_directory(), &["--send-to", "1", "pixel-8"]);
+    assert_command(
+        fixture.runtime_directory(),
+        &["--simulate-peer-accept", "1"],
+    );
+    assert_command(fixture.runtime_directory(), &["--simulate-fail", "1"]);
+    assert_phase(
+        fixture.runtime_directory(),
+        Direction::Outbound,
+        Phase::Failed,
+    );
+    assert_command(fixture.runtime_directory(), &["--dismiss", "1"]);
+    assert_idle(fixture.runtime_directory());
+    assert!(fixture.stop().is_ok(), "failed to stop simulated daemon");
+}
+
+#[test]
+fn simulated_daemon_changes_visible_peers() {
+    let root = runtime_fixture_path();
+    let fixture_result = DaemonProcessFixture::start_simulated(root);
+    assert!(fixture_result.is_ok(), "failed to start simulated daemon");
+    let Ok(fixture) = fixture_result else {
+        return;
+    };
+    assert_command(
+        fixture.runtime_directory(),
+        &["--simulate-peer-lost", "pixel-8"],
+    );
+    assert_command(
+        fixture.runtime_directory(),
+        &["--simulate-peer-lost", "galaxy-tab"],
+    );
+    assert_peer_ids(fixture.runtime_directory(), &[]);
+    assert_command(
+        fixture.runtime_directory(),
+        &["--simulate-peer-seen", "watch-7", "Pixel Watch"],
+    );
+    assert_peer_ids(fixture.runtime_directory(), &["watch-7"]);
+    assert!(fixture.stop().is_ok(), "failed to stop simulated daemon");
+}
+
+#[test]
+fn simulated_daemon_offers_url_and_file_attachments() {
+    let root = runtime_fixture_path();
+    let fixture_result = DaemonProcessFixture::start_simulated(root);
+    assert!(fixture_result.is_ok(), "failed to start simulated daemon");
+    let Ok(fixture) = fixture_result else {
+        return;
+    };
+    assert_command(
+        fixture.runtime_directory(),
+        &["--simulate-incoming-url", "https://example.test/from-phone"],
+    );
+    assert_attachment(
+        fixture.runtime_directory(),
+        &Attachment::url("https://example.test/from-phone"),
+    );
+    assert_command(fixture.runtime_directory(), &["--reject", "1"]);
+    assert_command(fixture.runtime_directory(), &["--dismiss", "1"]);
+    assert_command(
+        fixture.runtime_directory(),
+        &["--simulate-incoming-file", "photo.jpg", "1024"],
+    );
+    assert_attachment(
+        fixture.runtime_directory(),
+        &Attachment::file("photo.jpg", 1024),
+    );
+    assert!(fixture.stop().is_ok(), "failed to stop simulated daemon");
+}
+
 fn assert_command(runtime_directory: &Path, arguments: &[&str]) {
     let result = run_command(runtime_directory, arguments);
     assert!(result.is_ok(), "failed to run {arguments:?}");
@@ -408,6 +511,43 @@ fn assert_active_peer(runtime_directory: &Path, peer_id: &str, phase: Phase) {
     };
     assert_eq!(peer.id(), peer_id);
     assert_eq!(active.phase(), phase);
+}
+
+fn assert_attachment(runtime_directory: &Path, attachment: &Attachment) {
+    let snapshot_result = endpoint_snapshot(runtime_directory);
+    assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
+    let Ok(snapshot) = snapshot_result else {
+        return;
+    };
+    let active_result = snapshot.active_share();
+    assert!(active_result.is_some(), "active share is not visible");
+    let Some(active) = active_result else {
+        return;
+    };
+    assert_eq!(active.attachment(), attachment);
+}
+
+fn assert_idle(runtime_directory: &Path) {
+    let snapshot_result = endpoint_snapshot(runtime_directory);
+    assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
+    let Ok(snapshot) = snapshot_result else {
+        return;
+    };
+    assert!(snapshot.active_share().is_none());
+}
+
+fn assert_peer_ids(runtime_directory: &Path, expected: &[&str]) {
+    let snapshot_result = endpoint_snapshot(runtime_directory);
+    assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
+    let Ok(snapshot) = snapshot_result else {
+        return;
+    };
+    let ids = snapshot
+        .peers()
+        .iter()
+        .map(quickshare_sharing::PeerSnapshot::id)
+        .collect::<Vec<_>>();
+    assert_eq!(ids, expected);
 }
 
 fn assert_phase(runtime_directory: &Path, direction: Direction, phase: Phase) {

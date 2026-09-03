@@ -88,6 +88,12 @@ impl Daemon {
         }
     }
 
+    /// Queues one validated attachment and reports its stable identifier.
+    fn queue_attachment(&mut self, attachment: Attachment) -> ResponseEnvelope {
+        let share_id = self.sharing.queue_outbound(attachment);
+        ResponseEnvelope::queued(share_id.get())
+    }
+
     /// Returns the number of outbound shares owned by the endpoint.
     #[must_use]
     #[inline]
@@ -115,6 +121,9 @@ impl Daemon {
                     ResponseEnvelope::not_found()
                 })
             }
+            Request::Dismiss { share_id } => {
+                Ok(action_response(self.sharing.dismiss(*share_id)))
+            }
             Request::PinPeer { peer_id } => {
                 Ok(action_response(self.sharing.pin_peer(peer_id)))
             }
@@ -130,21 +139,22 @@ impl Daemon {
             Request::Status => Ok(ResponseEnvelope::ready()),
             Request::SubmitFile { path } => {
                 let attachment = file_attachment(path)?;
-                let share_id = self.sharing.queue_outbound(attachment);
-                Ok(ResponseEnvelope::queued(share_id.get()))
+                Ok(self.queue_attachment(attachment))
             }
             Request::SubmitText { text } => {
-                let share_id =
-                    self.sharing.queue_outbound(Attachment::text(text));
-                Ok(ResponseEnvelope::queued(share_id.get()))
+                Ok(self.queue_attachment(Attachment::text(text)))
             }
             Request::SubmitUrl { url } => {
-                let share_id =
-                    self.sharing.queue_outbound(Attachment::url(url));
-                Ok(ResponseEnvelope::queued(share_id.get()))
+                Ok(self.queue_attachment(Attachment::url(url)))
             }
-            Request::SimulateIncomingText { .. }
+            Request::SimulateFail { .. }
+            | Request::SimulateIncomingFile { .. }
+            | Request::SimulateIncomingText { .. }
+            | Request::SimulateIncomingUrl { .. }
             | Request::SimulatePeerAccept { .. }
+            | Request::SimulatePeerLost { .. }
+            | Request::SimulatePeerReject { .. }
+            | Request::SimulatePeerSeen { .. }
             | Request::SimulateProgress { .. }
             | _ => Ok(self.simulation_response(request)),
         }
@@ -224,12 +234,31 @@ impl Daemon {
             return ResponseEnvelope::not_found();
         }
         let applied = match request {
+            Request::SimulateFail { share_id } => self.sharing.fail(*share_id),
+            Request::SimulateIncomingFile { name, size_bytes } => self
+                .sharing
+                .offer_inbound(Attachment::file(name, *size_bytes), "pixel-8")
+                .is_some(),
             Request::SimulateIncomingText { text } => self
                 .sharing
                 .offer_inbound(Attachment::text(text), "pixel-8")
                 .is_some(),
+            Request::SimulateIncomingUrl { url } => self
+                .sharing
+                .offer_inbound(Attachment::url(url), "pixel-8")
+                .is_some(),
             Request::SimulatePeerAccept { share_id } => {
                 self.sharing.accept_by_peer(*share_id)
+            }
+            Request::SimulatePeerLost { peer_id } => {
+                self.sharing.remove_peer(peer_id)
+            }
+            Request::SimulatePeerReject { share_id } => {
+                self.sharing.reject_by_peer(*share_id)
+            }
+            Request::SimulatePeerSeen { name, peer_id } => {
+                self.sharing.observe_peer(peer_id, name);
+                true
             }
             Request::SimulateProgress {
                 share_id,
@@ -237,6 +266,7 @@ impl Daemon {
             } => self.sharing.record_progress(*share_id, *transferred_bytes),
             Request::Accept { .. }
             | Request::Cancel { .. }
+            | Request::Dismiss { .. }
             | Request::PinPeer { .. }
             | Request::Reject { .. }
             | Request::SelectPeer { .. }

@@ -40,6 +40,9 @@ fn action_request(arguments: &[String]) -> io::Result<Option<RequestEnvelope>> {
         [flag, value] if flag == "--cancel" => {
             RequestEnvelope::cancel(parse_number(value, "share ID")?)
         }
+        [flag, value] if flag == "--dismiss" => {
+            RequestEnvelope::dismiss(parse_number(value, "share ID")?)
+        }
         [flag, peer_id] if flag == "--pin" => {
             RequestEnvelope::pin_peer(peer_id)
         }
@@ -52,13 +55,54 @@ fn action_request(arguments: &[String]) -> io::Result<Option<RequestEnvelope>> {
                 peer_id,
             )
         }
+        _ => return simulation_action_request(arguments),
+    };
+    Ok(Some(request))
+}
+
+/// Parses one simulator-only peer or transport event.
+#[expect(
+    clippy::pattern_type_mismatch,
+    reason = "Borrowed simulator arguments retain their string ownership"
+)]
+#[expect(
+    clippy::single_call_fn,
+    reason = "Simulator parsing stays separate from user actions"
+)]
+fn simulation_action_request(
+    arguments: &[String],
+) -> io::Result<Option<RequestEnvelope>> {
+    let request = match arguments {
+        [flag, value] if flag == "--simulate-fail" => {
+            RequestEnvelope::simulate_fail(parse_number(value, "share ID")?)
+        }
+        [flag, name, size] if flag == "--simulate-incoming-file" => {
+            RequestEnvelope::simulate_incoming_file(
+                name,
+                parse_number(size, "byte count")?,
+            )
+        }
         [flag, text] if flag == "--simulate-incoming-text" => {
             RequestEnvelope::simulate_incoming_text(text)
+        }
+        [flag, url] if flag == "--simulate-incoming-url" => {
+            RequestEnvelope::simulate_incoming_url(url)
         }
         [flag, value] if flag == "--simulate-peer-accept" => {
             RequestEnvelope::simulate_peer_accept(parse_number(
                 value, "share ID",
             )?)
+        }
+        [flag, peer_id] if flag == "--simulate-peer-lost" => {
+            RequestEnvelope::simulate_peer_lost(peer_id)
+        }
+        [flag, value] if flag == "--simulate-peer-reject" => {
+            RequestEnvelope::simulate_peer_reject(parse_number(
+                value, "share ID",
+            )?)
+        }
+        [flag, peer_id, name] if flag == "--simulate-peer-seen" => {
+            RequestEnvelope::simulate_peer_seen(peer_id, name)
         }
         [flag, share_id, transferred] if flag == "--simulate-progress" => {
             RequestEnvelope::simulate_progress(
