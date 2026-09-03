@@ -36,6 +36,8 @@ const MAKE_CONTINUATION_PATTERN = /\\\n\s*/gu;
 const WHITESPACE_PATTERN = /\s+/u;
 const AGGREGATE_GATE_PATTERN = /Git hooks own/u;
 const OMP_TOOLING_PATTERN = /"\.omp\/"/u;
+const FORMAT_SPLIT_TEST =
+  "Formatting aggregates keep documentation separate from tooling";
 
 function gateGuardResult(command, toolName = "bash") {
   let handler = null;
@@ -220,6 +222,33 @@ test(VERIFY_ORDER_TEST, () => {
   assert.deepEqual(
     positions,
     positions.toSorted((left, right) => left - right),
+  );
+});
+
+test(FORMAT_SPLIT_TEST, () => {
+  const makefile = readFileSync(join(ROOT, "Makefile"), "utf8");
+  assert.deepEqual(
+    makePrerequisites(makefile, "format").split(WHITESPACE_PATTERN).slice(1),
+    ["format-app", "format-tooling", "format-docs"],
+  );
+  assert.deepEqual(
+    makePrerequisites(makefile, "format-check")
+      .split(WHITESPACE_PATTERN)
+      .slice(1),
+    ["format-app-check", "format-tooling-check", "format-docs-check"],
+  );
+  assert.ok(
+    makefile.includes(
+      "TOOLING_FILES = $(REPOSITORY_FILES) -- ':(exclude)*.md'",
+    ),
+  );
+  assert.ok(
+    makefile.includes("DOCUMENT_FILES = $(REPOSITORY_FILES) -- '*.md'"),
+  );
+  assert.ok(
+    makefile.includes(
+      "verify-tooling: format-tooling-check format-docs-check lint-javascript",
+    ),
   );
 });
 

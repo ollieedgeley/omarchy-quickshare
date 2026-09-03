@@ -15,10 +15,12 @@ RUFF ?= $(CURDIR)/.cache/tools/ruff-0.16.0/ruff
 TEST_ENV_CACHE ?= $(CURDIR)/.cache/test-env
 QUICKSHELL ?= quickshell
 REPOSITORY_FILES = git ls-files --cached --others --exclude-standard -z
+TOOLING_FILES = $(REPOSITORY_FILES) -- ':(exclude)*.md'
+DOCUMENT_FILES = $(REPOSITORY_FILES) -- '*.md'
 
 .PHONY: help setup hooks-install ruff-provision sources-fetch wire-codegen
-.PHONY: format format-app format-tooling
-.PHONY: format-check format-app-check format-tooling-check check
+.PHONY: format format-app format-tooling format-docs
+.PHONY: format-check format-app-check format-tooling-check format-docs-check
 .PHONY: lint-rust lint-javascript lint-python lint-ast lint-docs
 .PHONY: lint-structure lint-structure-app lint-structure-tooling
 .PHONY: lint-sources lint-oracle lint-nearshare lint-nearby-linux
@@ -84,25 +86,37 @@ sources-fetch: ## Download, hash-check, and extract every pinned test source.
 wire-codegen: ## Regenerate committed Nearby and UKEY2 Rust bindings.
 	@tools/codegen/generate-wire.sh
 
-format: format-app format-tooling ## Rewrite files with pinned formatters.
+format: ## Rewrite files with pinned formatters.
+format: format-app format-tooling format-docs
 
 format-app: ## Rewrite Rust application files with rustfmt.
 	@cargo fmt --all
 
-format-tooling: ## Rewrite tooling and repository-document files.
+format-tooling: ## Rewrite tooling and repository configuration files.
 	@$(RUFF) format .
-	@set -o pipefail; $(REPOSITORY_FILES) | \
+	@set -o pipefail; $(TOOLING_FILES) | \
 		xargs --null --no-run-if-empty $(PRETTIER) --write \
 			--ignore-unknown --
 
-format-check: format-app-check format-tooling-check ## Check formatted files.
+format-docs: ## Rewrite repository documentation with Prettier.
+	@set -o pipefail; $(DOCUMENT_FILES) | \
+		xargs --null --no-run-if-empty $(PRETTIER) --write \
+			--ignore-unknown --
+
+format-check: ## Check formatted files.
+format-check: format-app-check format-tooling-check format-docs-check
 
 format-app-check: ## Check only Rust application formatting.
 	@$(TIMEOUT) cargo fmt --all -- --check
 
-format-tooling-check: ## Check tooling and repository-document formatting.
+format-tooling-check: ## Check tooling and repository configuration formatting.
 	@$(TIMEOUT) $(RUFF) format --check .
-	@set -o pipefail; $(REPOSITORY_FILES) | \
+	@set -o pipefail; $(TOOLING_FILES) | \
+		$(TIMEOUT) xargs --null --no-run-if-empty $(PRETTIER) --check \
+			--ignore-unknown --
+
+format-docs-check: ## Check repository documentation formatting.
+	@set -o pipefail; $(DOCUMENT_FILES) | \
 		$(TIMEOUT) xargs --null --no-run-if-empty $(PRETTIER) --check \
 			--ignore-unknown --
 
@@ -365,7 +379,8 @@ verify-app: format-app-check lint-structure-app check lint-rust
 verify-app: lint-ast test-rust
 
 verify-tooling: ## Run tooling static and fast contract gates.
-verify-tooling: format-tooling-check lint-javascript lint-python lint-docs
+verify-tooling: format-tooling-check format-docs-check lint-javascript
+verify-tooling: lint-python lint-docs
 verify-tooling: lint-structure-tooling lint-sources lint-oracle lint-nearshare
 verify-tooling: lint-nearby-linux lint-diverse-lan lint-proxies
 verify-tooling: lint-dbus lint-bluetooth-radio lint-network lint-android

@@ -8,7 +8,7 @@ Build every behavior change with test-driven development through a confirmed sea
 
 Local hooks are the project's automated verification. The pre-commit hook gives targeted feedback. The pre-push hook is authoritative. It verifies and then builds the exact commit being pushed. Hosted CI and automated release builds are outside the current scope. A future decision may add release automation that calls the same local targets, but it must not replace local verification or the source-build fallback.
 
-Application and development-tool feedback have separate aggregates. `make verify-app` runs only Rust formatting, compiler checks, Rust diagnostics, ast-grep, and Rust tests. `make verify-tooling` runs JavaScript and repository formatting, every current ESLint core rule, static environment definitions, and fast tooling contracts; it does not start simulators or virtual devices. `make verify` combines both with every programmatic environment check. This keeps environment implementation out of the normal application loop without weakening pre-push verification.
+Application and development-tool feedback have separate aggregates. `make verify-app` runs only Rust formatting, compiler checks, Rust diagnostics, ast-grep, and Rust tests. `make verify-tooling` runs the separate tooling and documentation formatting checks, every current ESLint core rule, static environment definitions, and fast tooling contracts; it does not start simulators or virtual devices. `make verify` combines both with every programmatic environment check. This keeps environment implementation out of the normal application loop without weakening pre-push verification.
 
 ## TDD cycle
 
