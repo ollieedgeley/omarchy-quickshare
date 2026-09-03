@@ -17,11 +17,14 @@
 mod attachment;
 /// User-visible share lifecycle coordination.
 mod coordinator;
+/// Public facts about discovered peers.
+mod peer;
 /// Read-only endpoint and share state.
 mod snapshot;
 
 pub use attachment::Attachment;
 pub use coordinator::Coordinator;
+pub use peer::PeerSnapshot;
 pub use snapshot::{
     Direction, EndpointSnapshot, Phase, ShareId, ShareSnapshot,
 };
