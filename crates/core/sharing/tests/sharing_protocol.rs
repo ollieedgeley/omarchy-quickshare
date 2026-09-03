@@ -9,6 +9,8 @@
     reason = "Cargo compiles this as an integration-test crate"
 )]
 
+use core::cell::Cell;
+
 use base64 as _;
 use prost::Message as _;
 use quickshare_connections::{Connection, ConnectionOptions};
@@ -23,7 +25,7 @@ use quickshare_wire::sharing::{
 use rand_core as _;
 use serde as _;
 use std::{
-    io::Cursor,
+    io::{self, Cursor, Read},
     net::{TcpListener, TcpStream},
     thread,
 };
@@ -33,6 +35,26 @@ const RESPONDER_RANDOM: [u8; 32] = [2; 32];
 const INITIATOR_SECRET: [u8; 32] = [3; 32];
 const RESPONDER_SECRET: [u8; 32] = [4; 32];
 const MULTI_FRAME_FILE_SIZE: usize = 0x0010_0001;
+
+struct AcceptedReader<'accepted> {
+    accepted: &'accepted Cell<bool>,
+    cursor: Cursor<Vec<u8>>,
+}
+
+#[expect(
+    clippy::missing_trait_methods,
+    reason = "Default Read helpers delegate through the asserted read method"
+)]
+impl Read for AcceptedReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if !self.accepted.get() {
+            return Err(io::Error::other(
+                "peer acceptance must be reported before payload reads",
+            ));
+        }
+        self.cursor.read(buf)
+    }
+}
 
 #[test]
 fn endpoint_info_and_lan_instance_round_trip_google_layout() {
@@ -156,6 +178,10 @@ fn outbound_tcp_connect_establishes_encryption_with_a_loopback_peer() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One loopback flow keeps consent and payload order observable"
+)]
 fn account_free_pairing_chunks_one_file_across_connection_events() {
     let bytes = vec![0xA5; MULTI_FRAME_FILE_SIZE];
     let expected = bytes.clone();
@@ -170,6 +196,7 @@ fn account_free_pairing_chunks_one_file_across_connection_events() {
         )
         .expect("establish peer session");
         let mut session = SharingSession::new(connection);
+        assert_eq!(session.verification_code(), "9418");
         assert_eq!(
             session.exchange_account_free_pairing().expect("pair"),
             PairingStatus::Unable
@@ -192,18 +219,25 @@ fn account_free_pairing_chunks_one_file_across_connection_events() {
     )
     .expect("establish local session");
     let mut session = SharingSession::new(connection);
+    assert_eq!(session.verification_code(), "9418");
     assert_eq!(
         session.exchange_account_free_pairing().expect("pair"),
         PairingStatus::Unable
     );
-    let mut reader = Cursor::new(bytes);
+    let accepted = Cell::new(false);
+    let mut reader = AcceptedReader {
+        accepted: &accepted,
+        cursor: Cursor::new(bytes),
+    };
     session
         .send_outgoing_file(
             "note.txt",
             u64::try_from(MULTI_FRAME_FILE_SIZE).expect("file size"),
             &mut reader,
+            || accepted.set(true),
         )
         .expect("send file after accept");
+    assert!(accepted.get());
     receiver.join().expect("receiver completes");
 }
 

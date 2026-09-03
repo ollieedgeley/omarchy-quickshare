@@ -37,7 +37,7 @@ impl Coordinator {
 
     /// Cancels the active share when its identifier matches.
     #[inline]
-    pub const fn cancel(&mut self, share_id: u64) -> bool {
+    pub fn cancel(&mut self, share_id: u64) -> bool {
         let cancelled = self.snapshot.cancel(share_id);
         if cancelled {
             self.snapshot.stop_discovery();
@@ -65,7 +65,7 @@ impl Coordinator {
 
     /// Marks one active share as failed at an external seam.
     #[inline]
-    pub const fn fail(&mut self, share_id: u64) -> bool {
+    pub fn fail(&mut self, share_id: u64) -> bool {
         let failed = self.snapshot.fail(share_id);
         if failed {
             self.snapshot.stop_discovery();
@@ -167,6 +167,19 @@ impl Coordinator {
         };
         active.id().get() == share_id
             && active.record_progress(transferred_bytes)
+    }
+
+    /// Records the four-digit peer-verification code for a consent prompt.
+    #[inline]
+    pub fn record_verification_code(
+        &mut self,
+        share_id: u64,
+        code: &str,
+    ) -> bool {
+        let Some(active) = self.snapshot.active_share_mut() else {
+            return false;
+        };
+        active.id().get() == share_id && active.record_verification_code(code)
     }
 
     /// Rejects an outbound offer on behalf of the peer.

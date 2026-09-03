@@ -145,6 +145,8 @@ pub struct Connection {
     incoming_file: Option<i64>,
     outgoing_file: Option<OutgoingFile>,
     pending_events: VecDeque<Event>,
+    /// Four decimal digits derived from the UKEY2 authentication token.
+    verification_code: String,
 }
 
 impl fmt::Debug for Connection {

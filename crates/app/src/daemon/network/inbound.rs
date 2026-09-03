@@ -61,7 +61,8 @@ fn receive_file_result(
     let offer = session
         .receive_incoming_offer()
         .map_err(|error| (io::Error::other(error), None))?;
-    announce_offer(&offer, events).map_err(|error| (error, None))?;
+    announce_offer(&offer, session.verification_code(), events)
+        .map_err(|error| (error, None))?;
     let share_id = wait_for_consent(commands).map_err(|error| (error, None))?;
     let target = ReceiveTarget::downloads()
         .map_err(|error| (io::Error::other(error), Some(share_id)))?;
@@ -85,6 +86,7 @@ fn receive_file_result(
 /// Publishes the validated offer to the daemon state owner.
 fn announce_offer(
     offer: &IncomingOffer,
+    verification_code: &str,
     events: &Sender<NetworkEvent>,
 ) -> io::Result<()> {
     let size_bytes = u64::try_from(offer.size_bytes())
@@ -93,6 +95,7 @@ fn announce_offer(
         .send(NetworkEvent::InboundOffered {
             name: offer.name().to_owned(),
             size_bytes,
+            verification_code: String::from(verification_code),
         })
         .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error))
 }

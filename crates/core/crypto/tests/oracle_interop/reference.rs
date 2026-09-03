@@ -112,7 +112,10 @@ fn rust_initiator() -> Result<(), Box<dyn Error>> {
     oracle.send(b"ok")?;
 
     verify_d2d(
-        &mut handshake.into_channel().expect("Rust completes UKEY2"),
+        &mut handshake
+            .complete()
+            .expect("Rust completes UKEY2")
+            .into_channel(),
         &mut oracle,
         b"Rust initiator encrypted D2D frame",
         b"Google responder encrypted D2D frame",
@@ -135,7 +138,10 @@ fn rust_responder() -> Result<(), Box<dyn Error>> {
     oracle.send(b"ok")?;
 
     verify_d2d(
-        &mut handshake.into_channel().expect("Rust completes UKEY2"),
+        &mut handshake
+            .complete()
+            .expect("Rust completes UKEY2")
+            .into_channel(),
         &mut oracle,
         b"Rust responder encrypted D2D frame",
         b"Google initiator encrypted D2D frame",

@@ -11,7 +11,7 @@ use super::{
     MAX_FRAME_LENGTH, OutgoingFile, PayloadKind,
 };
 use prost::Message as _;
-use quickshare_crypto::Handshake;
+use quickshare_crypto::{CompletedHandshake, Handshake};
 use quickshare_wire::{
     connections::{
         OfflineFrame, PayloadTransferFrame, payload_transfer_frame, v1_frame,
@@ -54,7 +54,7 @@ impl Connection {
         response_data(receive_plain(&mut stream)?)?;
         Ok(Self::new(
             stream,
-            handshake.into_channel().map_err(|_| Error::Handshake)?,
+            handshake.complete().map_err(|_| Error::Handshake)?,
         ))
     }
 
@@ -83,8 +83,14 @@ impl Connection {
         response_data(receive_plain(&mut stream)?)?;
         Ok(Self::new(
             stream,
-            handshake.into_channel().map_err(|_| Error::Handshake)?,
+            handshake.complete().map_err(|_| Error::Handshake)?,
         ))
+    }
+
+    /// Returns the shared four-digit UKEY2 peer-verification code.
+    #[must_use]
+    pub fn verification_code(&self) -> &str {
+        &self.verification_code
     }
 
     /// Sends a Sharing protobuf as one complete BYTES payload.
@@ -197,10 +203,10 @@ impl Connection {
         Ok(())
     }
 
-    fn new(
-        stream: TcpStream,
-        channel: quickshare_crypto::SecureChannel,
-    ) -> Self {
+    fn new(stream: TcpStream, completed: CompletedHandshake) -> Self {
+        let verification_code =
+            verification_code(completed.authentication_token());
+        let channel = completed.into_channel();
         Self {
             stream,
             channel,
@@ -209,6 +215,7 @@ impl Connection {
             incoming_file: None,
             outgoing_file: None,
             pending_events: VecDeque::default(),
+            verification_code,
         }
     }
     fn data(
@@ -365,4 +372,25 @@ impl Connection {
         }
         Ok(event)
     }
+}
+
+/// Matches Nearby Connections' decimal rendering of its raw UKEY2 token.
+#[expect(
+    clippy::arithmetic_side_effects,
+    clippy::integer_division_remainder_used,
+    clippy::modulo_arithmetic,
+    reason = "Pinned Google hash requires bounded signed C++ remainder"
+)]
+fn verification_code(authentication_token: &[u8; 32]) -> String {
+    const HASH_MODULUS: i32 = 9_973;
+    const HASH_MULTIPLIER: i32 = 31;
+
+    let mut hash = 0_i32;
+    let mut multiplier = 1_i32;
+    for byte in authentication_token {
+        let signed = i8::from_be_bytes([*byte]);
+        hash = (hash + i32::from(signed) * multiplier) % HASH_MODULUS;
+        multiplier = multiplier * HASH_MULTIPLIER % HASH_MODULUS;
+    }
+    format!("{:04}", hash.abs())
 }

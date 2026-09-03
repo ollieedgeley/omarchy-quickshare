@@ -15,17 +15,24 @@ use hkdf as _;
 use hmac as _;
 use p256 as _;
 use prost as _;
-use quickshare_crypto::{Handshake, HandshakeError, Role, SecureChannel};
+use quickshare_crypto::{
+    CompletedHandshake, Handshake, HandshakeError, Role, SecureChannel,
+};
 use quickshare_wire as _;
 use rand_core as _;
 use sha2 as _;
+const AUTHENTICATION_TOKEN: [u8; 32] = [
+    0x2a, 0xf9, 0x8f, 0xce, 0xeb, 0x2c, 0x90, 0xaa, 0xcd, 0xfd, 0x93, 0x78,
+    0x0c, 0x85, 0xfb, 0x6c, 0xa0, 0x6d, 0xcc, 0x51, 0xb2, 0xa0, 0x07, 0xd9,
+    0xc1, 0x79, 0xa5, 0x0d, 0x11, 0x36, 0x00, 0x5b,
+];
 
 const INITIATOR_RANDOM: [u8; 32] = [1; 32];
 const RESPONDER_RANDOM: [u8; 32] = [2; 32];
 const INITIATOR_SECRET: [u8; 32] = [3; 32];
 const RESPONDER_SECRET: [u8; 32] = [4; 32];
 
-fn exchange() -> (SecureChannel, SecureChannel) {
+fn completed_exchange() -> (CompletedHandshake, CompletedHandshake) {
     let mut initiator =
         Handshake::initiator(INITIATOR_RANDOM, INITIATOR_SECRET);
     let mut responder =
@@ -44,13 +51,27 @@ fn exchange() -> (SecureChannel, SecureChannel) {
     responder
         .receive(&third)
         .expect("responder verifies commitment");
-    let initiator = initiator
-        .into_channel()
-        .expect("initiator completes handshake");
-    let responder = responder
-        .into_channel()
-        .expect("responder completes handshake");
+    let initiator =
+        initiator.complete().expect("initiator completes handshake");
+    let responder =
+        responder.complete().expect("responder completes handshake");
     (initiator, responder)
+}
+
+fn exchange() -> (SecureChannel, SecureChannel) {
+    let (initiator, responder) = completed_exchange();
+    (initiator.into_channel(), responder.into_channel())
+}
+
+#[test]
+fn completed_handshake_exposes_a_shared_authentication_token() {
+    let (initiator, responder) = completed_exchange();
+
+    assert_eq!(
+        initiator.authentication_token(),
+        responder.authentication_token()
+    );
+    assert_eq!(initiator.authentication_token(), &AUTHENTICATION_TOKEN);
 }
 
 #[test]

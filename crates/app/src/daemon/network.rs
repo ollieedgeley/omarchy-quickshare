@@ -83,6 +83,13 @@ pub(super) enum NetworkEvent {
         name: String,
         /// Declared file byte length.
         size_bytes: u64,
+        /// Four-digit code derived from the shared authentication token.
+        verification_code: String,
+    },
+    /// The remote peer accepted the offered file.
+    OutboundAccepted {
+        /// Stable local share identifier.
+        share_id: u64,
     },
     /// A selected peer accepted and received every file byte.
     OutboundCompleted {
@@ -97,6 +104,13 @@ pub(super) enum NetworkEvent {
         reason: String,
         /// Stable local share identifier.
         share_id: u64,
+    },
+    /// UKEY2 established a code for the peer-consent prompt.
+    OutboundPairing {
+        /// Stable local share identifier.
+        share_id: u64,
+        /// Four-digit code derived from the shared authentication token.
+        verification_code: String,
     },
     /// A valid Nearby Sharing peer appeared on the LAN.
     PeerSeen {
@@ -326,9 +340,9 @@ fn handle_command(
             }
             true
         }
-        NetworkCommand::SendFile { share_id, transfer } => {
-            events.send(outbound_event(share_id, &transfer)).is_ok()
-        }
+        NetworkCommand::SendFile { share_id, transfer } => events
+            .send(outbound_event(share_id, &transfer, events))
+            .is_ok(),
     }
 }
 
@@ -351,8 +365,12 @@ fn discovered_peer(service: &ResolvedService) -> Option<NetworkEvent> {
 }
 
 /// Converts one worker transfer attempt into a terminal daemon event.
-fn outbound_event(share_id: u64, transfer: &OutboundTransfer) -> NetworkEvent {
-    match send_file(transfer.source(), transfer.route()) {
+fn outbound_event(
+    share_id: u64,
+    transfer: &OutboundTransfer,
+    events: &Sender<NetworkEvent>,
+) -> NetworkEvent {
+    match send_file(transfer.source(), transfer.route(), share_id, events) {
         Ok(bytes) => NetworkEvent::OutboundCompleted { bytes, share_id },
         Err(error) => NetworkEvent::OutboundFailed {
             reason: error.to_string(),
@@ -362,7 +380,12 @@ fn outbound_event(share_id: u64, transfer: &OutboundTransfer) -> NetworkEvent {
 }
 
 /// Streams one complete file over an encrypted account-free session.
-fn send_file(source: &OutboundSource, route: SocketAddrV4) -> io::Result<u64> {
+fn send_file(
+    source: &OutboundSource,
+    route: SocketAddrV4,
+    share_id: u64,
+    events: &Sender<NetworkEvent>,
+) -> io::Result<u64> {
     let name = source.name().to_str().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "file name is not UTF-8")
     })?;
@@ -372,11 +395,20 @@ fn send_file(source: &OutboundSource, route: SocketAddrV4) -> io::Result<u64> {
     let mut session =
         SharingSession::connect(stream, ENDPOINT_ID, ENDPOINT_NAME)
             .map_err(io::Error::other)?;
+    events
+        .send(NetworkEvent::OutboundPairing {
+            share_id,
+            verification_code: String::from(session.verification_code()),
+        })
+        .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error))?;
     let _pairing = session
         .exchange_account_free_pairing()
         .map_err(io::Error::other)?;
     session
-        .send_outgoing_file(name, size, &mut reader)
+        .send_outgoing_file(name, size, &mut reader, || {
+            let _result =
+                events.send(NetworkEvent::OutboundAccepted { share_id });
+        })
         .map_err(io::Error::other)?;
     Ok(size)
 }

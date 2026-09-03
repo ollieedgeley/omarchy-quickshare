@@ -68,6 +68,12 @@ impl SharingSession {
         Self { connection }
     }
 
+    /// Returns the shared four-digit UKEY2 peer-verification code.
+    #[must_use]
+    pub fn verification_code(&self) -> &str {
+        self.connection.verification_code()
+    }
+
     /// Exchanges paired-key frames and verifies mutual account-free `UNABLE`.
     ///
     /// # Errors
@@ -135,20 +141,23 @@ impl SharingSession {
         self.receive_file_chunks(id, size, writer)
     }
 
-    /// Introduces one file, waits for consent, then streams its payload.
+    /// Introduces one file, reports peer consent, then streams its payload.
     ///
     /// # Errors
     ///
     /// Returns an error for unsafe names, invalid lengths, peer rejection, or
-    /// transfer failure.
-    pub fn send_outgoing_file<Reader>(
+    /// transfer failure. The callback runs exactly once after peer acceptance
+    /// and before the first payload frame.
+    pub fn send_outgoing_file<Reader, Accepted>(
         &mut self,
         name: &str,
         size: u64,
         reader: &mut Reader,
+        on_accepted: Accepted,
     ) -> Result<(), ProtocolError>
     where
         Reader: Read,
+        Accepted: FnOnce(),
     {
         if !offer::safe_name(name) {
             return Err(ProtocolError::InvalidOffer("unsafe file name"));
@@ -164,6 +173,7 @@ impl SharingSession {
         {
             return Err(ProtocolError::Rejected);
         }
+        on_accepted();
         self.send_file_payload(name, reader, size, wire_size)
     }
 

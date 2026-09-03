@@ -74,7 +74,8 @@ fn initiating_connection_exchanges_plain_accepts_before_encrypted_data() {
                 .expect("decode plaintext Connections ACCEPT"),
             accept_frame()
         );
-        let mut channel = handshake.into_channel().expect("complete UKEY2");
+        let mut channel =
+            handshake.complete().expect("complete UKEY2").into_channel();
 
         let data = channel
             .decrypt(&read_frame(&mut stream))
@@ -96,6 +97,7 @@ fn initiating_connection_exchanges_plain_accepts_before_encrypted_data() {
             .with_endpoint_info(b"sharing-advertisement".to_vec()),
     )
     .expect("establish encryption against manual peer");
+    assert_eq!(connection.verification_code(), "9418");
     connection
         .send_bytes(7, b"outbound bytes")
         .expect("send bytes after ACCEPT");
@@ -134,7 +136,8 @@ fn accepting_connection_receives_header_and_chunk_from_one_data_frame() {
                 .expect("decode plaintext Connections ACCEPT"),
             accept_frame()
         );
-        let mut channel = handshake.into_channel().expect("complete UKEY2");
+        let mut channel =
+            handshake.complete().expect("complete UKEY2").into_channel();
         write_frame(
             &mut stream,
             &channel

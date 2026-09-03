@@ -90,6 +90,9 @@ pub struct ShareSnapshot {
     total_bytes: u64,
     /// Bytes observed across the transfer seam.
     transferred_bytes: u64,
+    /// Four-digit UKEY2 code shown while either peer decides consent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    verification_code: Option<String>,
 }
 
 /// Public state for the local endpoint.
@@ -126,14 +129,14 @@ impl EndpointSnapshot {
     }
 
     /// Cancels the active share when its identifier matches.
-    pub(crate) const fn cancel(&mut self, share_id: u64) -> bool {
+    pub(crate) fn cancel(&mut self, share_id: u64) -> bool {
         let Some(active) = self.active_share.as_mut() else {
             return false;
         };
         if active.id.get() != share_id || active.phase.is_terminal() {
             return false;
         }
-        active.phase = Phase::Cancelled;
+        active.set_phase(Phase::Cancelled);
         true
     }
 
@@ -172,14 +175,14 @@ impl EndpointSnapshot {
     }
 
     /// Marks one active share as failed.
-    pub(crate) const fn fail(&mut self, share_id: u64) -> bool {
+    pub(crate) fn fail(&mut self, share_id: u64) -> bool {
         let Some(active) = self.active_share.as_mut() else {
             return false;
         };
         if active.id.get() != share_id || active.phase.is_terminal() {
             return false;
         }
-        active.phase = Phase::Failed;
+        active.set_phase(Phase::Failed);
         true
     }
 
@@ -380,6 +383,7 @@ impl ShareSnapshot {
             phase,
             total_bytes,
             transferred_bytes: 0,
+            verification_code: None,
         }
     }
 
@@ -407,8 +411,22 @@ impl ShareSnapshot {
         }
         self.transferred_bytes = transferred_bytes;
         if transferred_bytes == self.total_bytes {
-            self.phase = Phase::Completed;
+            self.set_phase(Phase::Completed);
         }
+        true
+    }
+
+    /// Stores one validated code while consent remains undecided.
+    pub(crate) fn record_verification_code(&mut self, code: &str) -> bool {
+        if !matches!(
+            self.phase,
+            Phase::AwaitingLocalConsent | Phase::AwaitingPeerConsent
+        ) || code.len() != 4
+            || !code.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return false;
+        }
+        self.verification_code = Some(String::from(code));
         true
     }
 
@@ -420,8 +438,14 @@ impl ShareSnapshot {
 
     /// Changes the lifecycle phase.
     #[inline]
-    pub(crate) const fn set_phase(&mut self, phase: Phase) {
+    pub(crate) fn set_phase(&mut self, phase: Phase) {
         self.phase = phase;
+        if !matches!(
+            phase,
+            Phase::AwaitingLocalConsent | Phase::AwaitingPeerConsent
+        ) {
+            self.verification_code = None;
+        }
     }
 
     /// Returns total declared attachment bytes.
@@ -436,5 +460,12 @@ impl ShareSnapshot {
     #[inline]
     pub const fn transferred_bytes(&self) -> u64 {
         self.transferred_bytes
+    }
+
+    /// Returns the UKEY2 code while this share awaits consent.
+    #[must_use]
+    #[inline]
+    pub fn verification_code(&self) -> Option<&str> {
+        self.verification_code.as_deref()
     }
 }

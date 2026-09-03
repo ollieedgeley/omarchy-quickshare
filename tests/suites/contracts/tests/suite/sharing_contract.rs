@@ -65,6 +65,7 @@ mod tests {
         let share_id = coordinator.queue_outbound(Attachment::text("hello"));
 
         assert!(coordinator.select_peer(share_id.get(), "pixel-8"));
+        assert!(coordinator.record_verification_code(share_id.get(), "0392"));
         assert!(coordinator.accept_by_peer(share_id.get()));
         assert!(coordinator.record_progress(share_id.get(), 2));
         assert!(coordinator.record_progress(share_id.get(), 5));
@@ -77,6 +78,7 @@ mod tests {
             return;
         };
         assert_eq!(active.phase(), Phase::Completed);
+        assert_eq!(active.verification_code(), None);
         assert_eq!(active.transferred_bytes(), 5);
         assert_eq!(
             active.peer().map(quickshare_sharing::PeerSnapshot::id),
@@ -115,6 +117,46 @@ mod tests {
     }
 
     #[test]
+    fn verification_code_is_valid_and_visible_only_during_consent() {
+        let mut coordinator = Coordinator::new();
+        coordinator.observe_peer("pixel-8", "Ollie's Pixel");
+        let share_id = coordinator.queue_outbound(Attachment::text("hello"));
+        assert!(coordinator.select_peer(share_id.get(), "pixel-8"));
+
+        assert!(
+            !coordinator.record_verification_code(share_id.get() + 1, "0392")
+        );
+        assert!(!coordinator.record_verification_code(share_id.get(), "392"));
+        assert!(!coordinator.record_verification_code(share_id.get(), "O392"));
+        assert!(coordinator.record_verification_code(share_id.get(), "0392"));
+        let snapshot = coordinator.snapshot();
+        let active_result = snapshot.active_share();
+        assert!(active_result.is_some(), "outbound share is not visible");
+        let Some(active) = active_result else {
+            return;
+        };
+        assert_eq!(active.verification_code(), Some("0392"));
+        let encoded = serde_json::to_value(active);
+        assert_eq!(
+            encoded
+                .as_ref()
+                .ok()
+                .and_then(|value| value.get("verification_code"))
+                .and_then(serde_json::Value::as_str),
+            Some("0392")
+        );
+
+        assert!(coordinator.reject_by_peer(share_id.get()));
+        assert_eq!(
+            coordinator
+                .snapshot()
+                .active_share()
+                .and_then(quickshare_sharing::ShareSnapshot::verification_code),
+            None
+        );
+    }
+
+    #[test]
     fn inbound_share_waits_for_consent_then_completes() {
         let mut coordinator = Coordinator::new();
         coordinator.observe_peer("pixel-8", "Ollie's Pixel");
@@ -125,6 +167,7 @@ mod tests {
         let Some(share_id) = offer_result else {
             return;
         };
+        assert!(coordinator.record_verification_code(share_id.get(), "6251"));
 
         let offered_result = coordinator.snapshot().active_share();
         assert!(offered_result.is_some(), "inbound offer is not visible");
@@ -133,7 +176,15 @@ mod tests {
         };
         assert_eq!(offered.direction(), Direction::Inbound);
         assert_eq!(offered.phase(), Phase::AwaitingLocalConsent);
+        assert_eq!(offered.verification_code(), Some("6251"));
         assert!(coordinator.accept_inbound(share_id.get()));
+        assert_eq!(
+            coordinator
+                .snapshot()
+                .active_share()
+                .and_then(quickshare_sharing::ShareSnapshot::verification_code),
+            None
+        );
         assert!(coordinator.record_progress(share_id.get(), 4));
         let completed_result = coordinator.snapshot().active_share();
         assert!(

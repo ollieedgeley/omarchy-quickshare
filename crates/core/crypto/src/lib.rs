@@ -79,11 +79,40 @@ use primitives::{d2d_key, derive, parse_public_key, public_key};
 pub use secure_channel::SecureChannel;
 pub use types::{CryptoError, HandshakeError, Role};
 
+const AUTH_SALT: &[u8] = b"UKEY2 v1 auth\0";
 const NEXT_PROTOCOL: &str = "AES_256_CBC-HMAC_SHA256";
 const UKEY2_VERSION: i32 = 1;
 const KEY_LENGTH: usize = 32;
 const IV_LENGTH: usize = 16;
 const NEXT_SALT: &[u8] = b"UKEY2 v1 next";
+
+/// Outputs derived by one mutually completed UKEY2 exchange.
+pub struct CompletedHandshake {
+    /// Raw token used for human or headless peer verification.
+    authentication_token: [u8; KEY_LENGTH],
+    /// Directional encrypted channel for the next protocol.
+    channel: SecureChannel,
+}
+
+impl fmt::Debug for CompletedHandshake {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CompletedHandshake").finish_non_exhaustive()
+    }
+}
+
+impl CompletedHandshake {
+    /// Returns the raw shared peer-verification token.
+    #[must_use]
+    pub const fn authentication_token(&self) -> &[u8; 32] {
+        &self.authentication_token
+    }
+
+    /// Consumes the handshake output and returns its directional channel.
+    #[must_use]
+    pub const fn into_channel(self) -> SecureChannel {
+        self.channel
+    }
+}
 
 /// A three-message P-256/SHA-512 UKEY2 exchange.
 pub struct Handshake {
@@ -218,12 +247,12 @@ impl Handshake {
         }
     }
 
-    /// Turns a completed handshake into a directional D2D secure channel.
+    /// Derives the peer-verification token and directional D2D channel.
     ///
     /// # Errors
     ///
     /// Returns an error unless the full UKEY2 exchange completed successfully.
-    pub fn into_channel(self) -> Result<SecureChannel, HandshakeError> {
+    pub fn complete(self) -> Result<CompletedHandshake, HandshakeError> {
         if self.state != State::Complete {
             return Err(HandshakeError::InvalidState);
         }
@@ -236,13 +265,13 @@ impl Handshake {
             self.secret.to_nonzero_scalar(),
             peer_key.as_affine(),
         );
+        let shared = Sha256::digest(shared.raw_secret_bytes());
         let transcript = [client_init, server_init].concat();
-        let master = derive::<KEY_LENGTH>(
-            &Sha256::digest(shared.raw_secret_bytes()),
-            NEXT_SALT,
-            &transcript,
-        )
-        .map_err(|_| HandshakeError::KeyAgreement)?;
+        let authentication_token =
+            derive::<KEY_LENGTH>(&shared, AUTH_SALT, &transcript)
+                .map_err(|_| HandshakeError::KeyAgreement)?;
+        let master = derive::<KEY_LENGTH>(&shared, NEXT_SALT, &transcript)
+            .map_err(|_| HandshakeError::KeyAgreement)?;
         let client = d2d_key(&master, b"client")
             .map_err(|_| HandshakeError::KeyAgreement)?;
         let server = d2d_key(&master, b"server")
@@ -251,7 +280,10 @@ impl Handshake {
             Role::Initiator => (client, server),
             Role::Responder => (server, client),
         };
-        Ok(SecureChannel::new(send, receive))
+        Ok(CompletedHandshake {
+            authentication_token,
+            channel: SecureChannel::new(send, receive),
+        })
     }
 
     fn client_init(&mut self) -> Result<Vec<u8>, HandshakeError> {
