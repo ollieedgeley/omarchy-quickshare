@@ -1,9 +1,15 @@
+use serde::{Deserialize, Serialize};
+
 /// Content offered in one share.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[non_exhaustive]
+#[serde(rename_all = "snake_case", tag = "type")]
 pub enum Attachment {
     /// User-supplied plain text.
-    Text(String),
+    Text {
+        /// The exact text supplied by the user.
+        value: String,
+    },
 }
 
 impl Attachment {
@@ -16,7 +22,9 @@ impl Attachment {
     )]
     pub(crate) fn byte_len(&self) -> u64 {
         match self {
-            Self::Text(value) => u64::try_from(value.len()).unwrap_or(u64::MAX),
+            Self::Text { value } => {
+                u64::try_from(value.len()).unwrap_or(u64::MAX)
+            }
         }
     }
 
@@ -24,6 +32,8 @@ impl Attachment {
     #[must_use]
     #[inline]
     pub fn text(value: &str) -> Self {
-        Self::Text(String::from(value))
+        Self::Text {
+            value: String::from(value),
+        }
     }
 }

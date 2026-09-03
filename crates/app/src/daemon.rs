@@ -12,6 +12,7 @@ use quickshare_control::PROTOCOL_VERSION;
 use quickshare_control::codec::{read_request, write_response};
 use quickshare_control::request::{Envelope as RequestEnvelope, Request};
 use quickshare_control::response::Envelope as ResponseEnvelope;
+use quickshare_sharing::{Attachment, Coordinator};
 
 /// Owner-only mode for the control socket directory.
 const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
@@ -23,6 +24,8 @@ const PRIVATE_SOCKET_MODE: u32 = 0o600;
 pub struct Daemon {
     /// Outbound shares accepted from local clients.
     queued: Vec<RequestEnvelope>,
+    /// User-visible share lifecycle state.
+    sharing: Coordinator,
 }
 
 /// A bound control listener that removes its socket on a clean shutdown.
@@ -80,7 +83,10 @@ impl Daemon {
     #[must_use]
     #[inline]
     pub const fn new() -> Self {
-        Self { queued: Vec::new() }
+        Self {
+            queued: Vec::new(),
+            sharing: Coordinator::new(),
+        }
     }
 
     /// Returns the number of outbound shares owned by the endpoint.
@@ -95,6 +101,10 @@ impl Daemon {
     /// # Errors
     ///
     /// Returns an error when the socket or control record is invalid.
+    #[expect(
+        clippy::pattern_type_mismatch,
+        reason = "Borrowed requests retain submitted payload ownership"
+    )]
     #[inline]
     pub fn serve_next(&mut self, listener: &UnixListener) -> io::Result<()> {
         let (mut stream, _address) = listener.accept()?;
@@ -106,8 +116,21 @@ impl Daemon {
                 "client uses an unsupported control protocol",
             ));
         }
-        if matches!(request.request(), Request::Status) {
-            return write_response(&mut stream, &ResponseEnvelope::ready());
+        match request.request() {
+            Request::Snapshot => {
+                return write_response(
+                    &mut stream,
+                    &ResponseEnvelope::snapshot(self.sharing.snapshot()),
+                );
+            }
+            Request::Status => {
+                return write_response(&mut stream, &ResponseEnvelope::ready());
+            }
+            Request::SubmitText { text } => {
+                let _share_id =
+                    self.sharing.queue_outbound(Attachment::text(text));
+            }
+            Request::SubmitFile { .. } | Request::SubmitUrl { .. } | _ => {}
         }
         self.queued.push(request);
         write_response(&mut stream, &ResponseEnvelope::queued())

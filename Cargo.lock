@@ -19,6 +19,7 @@ name = "omarchy-quickshare"
 version = "0.0.0"
 dependencies = [
  "quickshare-control",
+ "quickshare-sharing",
 ]
 
 [[package]]
@@ -44,6 +45,7 @@ dependencies = [
 name = "quickshare-control"
 version = "0.0.0"
 dependencies = [
+ "quickshare-sharing",
  "serde",
  "serde_json",
 ]
@@ -55,6 +57,9 @@ version = "0.0.0"
 [[package]]
 name = "quickshare-sharing"
 version = "0.0.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "quickshare-test-support"

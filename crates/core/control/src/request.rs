@@ -22,6 +22,16 @@ impl Envelope {
         &self.request
     }
 
+    /// Creates a request for the endpoint's public state.
+    #[must_use]
+    #[inline]
+    pub const fn snapshot() -> Self {
+        Self {
+            request: Request::Snapshot,
+            version: PROTOCOL_VERSION,
+        }
+    }
+
     /// Creates a request to check the local endpoint's readiness.
     #[must_use]
     #[inline]
@@ -81,6 +91,8 @@ impl Envelope {
 #[serde(deny_unknown_fields, rename_all = "snake_case", tag = "type")]
 #[non_exhaustive]
 pub enum Request {
+    /// Read the endpoint's current public state.
+    Snapshot,
     /// Check whether the local endpoint can accept commands.
     Status,
     /// Submit one file for an outbound share.

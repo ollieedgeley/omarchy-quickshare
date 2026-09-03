@@ -1,12 +1,15 @@
 use crate::attachment::Attachment;
+use serde::{Deserialize, Serialize};
 
 /// A stable identifier assigned by the local endpoint.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
 pub struct ShareId(u64);
 
 /// The direction of a share relative to the local endpoint.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[non_exhaustive]
+#[serde(rename_all = "snake_case")]
 pub enum Direction {
     /// The local endpoint receives content.
     Inbound,
@@ -15,15 +18,17 @@ pub enum Direction {
 }
 
 /// A user-visible stage in a share's lifecycle.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[non_exhaustive]
+#[serde(rename_all = "snake_case")]
 pub enum Phase {
     /// The endpoint is discovering a peer for the share.
     WaitingForPeer,
 }
 
 /// Public state for one active share.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ShareSnapshot {
     /// The attachment being exchanged.
     attachment: Attachment,
@@ -40,7 +45,8 @@ pub struct ShareSnapshot {
 }
 
 /// Public state for the local endpoint.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct EndpointSnapshot {
     /// The share currently displayed by clients.
     active_share: Option<ShareSnapshot>,

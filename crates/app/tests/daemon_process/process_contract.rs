@@ -10,8 +10,12 @@ use std::time::Instant;
 
 use omarchy_quickshare as _;
 use quickshare_control as _;
+use quickshare_sharing as _;
 
 const BINARY: &str = env!("CARGO_BIN_EXE_omarchy-quickshare");
+const ACTIVE_TEXT_SNAPSHOT: &str = include_str!(
+    "../../../../tests/fixtures/control/v1/active-text-snapshot-response.jsonl"
+);
 const RETRY_DELAY: Duration = Duration::from_millis(5);
 const START_TIMEOUT: Duration = Duration::from_secs(1);
 static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
@@ -73,10 +77,6 @@ impl DaemonProcessFixture {
     }
 }
 
-#[expect(
-    clippy::single_call_fn,
-    reason = "The process fixture path construction stays named in the test"
-)]
 fn runtime_fixture_path() -> PathBuf {
     let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
     env::temp_dir().join(format!(
@@ -88,6 +88,16 @@ fn runtime_fixture_path() -> PathBuf {
 fn runtime_status(runtime_directory: &Path) -> io::Result<Output> {
     Command::new(BINARY)
         .arg("--runtime-status")
+        .env("XDG_RUNTIME_DIR", runtime_directory)
+        .output()
+}
+
+fn run_command(
+    runtime_directory: &Path,
+    arguments: &[&str],
+) -> io::Result<Output> {
+    Command::new(BINARY)
+        .args(arguments)
         .env("XDG_RUNTIME_DIR", runtime_directory)
         .output()
 }
@@ -129,4 +139,37 @@ fn daemon_process_accepts_clients_and_recovers_from_a_stale_socket() {
     assert!(second_status.status.success());
     let second_stop = second.stop();
     assert!(second_stop.is_ok(), "failed to stop restarted daemon");
+}
+
+#[test]
+fn daemon_reports_submitted_text_in_its_public_snapshot() {
+    let root = runtime_fixture_path();
+    let fixture_result = DaemonProcessFixture::start(root);
+    assert!(fixture_result.is_ok(), "failed to start daemon");
+    let Ok(fixture) = fixture_result else {
+        return;
+    };
+
+    let submission_result =
+        run_command(fixture.runtime_directory(), &["hello from Omarchy"]);
+    assert!(submission_result.is_ok(), "failed to submit text");
+    let Ok(submission) = submission_result else {
+        return;
+    };
+    assert!(submission.status.success(), "daemon rejected text");
+
+    let snapshot_result =
+        run_command(fixture.runtime_directory(), &["--status-json"]);
+    assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
+    let Ok(snapshot) = snapshot_result else {
+        return;
+    };
+    assert!(
+        snapshot.status.success(),
+        "daemon rejected snapshot request"
+    );
+    assert_eq!(snapshot.stdout, ACTIVE_TEXT_SNAPSHOT.as_bytes());
+
+    let stop_result = fixture.stop();
+    assert!(stop_result.is_ok(), "failed to stop daemon");
 }

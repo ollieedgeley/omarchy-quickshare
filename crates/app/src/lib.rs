@@ -19,7 +19,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 use quickshare_control::PROTOCOL_VERSION;
-use quickshare_control::codec::{read_response, write_request};
+use quickshare_control::codec::{read_response, write_request, write_response};
 use quickshare_control::request::Envelope as RequestEnvelope;
 use quickshare_control::response::Response;
 
@@ -67,6 +67,10 @@ fn request(
 /// # Errors
 ///
 /// Returns an I/O error when local control cannot complete the command.
+#[expect(
+    clippy::pattern_type_mismatch,
+    reason = "Borrowed responses remain available for validation"
+)]
 #[inline]
 pub fn run<Output>(
     arguments: &[String],
@@ -94,6 +98,18 @@ where
             "endpoint did not confirm readiness",
         ));
     }
+    if matches!(arguments, [argument] if argument == "--status-json") {
+        let mut stream = UnixStream::connect(socket_path)?;
+        write_request(&mut stream, &RequestEnvelope::snapshot())?;
+        let response = read_response(&mut BufReader::new(stream))?;
+        if response.version() != PROTOCOL_VERSION {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "endpoint uses an unsupported control protocol",
+            ));
+        }
+        return write_response(output, &response);
+    }
     let request = request(arguments, current_directory)?;
     let mut stream = UnixStream::connect(socket_path)?;
     write_request(&mut stream, &request)?;
@@ -104,9 +120,9 @@ where
             "endpoint uses an unsupported control protocol",
         ));
     }
-    match *response.response() {
+    match response.response() {
         Response::Queued => writeln!(output, "Share queued."),
-        Response::Ready | _ => Err(io::Error::new(
+        Response::Ready | Response::Snapshot { .. } | _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "endpoint returned an unsupported response",
         )),

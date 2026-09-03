@@ -1,7 +1,8 @@
+use quickshare_sharing::EndpointSnapshot;
 use serde::{Deserialize, Serialize};
 
 /// One versioned response from the local endpoint.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Envelope {
     /// The result carried by this envelope.
@@ -38,6 +39,18 @@ impl Envelope {
         &self.response
     }
 
+    /// Creates a response containing the endpoint's public state.
+    #[must_use]
+    #[inline]
+    pub fn snapshot(snapshot: &EndpointSnapshot) -> Self {
+        Self {
+            response: Response::Snapshot {
+                snapshot: snapshot.clone(),
+            },
+            version: crate::PROTOCOL_VERSION,
+        }
+    }
+
     /// Returns the protocol version used by the endpoint.
     #[must_use]
     #[inline]
@@ -47,7 +60,7 @@ impl Envelope {
 }
 
 /// A result returned by the local endpoint.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case", tag = "type")]
 #[non_exhaustive]
 pub enum Response {
@@ -55,4 +68,9 @@ pub enum Response {
     Queued,
     /// The local endpoint is ready to accept commands.
     Ready,
+    /// The endpoint's current public state.
+    Snapshot {
+        /// State observed through the local control seam.
+        snapshot: EndpointSnapshot,
+    },
 }
