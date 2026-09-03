@@ -243,6 +243,8 @@ test("OMP blocks direct aggregate Make gates", () => {
     "make build",
     "CARGO_TARGET_DIR=target/check make -j2 verify",
     "cd /tmp && /usr/bin/make build",
+    "timeout 60s make verify",
+    "/usr/bin/timeout --foreground 60s make build",
   ];
   for (const command of commands) {
     const result = gateGuardResult(command);
