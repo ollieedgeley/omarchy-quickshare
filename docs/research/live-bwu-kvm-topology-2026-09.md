@@ -112,6 +112,41 @@ Before a test can claim a live upgrade, it needs all of the following:
 Until then, the existing Nearby Linux Connections test proves a live LAN
 transfer only.
 
+## Attempt closed on 2026-09-03
+
+Two bounded reference-peer experiments tested the remaining path. Neither
+qualified as a gate, so their disposable harnesses were removed instead of
+becoming unsupported project tooling.
+
+The BLE-to-LAN experiment ran two KVM guests with separate BlueZ instances and
+controllers connected through Bumble. The advertising guest emitted the
+expected FEF3 legacy service data. The scanning guest received the HCI
+advertising report, BlueZ created `Device1`, exposed `ServiceData`, and
+activated the advertisement monitor. BlueZ did not call the Google-derived
+monitor's `DeviceFound` callback. The peer therefore produced no endpoint-found
+event, connection, upgrade, or payload result. A test-only pattern change from
+the UUID bytes to the observed payload header did not change that result and
+was discarded.
+
+The Classic-to-LAN experiment also ran two isolated KVM guests. Sequential
+controller startup removed a race in parallel HCI initialization, and the
+advertising peer reported successful Classic advertising. The discovering peer
+then timed out before reporting discovery. BlueZ logged a rejected privacy
+setting on that controller. No encrypted initial connection, bandwidth change,
+or payload transfer occurred.
+
+Both test phases completed within their gate budget and cleaned their guests,
+controllers, sockets, and runtime files. The failures sit inside the pinned
+Linux reference stack before a bandwidth upgrade can begin. They do not weaken
+the admitted virtual BLE, Classic, LAN, hotspot, Wi-Fi Direct, simulated
+upgrade, fixture, or live Sharing checks.
+
+Application work is not blocked by these rows. The development start condition
+uses the admitted fixtures, shared contracts, radio and network self-tests, and
+fault injectors. A future retry should start only when a source change or new
+reference peer can demonstrate the missing discovery callback. It must still
+meet every live-upgrade requirement above before joining `make verify`.
+
 ## KVM sidecar probe update
 
 The first KVM-sidecar probe initially reported a missing controller because
