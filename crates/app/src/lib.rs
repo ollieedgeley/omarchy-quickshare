@@ -23,6 +23,51 @@ use quickshare_control::codec::{read_response, write_request, write_response};
 use quickshare_control::request::Envelope as RequestEnvelope;
 use quickshare_control::response::{Envelope as ResponseEnvelope, Response};
 
+/// Parses one state-changing CLI command.
+#[expect(
+    clippy::pattern_type_mismatch,
+    reason = "Borrowed CLI arguments retain their string ownership"
+)]
+#[expect(
+    clippy::single_call_fn,
+    reason = "Action parsing stays separate from transport and rendering"
+)]
+fn action_request(arguments: &[String]) -> io::Result<Option<RequestEnvelope>> {
+    let request = match arguments {
+        [flag, value] if flag == "--accept" => {
+            RequestEnvelope::accept(parse_number(value, "share ID")?)
+        }
+        [flag, value] if flag == "--cancel" => {
+            RequestEnvelope::cancel(parse_number(value, "share ID")?)
+        }
+        [flag, value] if flag == "--reject" => {
+            RequestEnvelope::reject(parse_number(value, "share ID")?)
+        }
+        [flag, share_id, peer_id] if flag == "--send-to" => {
+            RequestEnvelope::select_peer(
+                parse_number(share_id, "share ID")?,
+                peer_id,
+            )
+        }
+        [flag, text] if flag == "--simulate-incoming-text" => {
+            RequestEnvelope::simulate_incoming_text(text)
+        }
+        [flag, value] if flag == "--simulate-peer-accept" => {
+            RequestEnvelope::simulate_peer_accept(parse_number(
+                value, "share ID",
+            )?)
+        }
+        [flag, share_id, transferred] if flag == "--simulate-progress" => {
+            RequestEnvelope::simulate_progress(
+                parse_number(share_id, "share ID")?,
+                parse_number(transferred, "byte count")?,
+            )
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(request))
+}
+
 /// Exchanges one validated request with the local endpoint.
 fn exchange(
     socket_path: &Path,
@@ -38,6 +83,13 @@ fn exchange(
         ));
     }
     Ok(response)
+}
+
+/// Parses a non-negative control protocol integer.
+fn parse_number(value: &str, field: &str) -> io::Result<u64> {
+    value.parse::<u64>().map_err(|_error| {
+        io::Error::new(io::ErrorKind::InvalidInput, format!("invalid {field}"))
+    })
 }
 
 /// Classifies one command argument without contacting the local endpoint.
@@ -115,31 +167,16 @@ where
         let response = exchange(socket_path, &RequestEnvelope::snapshot())?;
         return write_response(output, &response);
     }
-    if let [flag, value] = arguments
-        && flag == "--cancel"
-    {
-        let share_id = value.parse::<u64>().map_err(|_error| {
-            io::Error::new(io::ErrorKind::InvalidInput, "invalid share ID")
-        })?;
-        let response =
-            exchange(socket_path, &RequestEnvelope::cancel(share_id))?;
-        return match response.response() {
-            Response::Cancelled => writeln!(output, "Share cancelled."),
-            Response::NotFound
-            | Response::Queued
-            | Response::Ready
-            | Response::Snapshot { .. }
-            | _ => Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "active share was not found",
-            )),
-        };
+    if let Some(action) = action_request(arguments)? {
+        let response = exchange(socket_path, &action)?;
+        return write_action(output, response.response());
     }
     let request = request(arguments, current_directory)?;
     let response = exchange(socket_path, &request)?;
     match response.response() {
         Response::Queued => writeln!(output, "Share queued."),
-        Response::Cancelled
+        Response::Applied
+        | Response::Cancelled
         | Response::NotFound
         | Response::Ready
         | Response::Snapshot { .. }
@@ -147,6 +184,38 @@ where
             io::ErrorKind::InvalidData,
             "endpoint returned an unsupported response",
         )),
+    }
+}
+
+/// Writes the user-facing result of a state-changing command.
+#[expect(
+    clippy::pattern_type_mismatch,
+    reason = "Borrowed responses remain available after rendering"
+)]
+#[expect(
+    clippy::single_call_fn,
+    reason = "Action response rendering remains independent of argument parsing"
+)]
+fn write_action<Output>(
+    output: &mut Output,
+    response: &Response,
+) -> io::Result<()>
+where
+    Output: Write,
+{
+    match response {
+        Response::Applied => writeln!(output, "Action applied."),
+        Response::Cancelled => writeln!(output, "Share cancelled."),
+        Response::NotFound => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "action is not available in the current state",
+        )),
+        Response::Queued | Response::Ready | Response::Snapshot { .. } | _ => {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "endpoint returned an unsupported response",
+            ))
+        }
     }
 }
 
@@ -168,6 +237,9 @@ pub fn run_from_environment() -> io::Result<()> {
                 "XDG_RUNTIME_DIR is not available",
             )
         })?;
+    if arguments.as_slice() == ["--daemon", "--simulate"] {
+        return daemon::run_simulated(&socket_path);
+    }
     if matches!(arguments.as_slice(), [argument] if argument == "--daemon") {
         return daemon::run(&socket_path);
     }

@@ -12,6 +12,16 @@ pub struct Envelope {
 }
 
 impl Envelope {
+    /// Creates a response confirming a state-changing action.
+    #[must_use]
+    #[inline]
+    pub const fn applied() -> Self {
+        Self {
+            response: Response::Applied,
+            version: crate::PROTOCOL_VERSION,
+        }
+    }
+
     /// Creates a response confirming a cancelled share.
     #[must_use]
     #[inline]
@@ -84,6 +94,8 @@ impl Envelope {
 #[serde(deny_unknown_fields, rename_all = "snake_case", tag = "type")]
 #[non_exhaustive]
 pub enum Response {
+    /// The endpoint applied the requested state change.
+    Applied,
     /// The endpoint cancelled the requested share.
     Cancelled,
     /// No active share matched the requested identifier.

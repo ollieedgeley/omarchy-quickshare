@@ -2,15 +2,16 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use std::env;
 use std::fs;
-use std::io;
+use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{self, Child, Command, Output, Stdio};
 use std::thread;
 use std::time::Instant;
 
 use omarchy_quickshare as _;
-use quickshare_control as _;
-use quickshare_sharing as _;
+use quickshare_control::codec::read_response;
+use quickshare_control::response::Response;
+use quickshare_sharing::{Direction, EndpointSnapshot, Phase};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_omarchy-quickshare");
 const ACTIVE_TEXT_SNAPSHOT: &str = include_str!(
@@ -48,9 +49,21 @@ impl DaemonProcessFixture {
     }
 
     fn start(root: PathBuf) -> io::Result<Self> {
+        Self::start_with(root, &["--daemon"])
+    }
+
+    #[expect(
+        clippy::single_call_fn,
+        reason = "The process contract has one complete simulated lifecycle"
+    )]
+    fn start_simulated(root: PathBuf) -> io::Result<Self> {
+        Self::start_with(root, &["--daemon", "--simulate"])
+    }
+
+    fn start_with(root: PathBuf, arguments: &[&str]) -> io::Result<Self> {
         fs::create_dir_all(&root)?;
         let child = Command::new(BINARY)
-            .arg("--daemon")
+            .args(arguments)
             .env("XDG_RUNTIME_DIR", &root)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -86,6 +99,27 @@ impl DaemonProcessFixture {
             io::ErrorKind::TimedOut,
             "daemon did not create its control socket",
         ))
+    }
+}
+
+#[expect(
+    clippy::pattern_type_mismatch,
+    reason = "Borrowed response preserves the decoded envelope for validation"
+)]
+fn endpoint_snapshot(runtime_directory: &Path) -> io::Result<EndpointSnapshot> {
+    let output = run_command(runtime_directory, &["--status-json"])?;
+    if !output.status.success() {
+        return Err(io::Error::other("snapshot command failed"));
+    }
+    let mut reader = BufReader::new(output.stdout.as_slice());
+    let envelope = read_response(&mut reader)?;
+    match envelope.response() {
+        Response::Snapshot { snapshot } => Ok(snapshot.clone()),
+        Response::Cancelled
+        | Response::NotFound
+        | Response::Queued
+        | Response::Ready
+        | _ => Err(io::Error::other("endpoint did not return a snapshot")),
     }
 }
 
@@ -279,4 +313,82 @@ fn daemon_cancels_the_active_share_by_identifier() {
 
     let stop_result = fixture.stop();
     assert!(stop_result.is_ok(), "failed to stop daemon");
+}
+
+#[test]
+fn simulated_daemon_runs_outbound_and_inbound_transfers() {
+    let root = runtime_fixture_path();
+    let fixture_result = DaemonProcessFixture::start_simulated(root);
+    assert!(fixture_result.is_ok(), "failed to start simulated daemon");
+    let Ok(fixture) = fixture_result else {
+        return;
+    };
+    let initial_result = endpoint_snapshot(fixture.runtime_directory());
+    assert!(initial_result.is_ok(), "failed to read initial snapshot");
+    let Ok(initial) = initial_result else {
+        return;
+    };
+    assert_eq!(initial.peers().len(), 2);
+
+    assert_command(fixture.runtime_directory(), &["hello"]);
+    assert_command(fixture.runtime_directory(), &["--send-to", "1", "pixel-8"]);
+    assert_command(
+        fixture.runtime_directory(),
+        &["--simulate-peer-accept", "1"],
+    );
+    assert_command(
+        fixture.runtime_directory(),
+        &["--simulate-progress", "1", "5"],
+    );
+    assert_phase(
+        fixture.runtime_directory(),
+        Direction::Outbound,
+        Phase::Completed,
+    );
+
+    assert_command(
+        fixture.runtime_directory(),
+        &["--simulate-incoming-text", "from phone"],
+    );
+    assert_phase(
+        fixture.runtime_directory(),
+        Direction::Inbound,
+        Phase::AwaitingLocalConsent,
+    );
+    assert_command(fixture.runtime_directory(), &["--accept", "2"]);
+    assert_command(
+        fixture.runtime_directory(),
+        &["--simulate-progress", "2", "10"],
+    );
+    assert_phase(
+        fixture.runtime_directory(),
+        Direction::Inbound,
+        Phase::Completed,
+    );
+    let stop_result = fixture.stop();
+    assert!(stop_result.is_ok(), "failed to stop simulated daemon");
+}
+
+fn assert_command(runtime_directory: &Path, arguments: &[&str]) {
+    let result = run_command(runtime_directory, arguments);
+    assert!(result.is_ok(), "failed to run {arguments:?}");
+    let Ok(output) = result else {
+        return;
+    };
+    assert!(output.status.success(), "command rejected: {arguments:?}");
+}
+
+fn assert_phase(runtime_directory: &Path, direction: Direction, phase: Phase) {
+    let snapshot_result = endpoint_snapshot(runtime_directory);
+    assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
+    let Ok(snapshot) = snapshot_result else {
+        return;
+    };
+    let active_result = snapshot.active_share();
+    assert!(active_result.is_some(), "active share is not visible");
+    let Some(active) = active_result else {
+        return;
+    };
+    assert_eq!(active.direction(), direction);
+    assert_eq!(active.phase(), phase);
 }

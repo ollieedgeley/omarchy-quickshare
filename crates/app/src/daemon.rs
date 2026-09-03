@@ -11,7 +11,7 @@ use std::{fs, os::unix::net::UnixStream};
 use quickshare_control::PROTOCOL_VERSION;
 use quickshare_control::codec::{read_request, write_response};
 use quickshare_control::request::{Envelope as RequestEnvelope, Request};
-use quickshare_control::response::Envelope as ResponseEnvelope;
+use quickshare_control::response::{Envelope as ResponseEnvelope, Response};
 use quickshare_sharing::{Attachment, Coordinator};
 
 /// Owner-only mode for the control socket directory.
@@ -26,6 +26,8 @@ pub struct Daemon {
     queued: Vec<RequestEnvelope>,
     /// User-visible share lifecycle state.
     sharing: Coordinator,
+    /// Whether deterministic peer events are accepted.
+    simulated: bool,
 }
 
 /// A bound control listener that removes its socket on a clean shutdown.
@@ -39,10 +41,6 @@ struct ControlSocket {
 
 impl ControlSocket {
     /// Binds an owner-only socket after rejecting a running endpoint.
-    #[expect(
-        clippy::single_call_fn,
-        reason = "Socket ownership and cleanup stay in one lifecycle type"
-    )]
     fn bind(path: &Path) -> io::Result<Self> {
         let directory = path.parent().ok_or_else(|| {
             io::Error::new(
@@ -86,6 +84,7 @@ impl Daemon {
         Self {
             queued: Vec::new(),
             sharing: Coordinator::new(),
+            simulated: false,
         }
     }
 
@@ -96,15 +95,63 @@ impl Daemon {
         self.queued.len()
     }
 
-    /// Accepts and queues the next local control request.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the socket or control record is invalid.
     #[expect(
         clippy::pattern_type_mismatch,
         reason = "Borrowed requests retain submitted payload ownership"
     )]
+    /// Applies one validated command to endpoint state.
+    fn response_for(
+        &mut self,
+        request: &Request,
+    ) -> io::Result<ResponseEnvelope> {
+        match request {
+            Request::Accept { share_id } => {
+                Ok(action_response(self.sharing.accept_inbound(*share_id)))
+            }
+            Request::Cancel { share_id } => {
+                Ok(if self.sharing.cancel(*share_id) {
+                    ResponseEnvelope::cancelled()
+                } else {
+                    ResponseEnvelope::not_found()
+                })
+            }
+            Request::Reject { share_id } => {
+                Ok(action_response(self.sharing.reject_inbound(*share_id)))
+            }
+            Request::SelectPeer { peer_id, share_id } => Ok(action_response(
+                self.sharing.select_peer(*share_id, peer_id),
+            )),
+            Request::Snapshot => {
+                Ok(ResponseEnvelope::snapshot(self.sharing.snapshot()))
+            }
+            Request::Status => Ok(ResponseEnvelope::ready()),
+            Request::SubmitFile { path } => {
+                let attachment = file_attachment(path)?;
+                let _share_id = self.sharing.queue_outbound(attachment);
+                Ok(ResponseEnvelope::queued())
+            }
+            Request::SubmitText { text } => {
+                let _share_id =
+                    self.sharing.queue_outbound(Attachment::text(text));
+                Ok(ResponseEnvelope::queued())
+            }
+            Request::SubmitUrl { url } => {
+                let _share_id =
+                    self.sharing.queue_outbound(Attachment::url(url));
+                Ok(ResponseEnvelope::queued())
+            }
+            Request::SimulateIncomingText { .. }
+            | Request::SimulatePeerAccept { .. }
+            | Request::SimulateProgress { .. }
+            | _ => Ok(self.simulation_response(request)),
+        }
+    }
+
+    /// Accepts and queues the next local control request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when listener configuration or a client fails.
     #[inline]
     pub fn serve_next(&mut self, listener: &UnixListener) -> io::Result<()> {
         let (mut stream, _address) = listener.accept()?;
@@ -116,40 +163,11 @@ impl Daemon {
                 "client uses an unsupported control protocol",
             ));
         }
-        match request.request() {
-            Request::Cancel { share_id } => {
-                let response = if self.sharing.cancel(*share_id) {
-                    ResponseEnvelope::cancelled()
-                } else {
-                    ResponseEnvelope::not_found()
-                };
-                return write_response(&mut stream, &response);
-            }
-            Request::Snapshot => {
-                return write_response(
-                    &mut stream,
-                    &ResponseEnvelope::snapshot(self.sharing.snapshot()),
-                );
-            }
-            Request::Status => {
-                return write_response(&mut stream, &ResponseEnvelope::ready());
-            }
-            Request::SubmitFile { path } => {
-                let attachment = file_attachment(path)?;
-                let _share_id = self.sharing.queue_outbound(attachment);
-            }
-            Request::SubmitText { text } => {
-                let _share_id =
-                    self.sharing.queue_outbound(Attachment::text(text));
-            }
-            Request::SubmitUrl { url } => {
-                let _share_id =
-                    self.sharing.queue_outbound(Attachment::url(url));
-            }
-            _ => {}
+        let response = self.response_for(request.request())?;
+        if matches!(response.response(), Response::Queued) {
+            self.queued.push(request);
         }
-        self.queued.push(request);
-        write_response(&mut stream, &ResponseEnvelope::queued())
+        write_response(&mut stream, &response)
     }
 
     /// Serves control clients until the owning process requests shutdown.
@@ -177,6 +195,64 @@ impl Daemon {
             }
         }
         Ok(())
+    }
+
+    /// Creates an endpoint backed by deterministic local peers.
+    #[must_use]
+    #[inline]
+    pub fn simulated() -> Self {
+        let mut endpoint = Self {
+            queued: Vec::new(),
+            sharing: Coordinator::new(),
+            simulated: true,
+        };
+        endpoint.sharing.observe_peer("pixel-8", "Ollie's Pixel");
+        endpoint.sharing.observe_peer("galaxy-tab", "Galaxy Tab");
+        endpoint
+    }
+
+    /// Applies a deterministic peer event when simulation is enabled.
+    #[expect(
+        clippy::pattern_type_mismatch,
+        reason = "Borrowed simulation records retain their payload ownership"
+    )]
+    fn simulation_response(&mut self, request: &Request) -> ResponseEnvelope {
+        if !self.simulated {
+            return ResponseEnvelope::not_found();
+        }
+        let applied = match request {
+            Request::SimulateIncomingText { text } => self
+                .sharing
+                .offer_inbound(Attachment::text(text), "pixel-8")
+                .is_some(),
+            Request::SimulatePeerAccept { share_id } => {
+                self.sharing.accept_by_peer(*share_id)
+            }
+            Request::SimulateProgress {
+                share_id,
+                transferred_bytes,
+            } => self.sharing.record_progress(*share_id, *transferred_bytes),
+            Request::Accept { .. }
+            | Request::Cancel { .. }
+            | Request::Reject { .. }
+            | Request::SelectPeer { .. }
+            | Request::Snapshot
+            | Request::Status
+            | Request::SubmitFile { .. }
+            | Request::SubmitText { .. }
+            | Request::SubmitUrl { .. }
+            | _ => false,
+        };
+        action_response(applied)
+    }
+}
+
+/// Converts a state transition result into a control response.
+const fn action_response(applied: bool) -> ResponseEnvelope {
+    if applied {
+        ResponseEnvelope::applied()
+    } else {
+        ResponseEnvelope::not_found()
     }
 }
 
@@ -228,4 +304,15 @@ fn remove_stale_socket(path: &Path) -> io::Result<()> {
 pub fn run(socket_path: &Path) -> io::Result<()> {
     let socket = ControlSocket::bind(socket_path)?;
     Daemon::new().serve_until(&socket.listener, || false)
+}
+
+/// Runs a deterministic local peer for complete application testing.
+///
+/// # Errors
+///
+/// Returns an error when the private control socket cannot be served.
+#[inline]
+pub fn run_simulated(socket_path: &Path) -> io::Result<()> {
+    let socket = ControlSocket::bind(socket_path)?;
+    Daemon::simulated().serve_until(&socket.listener, || false)
 }
