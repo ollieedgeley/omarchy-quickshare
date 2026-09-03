@@ -99,6 +99,12 @@ BarWidget {
         onCancelRequested: function(shareId) {
           status.cancel(shareId)
         }
+        onDismissRequested: function(shareId) {
+          status.dismiss(shareId)
+        }
+        onDiscoverRequested: function() {
+          status.discover()
+        }
         onPeerSelected: function(shareId, peerId) {
           status.sendTo(shareId, peerId)
         }
@@ -107,6 +113,9 @@ BarWidget {
         }
         onRejectRequested: function(shareId) {
           status.reject(shareId)
+        }
+        onVisibilityRequested: function(shouldOpen) {
+          status.setVisibility(shouldOpen)
         }
       }
     }

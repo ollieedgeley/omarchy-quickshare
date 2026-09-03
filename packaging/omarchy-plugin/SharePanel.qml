@@ -17,6 +17,16 @@ Item {
     return attachment.value || "Nothing selected"
   }
   readonly property var peers: snapshot.peers || []
+  readonly property string discoveryMessage: {
+    if (snapshot.discovery === "timed_out") return "No devices found"
+    if (snapshot.discovery === "searching") {
+      return peers.length > 0
+        ? "Searching for more devices…"
+        : "Searching for devices…"
+    }
+    if (viewState === "choose_peer") return "Search stopped"
+    return ""
+  }
   readonly property int progressPercent: {
     var total = Number(activeShare.total_bytes || 0)
     var transferred = Number(activeShare.transferred_bytes || 0)
@@ -31,12 +41,16 @@ Item {
     if (activeShare.phase === "transferring") return "transfer"
     return "terminal"
   }
+  readonly property bool visibilityOpen: snapshot.visibility === "open"
 
   signal acceptRequested(int shareId)
   signal cancelRequested(int shareId)
+  signal dismissRequested(int shareId)
+  signal discoverRequested()
   signal peerSelected(int shareId, string peerId)
   signal pinRequested(string peerId)
   signal rejectRequested(int shareId)
+  signal visibilityRequested(bool shouldOpen)
 
   function accept() {
     if (viewState === "consent") acceptRequested(activeShare.id)
@@ -50,12 +64,27 @@ Item {
     if (viewState === "choose_peer") peerSelected(activeShare.id, peerId)
   }
 
+  function dismiss() {
+    if (viewState === "terminal") dismissRequested(activeShare.id)
+  }
+
   function pinPeer(peerId) {
     if (viewState === "choose_peer") pinRequested(peerId)
   }
 
   function reject() {
     if (viewState === "consent") rejectRequested(activeShare.id)
+  }
+
+  function retryDiscovery() {
+    if (viewState === "choose_peer"
+        && snapshot.discovery === "timed_out") {
+      discoverRequested()
+    }
+  }
+
+  function toggleVisibility() {
+    if (viewState === "idle") visibilityRequested(!visibilityOpen)
   }
 
   implicitHeight: content.implicitHeight
@@ -134,8 +163,54 @@ Item {
 
       Text {
         color: root.mutedColor
-        text: "Searching for devices…"
-        visible: root.peers.length === 0
+        text: root.discoveryMessage
+        visible: text.length > 0
+      }
+
+      Rectangle {
+        width: 92
+        height: 34
+        color: root.accentColor
+        radius: 6
+        visible: root.snapshot.discovery === "timed_out"
+        Text {
+          anchors.centerIn: parent
+          color: root.surfaceColor
+          text: "Retry"
+        }
+        MouseArea {
+          anchors.fill: parent
+          onClicked: root.retryDiscovery()
+        }
+      }
+    }
+
+    Column {
+      width: parent.width
+      spacing: 6
+      visible: root.viewState === "idle"
+
+      Text {
+        color: root.mutedColor
+        text: root.visibilityOpen
+          ? "Visible to nearby devices"
+          : "Receiving is off"
+      }
+
+      Rectangle {
+        width: 128
+        height: 34
+        color: root.accentColor
+        radius: 6
+        Text {
+          anchors.centerIn: parent
+          color: root.surfaceColor
+          text: root.visibilityOpen ? "Stop receiving" : "Receive"
+        }
+        MouseArea {
+          anchors.fill: parent
+          onClicked: root.toggleVisibility()
+        }
       }
     }
 
@@ -215,6 +290,23 @@ Item {
           anchors.fill: parent
           onClicked: root.cancel()
         }
+      }
+    }
+
+    Rectangle {
+      width: 92
+      height: 34
+      color: root.accentColor
+      radius: 6
+      visible: root.viewState === "terminal"
+      Text {
+        anchors.centerIn: parent
+        color: root.surfaceColor
+        text: "Done"
+      }
+      MouseArea {
+        anchors.fill: parent
+        onClicked: root.dismiss()
       }
     }
   }

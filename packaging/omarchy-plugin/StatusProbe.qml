@@ -67,6 +67,14 @@ QtObject {
     runAction(["--cancel", String(shareId)])
   }
 
+  function dismiss(shareId) {
+    runAction(["--dismiss", String(shareId)])
+  }
+
+  function discover() {
+    runAction(["--discover"])
+  }
+
   function acceptRelease(source) {
     var release
     try {
@@ -172,6 +180,12 @@ QtObject {
 
   function sendTo(shareId, peerId) {
     runAction(["--send-to", String(shareId), String(peerId)])
+  }
+
+  function setVisibility(shouldOpen) {
+    runAction([
+      shouldOpen ? "--open-visibility" : "--close-visibility",
+    ])
   }
 
   property Process actionProbe: Process {
