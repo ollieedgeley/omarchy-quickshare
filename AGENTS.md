@@ -79,10 +79,13 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make format-docs-check` checks Markdown; `make format-check` combines all
   formatting domains.
 - `make lint-rust` runs compiler, rustdoc, rust-analyzer, and all enabled Clippy diagnostics as errors.
-- `make ruff-provision` installs the pinned Python tool; `make lint-python` checks all Python tooling and `make pre-commit-python` checks staged Python.
+- `make ruff-provision` installs the pinned Python tool; `make lint-python` checks all Python tooling.
 - `make lint-javascript` runs every current non-deprecated ESLint core rule as an error with no inline overrides.
 - `make lint-ast` runs the complete error-only ast-grep scan; `make test-ast-rules` checks its rule fixtures and snapshots.
 - `make lint-docs` checks Markdown policy; `make lint-structure-app` and `make lint-structure-tooling` isolate structure feedback. `make lint-structure` combines them.
+- `make pre-commit-source-{format,lint,ast}` checks exact staged non-test files with applicable tools, in that order.
+- `make pre-commit-test-{format,lint,ast}` checks exact staged test files with applicable tools, in that order.
+- `make pre-commit-test` runs directly staged and conservatively affected domain tests selected from CodeGraph, repository ownership, and Cargo metadata.
 - `make lint-android` validates Android SDK, probe, and AVD pins; `make android-preflight` checks host and KVM support.
 - `make android-bootstrap` fetches pinned host tools; `make android-orchestrator-provision` prepares the pinned Mobly controller.
 - After `make android-license`, `make android-provision` prepares the SDK, probe, and AVDs; `make android-seed` records clean first boots.

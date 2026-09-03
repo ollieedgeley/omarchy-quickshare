@@ -76,33 +76,32 @@ Hooks are non-interactive, check-only, and fail on the first unhandled error. Th
 
 Normal development must not use `--no-verify`. It bypasses the project's only automated verification before GitHub receives the change.
 
+## OMP per-edit policy
+
+`lsp.formatOnWrite` is disabled. The post-edit hook runs check-only exact-file formatting and lint feedback and returns a tool error on failure; it never rewrites files after OMP snapshots.
+
 ## Staged snapshot
 
-The pre-commit input is the Git index, not every working-tree change. Collect staged additions, copies, modifications, renames, and type changes relative to `HEAD`. For the first commit, compare against Git's empty tree.
-
-Run checks against an ignored staged-tree mirror at `.cache/gates/pre-commit-tree/`. Its stable path lets CodeGraph reuse one database instead of rebuilding an index in a new temporary directory for every commit. Never run a mutating formatter against the developer's working tree from a hook. If a staged Rust file also has unstaged edits, fail before analysis. CodeGraph and rust-analyzer must analyze the same staged tree that will enter the commit.
+Staged quality paths are the added, copied, modified, renamed, or type-changed entries whose after-snapshot exists in the index. Staged source files are the non-test members of that set. Staged tests are directly staged test files. Extended tests are additional test endpoints selected by impact analysis.
 
 `make hooks-install` creates the mirror from `HEAD`, or Git's empty tree before the first commit, and performs its initial full CodeGraph index. At the start of each pre-commit run, the hook refreshes the mirror's tracked files from the exact staged snapshot while preserving its local `.codegraph/` database, then runs `codegraph sync --quiet` inside the mirror. Routine pre-commit runs never perform a full re-index. A missing, corrupt, or incompatible mirror index fails with the exact setup command needed to rebuild it.
+The hook checks that the mirror tree matches the Git index before trusting analysis. CodeGraph and compiler-backed staged gates run only inside that mirror. The dirty working tree and the repository root's developer-facing CodeGraph index are not pre-commit inputs.
 
-The hook checks that the mirror tree matches the Git index before trusting analysis. CodeGraph and rust-analyzer run only inside that mirror. The dirty working tree and the repository root's developer-facing CodeGraph index are not pre-commit inputs.
-
-Deleted files remain inputs to impact analysis even though formatting and linting cannot read them. Renames contribute both the old and new paths when dependency selection needs them.
+Deleted files remain impact-analysis inputs even though exact-file formatting and linting cannot read them. Renames contribute both old and new paths.
 
 ## Pre-commit gate order
 
 The top-level `make pre-commit` command is an aggregate and may exceed one minute. Each child test gate remains directly runnable, is listed in `make help`, and has the existing 60-second execution budget. Prepared-environment lifecycle time is measured separately under the connection-test policy.
 
+The public pre-commit sequence is prepare, structure, source-format/lint/ast, test-format/lint/ast, then affected tests.
+
 Run child gates in this fail-fast order:
 
-1. Validate the staged snapshot, hook configuration, and changed-file list.
-2. Refresh the staged-tree mirror, incrementally sync its CodeGraph index, and prove that the mirror matches the Git index.
-3. Check file-size limits for changed project-authored files.
-4. Check formatting for changed files with their pinned formatter.
-5. Run every current ESLint core rule against changed JavaScript files.
-6. Run ast-grep against changed Rust files with every applicable rule at error severity.
-7. Run rust-analyzer diagnostics for changed Rust files.
-8. Run compiler and Clippy checks for the smallest Cargo targets that own or consume those files.
-9. Run directly changed tests and every test target selected by impact analysis.
+1. Prepare (staged snapshot validation, mirror refresh, CodeGraph sync, index match proof).
+2. Structure (file-size limits for changed project-authored files).
+3. Source gates: `pre-commit-source-format` (format-source), `pre-commit-source-lint` (lint-source), `pre-commit-source-ast` (ast-source).
+4. Staged-test gates: `pre-commit-test-format` (format-tests), `pre-commit-test-lint` (lint-tests), `pre-commit-test-ast` (ast-tests).
+5. Affected tests via `pre-commit-test` (test) using `computeSelectionRecord` (records `{path,language,domain}` in stagedSources/stagedTests/extendedTests), `parseAffectedJson` (only affected test paths), `packageSelection` (Rust owner/downstream packages).
 
 Behavior development begins with the smallest in-process test at an external
 seam. Deterministic fakes, stubs, and mocks provide routine feedback, while the
@@ -111,23 +110,17 @@ simulator or oracle suite. Broaden to those slower layers after the behavior is
 green; use their results to correct a drifting test double rather than weakening
 the shared scenario.
 
-The hook prints each selected command before running it. On failure it prints the narrow Make target that reproduces the result. It also records the changed files, Cargo owners, selected tests, selection source, fallback reason, and gate timings.
+The hook prints each selected command before running it. It records staged sources, staged tests, extended tests, CodeGraph inputs and candidates, traversal count, fallback reason, selected Cargo packages, languages, domains, and runnable Node test paths in `.cache/gates/pre-commit-selection.json`.
 
 ### Formatting and linting granularity
 
 Rustfmt can check staged `.rs` files directly in the staged-tree mirror. Cargo's formatter can select packages but does not expose a changed-file selector; see the official [`cargo fmt` options](https://doc.rust-lang.org/cargo/commands/cargo-fmt.html).
 
-Prettier receives only changed files in the formats it supports, while ESLint receives only changed, existing JavaScript paths from the staged mirror. A JavaScript change also selects the fast tooling contracts. Rust-only application changes do not run those JavaScript checks. Executable configuration and contract tests own code-metric policy.
+Prettier receives only changed files in the formats it supports. ESLint receives only changed, existing JavaScript or TypeScript paths from the staged mirror. Ruff receives only changed Python paths. These checks run separately for staged sources and staged tests; they never widen to unrelated files. Tests are selected separately through CodeGraph and domain ownership.
 
-Clippy and rustc analyze compilation units rather than independent source files. Map a changed file to the smallest valid Cargo target:
+Cargo check, Clippy, and rustdoc operate on packages rather than independent source files. `packageSelection` maps changed Rust paths to their owning workspace packages and transitive downstream workspace packages. Shared workspace inputs or Rust paths without an owner conservatively select every workspace package. `rust-lints.mjs` receives all selected `--package` arguments in one invocation. Rust-analyzer's diagnostics command has no stable package selector, so package-scoped pre-commit runs omit it; the workspace-wide `make lint-rust` gate retains rust-analyzer diagnostics.
 
-- a library-only source change selects that package's library target
-- a binary-only source change selects that binary target
-- an integration-test change selects that test target
-- a shared module selects every target that compiles it
-- `Cargo.toml`, `Cargo.lock`, `build.rs`, features, or shared generated inputs select every target in the affected package
-
-Use the complete lint flags from the Rust lint policy for every selected target. Do not replace Clippy with LSP diagnostics. Clippy remains the compiler-backed lint result, as described in the [official Clippy usage guide](https://doc.rust-lang.org/clippy/usage.html).
+Use the complete lint flags from the Rust lint policy for every selected package. Do not replace Clippy with LSP diagnostics. Clippy remains the compiler-backed lint result, as described in the [official Clippy usage guide](https://doc.rust-lang.org/clippy/usage.html).
 
 ## Affected-test selection
 
@@ -135,31 +128,27 @@ Staged files define the change, not the test boundary. A project-owned selector 
 
 Start with every staged test file. For staged production files, take the union of these inputs:
 
-1. Run `codegraph affected --json` inside the synced staged-tree mirror. It walks transitive dependents from each changed path and returns candidate test-file paths. Set the traversal depth explicitly and prove it with repository fixture graphs rather than relying on CodeGraph's default depth of five.
-2. rust-analyzer identifies the changed symbols and follows references and incoming calls, including references represented through Rust macro expansion where supported.
-3. Cargo metadata maps changed files and candidate test files to owning packages, downstream packages, and addressable library, binary, integration-test, or documentation-test targets.
+1. Run `codegraph affected --json` inside the synced staged-tree mirror, passing every staged path in a language CodeGraph indexes. It walks transitive dependents from each changed path and returns candidate test-file paths. The hook sets the traversal depth to 32 rather than relying on CodeGraph's default depth of five.
+2. Repository-domain ownership always contributes its executable test suites. This supplies conservative coverage for unindexed files, empty CodeGraph results, query failures, deletions, and renames, and it may cross languages; for example, a QML plugin change selects its JavaScript release contracts.
+3. Cargo metadata maps changed Rust files and candidate Rust tests to owning and downstream workspace packages.
 
-The installed CodeGraph 1.6.0 implementation walks dependent files through resolved cross-file symbol edges. It does not walk dependencies, inspect Git, refresh its database, understand Cargo targets, or run tests. Its default path matcher also misses a relative path beginning with `tests/`. The project selector supplies an explicit Rust test-path filter and verifies it against root and nested Cargo integration-test fixtures. See [CodeGraph affected-test semantics](research/codegraph-affected-semantics.md) for the pinned behavior and sources.
+The installed CodeGraph 1.6.0 implementation walks dependent files through resolved cross-file symbol edges. It does not walk dependencies, inspect Git, refresh its database, understand Cargo targets, or run tests. Its default path matcher also misses a relative path beginning with `tests/`. Pre-commit uses no `--filter` because `**/*.rs` makes the changed source a terminal match that prevents traversal. See [CodeGraph affected-test semantics](research/codegraph-affected-semantics.md) for the pinned behavior and sources.
 
-Rust-analyzer's [Find All References](https://rust-analyzer.github.io/book/features.html#find-all-references) supplies compiler-aware symbol references. Standard LSP references and incoming-call requests are defined by the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/).
+Use a union, never an intersection. One input finding a test is enough to run it. CodeGraph widens the candidate test set through stored symbol edges. Repository domains cover non-indexed and cross-language seams. Cargo owns Rust package scope. None of them proves runtime behavior.
 
-Use a union, never an intersection. One input finding a test is enough to run it. CodeGraph widens the candidate set through stored symbol edges. Rust-analyzer contributes name resolution and macro-aware references. Cargo owns the final package and target scope. None of them proves runtime behavior.
-
-CodeGraph cannot name unit tests embedded in production `.rs` files or Rust doc tests because neither has a separate test-file path. Every production change therefore runs the owning package's unit and doc tests even when CodeGraph returns integration-test candidates. The selector maps every candidate path through Cargo metadata before invoking Cargo; it never treats a path or filename as a runnable target by itself.
+CodeGraph cannot name unit tests embedded in production `.rs` files or Rust doc tests because neither has a separate test-file path. Every selected Rust package therefore runs all-target and documentation tests even when CodeGraph returns integration-test candidates.
 
 Fall back conservatively:
 
 - If the staged-tree mirror or its index is missing, corrupt, or incompatible, stop with the setup command that recreates it.
-- If CodeGraph is stale, does not match the staged tree, reports a query or sync error, or cannot classify a changed file, run all tests for every owning and downstream package and record the fallback reason.
-- If rust-analyzer is absent, unhealthy, times out, or cannot resolve a changed symbol, run all tests for every owning package.
-- If no test is selected for a production change, run the owning package's full tests. An empty selection never means "nothing to test."
-- For a deletion or rename, use the old and new paths as selector inputs, then run all owning and downstream package tests when the after-snapshot cannot prove the old path's impact.
-- For an unmapped path, public seam, shared protocol type, workspace manifest, lockfile, feature graph, build script, toolchain file, or test selector change, run all downstream package tests.
-- For a hook, impact-selector, or gate change, run its contract fixtures and the full local suite before commit.
+- A CodeGraph query failure, invalid response, empty candidate set, unsupported path, deletion, or rename still retains repository-domain test selection.
+- A Rust path without a package owner, or a workspace manifest, lockfile, toolchain file, or shared Rust input, selects every workspace package.
+- A production Rust change always runs its owning and downstream packages even when CodeGraph returns no test endpoint.
+- A hook, impact-selector, or gate change selects the tooling contract tests.
 
-Use Cargo's package and target selectors to run the result, such as `--lib`, `--bin`, `--test`, and `--doc`. The [Cargo test reference](https://doc.rust-lang.org/cargo/commands/cargo-test.html) defines these addressable units. If the selected unit still exceeds 60 seconds, split it at a real test responsibility and document the new gate in `AGENTS.md`.
+Cargo runs every selected package with `--all-targets --all-features --locked`, followed by documentation tests for packages that expose a library. Node runs each selected test file separately. Both loops stop at the first failure.
 
-Before application development starts, the hook setup must pin CodeGraph and rust-analyzer, build the staged-tree mirror and index, and prove affected-test selection against fixture repositories. The fixtures must cover mirror reuse and freshness, direct and transitive dependents, downstream packages, root and nested integration tests, embedded unit tests, doc tests, partial staging rejection, renamed and deleted files, changed tests, candidate-to-Cargo mapping, empty results, stale indexes, and tool failure.
+Contract fixtures cover staged-mirror reuse, exact index bytes, partial Rust staging rejection, source/test phase separation, affected-response parsing, repository-domain union when CodeGraph returns candidates, cross-language selection records, Cargo owner/downstream mapping, workspace fallback logic, and exact pre-commit target order.
 
 ## Pre-push verification and build
 

@@ -45,11 +45,10 @@ DOCUMENT_FILES = $(REPOSITORY_FILES) -- '*.md'
 .PHONY: test-network-lan test-network-hotspot-client
 .PHONY: test-network-hotspot-owner test-network-wifi-direct-client
 .PHONY: verify-app verify-tooling verify build commit-msg
-.PHONY: pre-commit pre-commit-prepare pre-commit-structure
-.PHONY: pre-commit-format pre-commit-javascript pre-commit-python
-.PHONY: pre-commit-ast
-.PHONY: pre-commit-rust pre-commit-test pre-push
-
+.PHONY: pre-commit-source-format pre-commit-source-lint pre-commit-source-ast
+.PHONY: pre-commit-test-format pre-commit-test-lint pre-commit-test-ast
+.PHONY: pre-commit-test
+.PHONY: pre-commit pre-commit-prepare pre-commit-structure pre-push
 help: ## List public and targeted gates.
 	@awk 'BEGIN {FS = ":.*## "} \
 		/^[a-zA-Z0-9_.-]+:.*## / {printf "%-28s %s\n", $$1, $$2}' \
@@ -416,39 +415,38 @@ build: ## Build the complete locked workspace after verification.
 commit-msg: ## Validate COMMIT_MSG_FILE as a Conventional Commit message.
 	@$(TIMEOUT) node tools/hooks/commit-msg.mjs "$(COMMIT_MSG_FILE)"
 
-pre-commit: ## Check the staged snapshot and its conservatively affected tests.
-	@$(MAKE) pre-commit-prepare
-	@$(MAKE) pre-commit-structure
-	@$(MAKE) pre-commit-format
-	@$(MAKE) pre-commit-javascript
-	@$(MAKE) pre-commit-python
-	@$(MAKE) pre-commit-ast
-	@$(MAKE) pre-commit-rust
-	@$(MAKE) pre-commit-test
-
 pre-commit-prepare: ## Prepare and CodeGraph-sync the staged snapshot.
 	@CODEGRAPH=$(CODEGRAPH) $(TIMEOUT) node tools/hooks/prepare-staged.mjs
 
 pre-commit-structure: ## Check staged file and repository structure contracts.
 	@$(TIMEOUT) node tools/hooks/run-staged.mjs structure
 
-pre-commit-format: ## Check formatter output for staged files only.
-	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs format
+pre-commit-source-format: ## Check formatter output for staged source files.
+	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs format-source
 
-pre-commit-javascript: ## Run strict ESLint against staged JavaScript only.
-	@$(TIMEOUT) node tools/hooks/run-staged.mjs javascript
+pre-commit-source-lint: ## Lint staged source files and Rust owners.
+	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs lint-source
 
-pre-commit-python: ## Run strict Ruff checks against staged Python only.
-	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs python
+pre-commit-source-ast: ## Scan staged sources with applicable AST rules.
+	@$(TIMEOUT) node tools/hooks/run-staged.mjs ast-source
 
-pre-commit-ast: ## Run strict ast-grep rules against staged Rust files.
-	@$(TIMEOUT) node tools/hooks/run-staged.mjs ast
+pre-commit-test-format: ## Check formatter output for staged test files.
+	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs format-tests
 
-pre-commit-rust: ## Run compiler-backed diagnostics for staged Rust owners.
-	@$(TIMEOUT) node tools/hooks/run-staged.mjs rust
+pre-commit-test-lint: ## Lint staged test files and new Rust owners.
+	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs lint-tests
 
-pre-commit-test: ## Run changed and conservatively affected tests.
+pre-commit-test-ast: ## Scan staged tests with applicable AST rules.
+	@$(TIMEOUT) node tools/hooks/run-staged.mjs ast-tests
+
+pre-commit-test: ## Run staged and conservatively affected domain tests.
 	@$(TIMEOUT) node tools/hooks/run-staged.mjs test
+
+pre-commit: pre-commit-prepare pre-commit-structure \
+	pre-commit-source-format pre-commit-source-lint pre-commit-source-ast \
+	pre-commit-test-format pre-commit-test-lint pre-commit-test-ast \
+	pre-commit-test
+pre-commit: ## Check the staged snapshot and its conservatively affected tests.
 
 pre-push: ## Verify, then build, every exact local commit tip being pushed.
 	@node tools/hooks/pre-push.mjs

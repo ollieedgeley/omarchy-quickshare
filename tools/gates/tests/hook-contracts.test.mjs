@@ -2,13 +2,24 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import test, { describe, it } from "node:test";
 
 import blockMainGates from "../../../.omp/hooks/pre/block-main-gates.js";
-import { packageSelection, parseAffectedJson } from "../../hooks/affected.mjs";
+import {
+  codeGraphAffectedArgs,
+  computeSelectionRecord,
+  getLanguage,
+  getRepositoryDomain,
+  isCodeGraphIndexableSource,
+  isTestPath,
+  packageSelection,
+  parseAffectedJson,
+  selectRustPackages,
+} from "../../hooks/affected.mjs";
 import { validateCommitMessage } from "../../hooks/commit-msg.mjs";
 import { parseNameStatus } from "../../hooks/prepare-staged.mjs";
 import { pushedCommits } from "../../hooks/pre-push.mjs";
+import { parsePackageArgs } from "../rust-lints.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const OVERLONG_SUBJECT_LENGTH = 70;
@@ -38,6 +49,22 @@ const AGGREGATE_GATE_PATTERN = /Git hooks own/u;
 const OMP_TOOLING_PATTERN = /"\.omp\/"/u;
 const FORMAT_SPLIT_TEST =
   "Formatting aggregates keep documentation separate from tooling";
+const CODEGRAPH_AFFECTED_TESTS_TEST =
+  "CodeGraph candidate parsing uses the documented affectedTests field";
+const RUST_LINTS_DEDUPE_TEST =
+  "rust-lints parser deduplicates packages and preserves workspace mode";
+const PRE_COMMIT_SOURCE_FORMAT_PATTERN = /pre-commit-source-format/u;
+const PRE_COMMIT_SOURCE_LINT_PATTERN = /pre-commit-source-lint/u;
+const PRE_COMMIT_SOURCE_AST_PATTERN = /pre-commit-source-ast/u;
+const PRE_COMMIT_TEST_FORMAT_PATTERN = /pre-commit-test-format/u;
+const PRE_COMMIT_TEST_LINT_PATTERN = /pre-commit-test-lint/u;
+const PRE_COMMIT_TEST_AST_PATTERN = /pre-commit-test-ast/u;
+const PRE_COMMIT_TEST_PATTERN = /pre-commit-test/u;
+const PRE_COMMIT_FORMAT_NEGATIVE_PATTERN = /pre-commit-format(?!-source)/u;
+const PRE_COMMIT_JAVASCRIPT_PATTERN = /pre-commit-javascript/u;
+const PRE_COMMIT_PYTHON_PATTERN = /pre-commit-python/u;
+const PRE_COMMIT_AST_NEGATIVE_PATTERN = /pre-commit-ast(?!-)/u;
+const PRE_COMMIT_RUST_PATTERN = /pre-commit-rust/u;
 
 function gateGuardResult(command, toolName = "bash") {
   let handler = null;
@@ -62,13 +89,11 @@ function cargoPackage({ id, manifestPath, name, targetKinds = ["lib"] }) {
 }
 
 function makePrerequisites(source, target) {
-  return (
-    source
-      .replaceAll(MAKE_CONTINUATION_PATTERN, " ")
-      .split("\n")
-      .find((line) => line.startsWith(`${target}:`) && !line.includes("##")) ??
-    ""
-  );
+  return source
+    .replaceAll(MAKE_CONTINUATION_PATTERN, " ")
+    .split("\n")
+    .filter((line) => line.startsWith(`${target}:`) && !line.includes("##"))
+    .join(" ");
 }
 
 test("Conventional Commit validation accepts the project types", () => {
@@ -117,11 +142,11 @@ test("staged status parsing preserves both sides of renames", () => {
   );
 });
 
-test("CodeGraph candidate parsing accepts nested JSON response shapes", () => {
+test(CODEGRAPH_AFFECTED_TESTS_TEST, () => {
   assert.deepEqual(
     parseAffectedJson({
-      affected: [{ path: "tests/direct.rs" }, "tests/transitive.rs"],
-    }).sort(),
+      affectedTests: ["tests/direct.rs", "tests/transitive.rs"],
+    }),
     ["tests/direct.rs", "tests/transitive.rs"],
   );
 });
@@ -204,6 +229,7 @@ test(PRE_PUSH_ENVIRONMENT_TEST, () => {
   assert.match(source, TEST_ENV_PATTERN);
   assert.doesNotMatch(source, BROAD_CACHE_PATTERN);
 });
+
 test(VERIFY_ORDER_TEST, () => {
   const makefile = readFileSync(join(ROOT, "Makefile"), "utf8");
   const prerequisites = makePrerequisites(makefile, "verify");
@@ -261,7 +287,8 @@ test("Python tooling selects all pinned Ruff rules", () => {
   assert.match(setup, RUFF_VERSION_PATTERN);
   assert.match(setup, RUFF_DIGEST_PATTERN);
   assert.match(makefile, RUFF_VERIFY_PATTERN);
-  assert.ok(makefile.includes("pre-commit-python"));
+  assert.ok(makefile.includes("pre-commit-source-lint"));
+  assert.ok(makefile.includes("pre-commit-test-lint"));
 });
 
 test("OMP blocks direct aggregate Make gates", () => {
@@ -299,8 +326,207 @@ test("OMP allows narrow gates and Git-owned aggregate gates", () => {
 
 test("staged tooling selection includes OMP hooks", () => {
   const source = readFileSync(
-    join(ROOT, "tools", "hooks", "run-staged.mjs"),
+    join(ROOT, "tools", "hooks", "affected.mjs"),
     "utf8",
   );
   assert.match(source, OMP_TOOLING_PATTERN);
+});
+
+test("rust-lints parser rejects malformed or empty package arguments", () => {
+  assert.throws(() => parsePackageArgs(["--package", ""]));
+  assert.throws(() => parsePackageArgs(["-p", "--bad"]));
+  assert.throws(() => parsePackageArgs(["--package"]));
+});
+
+test(RUST_LINTS_DEDUPE_TEST, () => {
+  assert.deepEqual(parsePackageArgs([]), []);
+  assert.deepEqual(
+    parsePackageArgs(["--package", "foo", "-p", "bar", "--package", "foo"]),
+    ["foo", "bar"],
+  );
+});
+
+test("rust-lints parser rejects unknown and positional arguments", () => {
+  assert.throws(() => parsePackageArgs(["foo"]));
+  assert.throws(() => parsePackageArgs(["--other"]));
+  assert.throws(() => parsePackageArgs(["--package", "ok", "extra"]));
+});
+
+test("pre-commit uses ordered source and test phase targets", () => {
+  const makefile = readFileSync(join(ROOT, "Makefile"), "utf8");
+  const precommit = makePrerequisites(makefile, "pre-commit");
+  assert.match(precommit, PRE_COMMIT_SOURCE_FORMAT_PATTERN);
+  assert.match(precommit, PRE_COMMIT_SOURCE_LINT_PATTERN);
+  assert.match(precommit, PRE_COMMIT_SOURCE_AST_PATTERN);
+  assert.match(precommit, PRE_COMMIT_TEST_FORMAT_PATTERN);
+  assert.match(precommit, PRE_COMMIT_TEST_LINT_PATTERN);
+  assert.match(precommit, PRE_COMMIT_TEST_AST_PATTERN);
+  assert.match(precommit, PRE_COMMIT_TEST_PATTERN);
+  assert.doesNotMatch(precommit, PRE_COMMIT_FORMAT_NEGATIVE_PATTERN);
+  assert.doesNotMatch(precommit, PRE_COMMIT_JAVASCRIPT_PATTERN);
+  assert.doesNotMatch(precommit, PRE_COMMIT_PYTHON_PATTERN);
+  assert.doesNotMatch(precommit, PRE_COMMIT_AST_NEGATIVE_PATTERN);
+  assert.doesNotMatch(precommit, PRE_COMMIT_RUST_PATTERN);
+});
+describe("codeGraphAffectedArgs", () => {
+  it("passes every indexed language in one unfiltered affected query", () => {
+    const args = codeGraphAffectedArgs("/mirror", [
+      "src/lib.rs",
+      "tools/check.mjs",
+      "tools/probe.py",
+    ]);
+    assert.deepStrictEqual(args, [
+      "affected",
+      "--path",
+      "/mirror",
+      "--depth",
+      "32",
+      "--json",
+      "src/lib.rs",
+      "tools/check.mjs",
+      "tools/probe.py",
+    ]);
+    assert.equal(args.includes("--filter"), false);
+  });
+});
+
+describe("selectRustPackages", () => {
+  it("widens ownerless Rust inputs to all workspace packages", () => {
+    const metadata = Object.fromEntries([
+      [
+        "packages",
+        [
+          Object.fromEntries([
+            ["id", "core"],
+            ["manifest_path", "/repo/crates/core/Cargo.toml"],
+            ["name", "core"],
+            ["targets", [{ kind: ["lib"] }]],
+          ]),
+          Object.fromEntries([
+            ["id", "app"],
+            ["manifest_path", "/repo/crates/app/Cargo.toml"],
+            ["name", "app"],
+            ["targets", [{ kind: ["bin"] }]],
+          ]),
+        ],
+      ],
+      ["workspace_members", ["core", "app"]],
+    ]);
+    assert.deepStrictEqual(
+      selectRustPackages(metadata, ["Cargo.toml"], "/repo"),
+      [
+        { hasLibrary: false, name: "app", root: "crates/app" },
+        { hasLibrary: true, name: "core", root: "crates/core" },
+      ],
+    );
+    assert.deepStrictEqual(
+      selectRustPackages(metadata, ["README.md"], "/repo"),
+      [],
+    );
+  });
+});
+
+describe("isCodeGraphIndexableSource", () => {
+  it("recognizes indexed code and excludes generated paths", () => {
+    assert.equal(isCodeGraphIndexableSource("src/foo.rs"), true);
+    assert.equal(isCodeGraphIndexableSource("tests/bar.test.js"), true);
+    assert.equal(isCodeGraphIndexableSource(".omp/tools/hooks/x.mjs"), true);
+    assert.equal(isCodeGraphIndexableSource(".hidden"), false);
+    assert.equal(isCodeGraphIndexableSource("docs/readme.md"), false);
+    assert.equal(isCodeGraphIndexableSource("node_modules/x"), false);
+    assert.equal(isCodeGraphIndexableSource(""), false);
+  });
+});
+
+describe("isTestPath", () => {
+  it("recognizes root and nested tests across languages", () => {
+    assert.equal(isTestPath("tests/foo.test.js"), true);
+    assert.equal(isTestPath("tests/nested/bar.spec.ts"), true);
+    assert.equal(isTestPath("src/baz_test.py"), true);
+    assert.equal(isTestPath("foo_test.py"), true);
+    assert.equal(isTestPath("test_bar.rs"), true);
+    assert.equal(isTestPath("tests/foo_test.rs"), true);
+    assert.equal(isTestPath("tests/environments/env1/quux_test.py"), true);
+    assert.equal(isTestPath("src/main.rs"), false);
+    assert.equal(isTestPath("tests/helpers.js"), true);
+  });
+});
+
+describe("getLanguage", () => {
+  it("detects language from every family", () => {
+    assert.equal(getLanguage("x.rs"), "rust");
+    assert.equal(getLanguage("y_test.py"), "python");
+    assert.equal(getLanguage("z.test.js"), "javascript");
+    assert.equal(getLanguage("w.sh"), "shell");
+    assert.equal(getLanguage("lib.c"), "cpp");
+    assert.equal(getLanguage("mod.cpp"), "cpp");
+    assert.equal(getLanguage("App.java"), "java");
+    assert.equal(getLanguage("Mod.kt"), "kotlin");
+    assert.equal(getLanguage("unknown"), "unknown");
+    assert.equal(getLanguage("Panel.qml"), "qml");
+  });
+});
+describe("getRepositoryDomain", () => {
+  it("classifies repository domains with segment-safe precedence", () => {
+    assert.equal(
+      getRepositoryDomain("tests/environments/ci/setup.js"),
+      "tests/environments/ci",
+    );
+    assert.equal(
+      getRepositoryDomain("tests/suites/unit/foo.rs"),
+      "tests/suites/unit",
+    );
+    assert.equal(getRepositoryDomain("tools/release/foo"), "plugin-release");
+    assert.equal(
+      getRepositoryDomain("packaging/omarchy-plugin/bar"),
+      "plugin-release",
+    );
+    assert.equal(getRepositoryDomain("tools/oracle/q.rs"), "oracle");
+    assert.equal(getRepositoryDomain("tools/oracle/manifest.json"), "oracle");
+    assert.equal(getRepositoryDomain("crates/app/main.rs"), "crates/app");
+    assert.equal(
+      getRepositoryDomain("crates/core/net/src/lib.rs"),
+      "crates/core/net",
+    );
+    assert.equal(
+      getRepositoryDomain(".omp/tools/hooks/affected.mjs"),
+      "tooling",
+    );
+    assert.equal(getRepositoryDomain("tools/hooks/affected.mjs"), "tooling");
+    assert.equal(getRepositoryDomain("biome.json"), "tooling");
+    assert.equal(getRepositoryDomain("nested/config.json"), "other");
+    assert.equal(getRepositoryDomain("nested/package.json"), "other");
+    assert.equal(getRepositoryDomain("src/mytarget/foo.rs"), "other");
+    assert.equal(getRepositoryDomain("Cargo.toml"), "cargo-workspace");
+    assert.equal(getRepositoryDomain("package.json"), "tooling");
+    assert.equal(getRepositoryDomain("README.md"), "docs");
+    assert.equal(getRepositoryDomain("other.rs"), "other");
+  });
+});
+
+describe("computeSelectionRecord", () => {
+  it("separates staged sources, staged tests, and extended tests", () => {
+    const staged = [
+      "src/main.rs",
+      "tests/a.test.js",
+      "b_test.py",
+      "tests/a.test.js",
+      "src/main.rs",
+      "README.md",
+    ];
+    const affected = ["tests/a.test.js", "c.spec.ts", "d_test.py", "src/e.rs"];
+    const rec = computeSelectionRecord(staged, affected);
+    assert.deepStrictEqual(rec.stagedSources, [
+      { path: "README.md", language: "unknown", domain: "docs" },
+      { path: "src/main.rs", language: "rust", domain: "other" },
+    ]);
+    assert.deepStrictEqual(rec.stagedTests, [
+      { path: "b_test.py", language: "python", domain: "other" },
+      { path: "tests/a.test.js", language: "javascript", domain: "other" },
+    ]);
+    assert.deepStrictEqual(rec.extendedTests, [
+      { path: "c.spec.ts", language: "javascript", domain: "other" },
+      { path: "d_test.py", language: "python", domain: "other" },
+    ]);
+  });
 });

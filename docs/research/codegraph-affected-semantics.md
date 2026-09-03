@@ -1,14 +1,14 @@
 # CodeGraph affected-test semantics
 
-Research cutoff: 2026-09-02
+Research cutoff: 2026-09-03
 
 Installed version: CodeGraph 1.6.0, released 2026-08-26 and marked latest at the cutoff. See the [v1.6.0 release](https://github.com/colbymchenry/codegraph/releases/tag/v1.6.0).
 
 ## Conclusion
 
-CodeGraph supplies graph information and candidate test-file paths. It does not inspect the Git staging area, understand Cargo test targets, choose the final safe Rust test scope, or run tests. A project-owned pre-commit program must do those jobs.
+CodeGraph supplies graph information and candidate test-file paths. It does not inspect the Git staging area, understand Cargo test targets, choose the final safe Rust test scope, or run tests. A project-owned pre-commit program must do those jobs. CodeGraph runs against every indexed staged code path, but `affected` returns only test endpoints plus the traversal count; it does not expose the full intermediate extended-file set. The project selector supplies Git/index freshness, domains, runner mapping, and conservative fallbacks.
 
-Version 1.6.0 does include a useful `codegraph affected` CLI command. It is narrower than our current wording suggests. Given changed file paths, it walks transitive file dependents and prints paths that match its test-file heuristic. The command is an input to test selection, not the test selector as a whole.
+Version 1.6.0 does include a useful `codegraph affected` CLI command. It is narrower than our current wording suggests. Given changed file paths, it walks transitive file dependents and prints paths that match its test-file heuristic. The command is an input to test selection, not the test selector as a whole. Tests are selected by dependency or domain ownership even when their implementation language differs from the staged file (for example, a QML change can require JS tests).
 
 ## Documented behavior
 
@@ -33,12 +33,8 @@ The command does not inspect Rust attributes, Cargo metadata, test registrations
 - `.spec.` and `.test.` in a filename;
 - `/__tests__/`, `/test/`, `/tests/`, `/e2e/`, and `/spec/` within a path.
 
-Supplying `--filter` replaces that built-in recognition with one glob-derived regular expression. It does not add a Cargo-aware classifier. See the [test-path classifier](https://github.com/colbymchenry/codegraph/blob/v1.6.0/src/bin/codegraph.ts#L2246-L2271).
+Supplying `--filter` replaces that built-in recognition with one glob-derived regular expression. The prior `--filter **/*.rs` guidance is incorrect: that filter makes the changed Rust source itself a terminal match and prevents traversal to dependents, so pre-commit uses no filter. See the [test-path classifier](https://github.com/colbymchenry/codegraph/blob/v1.6.0/src/bin/codegraph.ts#L2246-L2271).
 
-This creates Rust-specific gaps:
-
-- Unit tests inside `src/*.rs` have the same path as production code, so `affected` cannot return them as separate tests.
-- Doc tests have no separate test-file path.
 - The default `/tests/` expression does not match a relative path beginning with `tests/`. Standard top-level Cargo integration tests therefore need an explicit filter or project wrapper.
 - Even when a test path is returned, CodeGraph does not map it to a Cargo package or target invocation.
 
@@ -68,7 +64,7 @@ These are project recommendations inferred from the facts above:
 1. Let the hook collect staged paths. Use the Git index explicitly. Do not say CodeGraph finds staged changes.
 2. Let a project-owned selector call the CodeGraph CLI and parse `--json`. Do not use natural-language `explore` output in a hook.
 3. Check index freshness before trusting candidates. A failed, stale, or incomplete graph triggers a conservative Cargo fallback.
-4. Treat CodeGraph output as one candidate set. Union it with changed tests, Cargo package and target ownership, downstream workspace packages, and rust-analyzer references where available.
+4. Treat CodeGraph output as one candidate set. Union it with changed tests, repository-domain ownership, and Cargo owner/downstream packages.
 5. Run the tests in the hook. Map integration-test paths through Cargo metadata instead of assuming a filename is a target name.
 6. Always cover Rust unit and doc tests at package scope because CodeGraph cannot name them as separate files.
 7. Fall back for partial staging, deletions, renames, manifests, lockfiles, toolchain files, build configuration, unindexed paths, unresolved mappings, empty results, and tool errors.
@@ -78,8 +74,8 @@ These are project recommendations inferred from the facts above:
 
 The repository instructions should say:
 
-- `codegraph affected` reports candidate test files reached through transitive dependents. It does not inspect staged content or run tests.
-- The pre-commit selector supplies staged paths, checks graph freshness, combines CodeGraph with Cargo and rust-analyzer information, chooses the safe test scope, and invokes Cargo.
+- `codegraph affected` reports candidate test files reached through transitive dependents. It does not inspect staged content or run tests. `parseAffectedJson` returns only affected test paths; `computeSelectionRecord` returns records `{path,language,domain}` in `stagedSources`, `stagedTests`, `extendedTests`.
+- The pre-commit selector supplies staged paths, checks graph freshness, combines CodeGraph with repository domains and Cargo metadata, chooses the safe test scope, and invokes the runners. `packageSelection` maps Rust paths to owner/downstream packages.
 - Rust unit and doc tests require a package-level fallback. Standard `tests/` integration paths need project-owned recognition because the v1.6.0 default misses a path beginning with `tests/`.
 - Empty, stale, failed, partially staged, deleted, renamed, or unmapped input broadens the gate. It never narrows it to zero.
-- The hook uses the CLI `affected` command. `codegraph_explore` remains the agent-facing tool for understanding code and blast radius.
+- The hook uses the CLI `affected` command. `codegraph_explore` remains the agent-facing tool for understanding code and blast radius. `rust-lints.mjs --package NAME` narrows compiler-backed lints.

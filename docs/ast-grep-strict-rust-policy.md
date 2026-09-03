@@ -1,6 +1,6 @@
 # Strict ast-grep policy for Rust
 
-Research date: 2026-09-02
+Research date: 2026-09-03
 
 ## Decision
 
@@ -23,6 +23,8 @@ The following sections are exhaustive for ast-grep 0.45.3:
 - rule-object matchers
 - the official Rust catalog
 - severity levels, built-in suppression checks, and official rule-test facilities
+
+ast-grep has no built-in all-rules catalog. Every committed applicable rule runs at severity error. New language rules are added only for justified structural invariants not covered by ESLint, Ruff, Clippy, or equivalent language tooling.
 
 The proposed project rules are not an exhaustive list of every rule that could ever be written. ast-grep's matchers compose recursively, so there is no finite shipped list of all possible Rust rules. The proposals are the complete starting backlog justified by the current project architecture. Add rules when a confirmed seam, defect, or repeated review finding gives them a precise contract.
 
