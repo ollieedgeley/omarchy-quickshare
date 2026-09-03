@@ -68,6 +68,7 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - Use the tracked Husky hooks and the Conventional Commit types defined in the development workflow. Do not add hosted CI; local verification is authoritative.
 - Pre-commit checks the staged snapshot and the wider affected test set selected by the development workflow. Treat CodeGraph output as candidate data, not the final test scope.
 - Pre-push verifies the exact commit with `make verify`, then runs `make build` only after verification passes. Neither command may require a physical phone.
+- Use only the narrowest relevant fast-feedback gates during implementation. Never run `make pre-commit`, `make pre-push`, `make verify`, or `make build` manually; Git hooks own those aggregate gates.
 - During authorized implementation, commit each green vertical slice after targeted gates pass, then push through the pre-push hook to the approved remote.
 - Never use `--no-verify`, disabled tests, red or `WIP` commits, or force pushes.
 

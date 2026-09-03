@@ -1,6 +1,7 @@
 .cache/
 .codegraph/
 Handoff.md
+How-the-app-works-user-pov.md
 dist/
 node_modules/
 reports/
