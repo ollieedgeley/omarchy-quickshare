@@ -85,7 +85,7 @@ function commandsForFile(file, cwd) {
   const prettier = path.join(nodeBin, "prettier");
   const eslint = path.join(nodeBin, "eslint");
   const markdownlint = path.join(nodeBin, "markdownlint-cli2");
-  const ruff = path.join(cwd, ".cache/tools/ruff-0.16.0/ruff");
+  const ruff = path.join(cwd, ".cache/tools/ruff-0.16.5/ruff");
 
   if (extension === ".rs") {
     return [

@@ -1,0 +1,19 @@
+{
+  "threshold": 5,
+  "minTokens": 50,
+  "minLines": 5,
+  "reporters": ["console", "threshold"],
+  "gitignore": true,
+  "ignore": [
+    "**/.cache/**",
+    "**/.git/**",
+    "**/dist/**",
+    "**/node_modules/**",
+    "**/target/**",
+    "**/generated/**",
+    "package-lock.json",
+    "rules/ast-grep/schemas/**",
+    "tests/fixtures/**",
+    "tests/environments/**/*.patch"
+  ]
+}

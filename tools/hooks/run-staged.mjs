@@ -8,6 +8,11 @@ import {
 import { join, relative } from "node:path";
 
 import { output, run } from "../gates/lib/process.mjs";
+import {
+  listProjectFiles,
+  runAnalysis,
+  selectDomainPaths,
+} from "../gates/lib/analysis.mjs";
 import { structureScope } from "../gates/structure.mjs";
 import {
   codeGraphAffectedArgs,
@@ -45,7 +50,7 @@ const nodeBin = process.env.NODE_BIN ?? join(ROOT, "node_modules", ".bin");
 const tool = (name) => join(nodeBin, name);
 const codegraph = process.env.CODEGRAPH ?? tool("codegraph");
 const ruff =
-  process.env.RUFF ?? join(ROOT, ".cache", "tools", "ruff-0.16.0", "ruff");
+  process.env.RUFF ?? join(ROOT, ".cache", "tools", "ruff-0.16.5", "ruff");
 const astGrep = process.env.AST_GREP ?? tool("ast-grep");
 const JS_SOURCE_EXT = /\.[cm]?[jt]sx?$/u;
 const PRETTIER_SUPPORTED_EXT = /\.(?:[cm]?[jt]sx?|jsonc?|markdown|md|ya?ml)$/u;
@@ -162,6 +167,29 @@ function runAst(phasePaths) {
       { cwd: staged.mirror },
     );
   }
+}
+
+function rustPackagesFor(phasePaths) {
+  if (!phasePaths.some(isRustInput)) {
+    return [];
+  }
+  return selectRustPackages(cargoMetadata(), phasePaths, staged.mirror);
+}
+
+function runAnalysisPhase(phasePaths, scope = "files") {
+  runAnalysis({
+    cargoPackages: rustPackagesFor(phasePaths),
+    cwd: staged.mirror,
+    paths: phasePaths,
+    scope,
+    toolRoot: ROOT,
+  });
+}
+
+function runDomainAnalysis() {
+  const repositoryPaths = listProjectFiles(staged.mirror);
+  const domainPaths = selectDomainPaths(paths, repositoryPaths);
+  runAnalysisPhase(domainPaths, "domain");
 }
 
 function runCodeGraphAffected(indexable) {
@@ -369,6 +397,9 @@ function runTests() {
 }
 
 const handlers = {
+  "analysis-domain": runDomainAnalysis,
+  "analysis-source": () => runAnalysisPhase(sourcePaths),
+  "analysis-tests": () => runAnalysisPhase(testPaths),
   "ast-source": () => runAst(sourcePaths),
   "ast-tests": () => runAst(testPaths),
   "format-source": () => runFormat(sourcePaths),

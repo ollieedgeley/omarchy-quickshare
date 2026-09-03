@@ -9,11 +9,11 @@
 
 namespace quickshare::connections_peer {
 namespace {
-constexpr char kServiceId[] = "dev.omarchy.quickshare.connections-peer";
+constexpr std::string_view kServiceId =
+    "dev.omarchy.quickshare.connections-peer";
 
 bool StartsWith(std::string_view value, std::string_view prefix) {
-  return value.size() >= prefix.size() &&
-         value.substr(0, prefix.size()) == prefix;
+  return value.starts_with(prefix);
 }
 
 bool ReadValue(std::string_view argument, std::string_view flag, int *index,

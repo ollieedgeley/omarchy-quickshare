@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import test, { describe, it } from "node:test";
 
 import blockMainGates from "../../../.omp/hooks/pre/block-main-gates.js";
+import { analyzersForPaths, selectDomainPaths } from "../lib/analysis.mjs";
 import {
   codeGraphAffectedArgs,
   computeSelectionRecord,
@@ -35,11 +36,14 @@ const SUBJECT_LENGTH_PATTERN = /72 characters/u;
 const AST_GREP_ENV_PATTERN = /AST_GREP: join\(nodeBin, "ast-grep"\)/u;
 const RUFF_ENV_PATTERN = /RUFF: join\(ROOT, "\.cache", "tools",/u;
 const TEST_ENV_PATTERN = /TEST_ENV_CACHE: join\(ROOT, "\.cache", "test-env"\)/u;
+const CARGO_MACHETE_ENV_PATTERN =
+  /CARGO_MACHETE: join\(\s*ROOT,\s*"\.cache",\s*"tools",/u;
+const VULTURE_ENV_PATTERN = /VULTURE: join\(\s*ROOT,\s*"\.cache",\s*"tools",/u;
 const BROAD_CACHE_PATTERN = /TEST_ENV_CACHE: join\(ROOT, "\.cache"\)/u;
 const RUFF_ALL_PATTERN = /select = \["ALL"\]/u;
 const RUFF_PREVIEW_PATTERN = /preview = true/u;
-const RUFF_VERSION_PATTERN = /RUFF_VERSION="0\.16\.0"/u;
-const RUFF_DIGEST_PATTERN = /98001c995a134d95f9bc83106a7f94b5/u;
+const RUFF_VERSION_PATTERN = /RUFF_VERSION="0\.16\.5"/u;
+const RUFF_DIGEST_PATTERN = /65b8bae7e43f12a91b71036a52176012/u;
 const RUFF_VERIFY_PATTERN = /verify-tooling:.*lint-python/u;
 const VERIFY_ORDER_TEST =
   "pre-push verification runs cheap static gates before tests";
@@ -65,6 +69,20 @@ const PRE_COMMIT_JAVASCRIPT_PATTERN = /pre-commit-javascript/u;
 const PRE_COMMIT_PYTHON_PATTERN = /pre-commit-python/u;
 const PRE_COMMIT_AST_NEGATIVE_PATTERN = /pre-commit-ast(?!-)/u;
 const PRE_COMMIT_RUST_PATTERN = /pre-commit-rust/u;
+const PRE_COMMIT_SOURCE_ANALYSIS_PATTERN = /pre-commit-source-analysis/u;
+const PRE_COMMIT_TEST_ANALYSIS_PATTERN = /pre-commit-test-analysis/u;
+const PRE_COMMIT_DOMAIN_ANALYSIS_PATTERN = /pre-commit-domain-analysis/u;
+const JSCPD_THRESHOLD = 5;
+const JSCPD_MINIMUM_LINES = 5;
+const JSCPD_MINIMUM_TOKENS = 50;
+const CLANG_WARNINGS_ERROR_PATTERN = /WarningsAsErrors:\s*['"]\*['"]/u;
+const CARGO_MACHETE_VERSION_PATTERN = /CARGO_MACHETE_VERSION="0\.9\.2"/u;
+const VULTURE_VERSION_PATTERN = /VULTURE_VERSION="2\.16"/u;
+const CLANG_TIDY_VERSION_PATTERN = /CLANG_TIDY_VERSION="22\.1\.8"/u;
+const CPPCHECK_VERSION_PATTERN = /CPPCHECK_VERSION="2\.21\.1"/u;
+const CLANG_ANALYZER_PATTERN = /clang-analyzer-\*/u;
+const CLANG_BUGPRONE_PATTERN = /bugprone-\*/u;
+const CLANG_PERFORMANCE_PATTERN = /performance-\*/u;
 
 function gateGuardResult(command, toolName = "bash") {
   let handler = null;
@@ -227,6 +245,8 @@ test(PRE_PUSH_ENVIRONMENT_TEST, () => {
   assert.match(source, AST_GREP_ENV_PATTERN);
   assert.match(source, RUFF_ENV_PATTERN);
   assert.match(source, TEST_ENV_PATTERN);
+  assert.match(source, CARGO_MACHETE_ENV_PATTERN);
+  assert.match(source, VULTURE_ENV_PATTERN);
   assert.doesNotMatch(source, BROAD_CACHE_PATTERN);
 });
 
@@ -236,6 +256,7 @@ test(VERIFY_ORDER_TEST, () => {
   const expectedOrder = [
     "format-check",
     "lint-javascript",
+    "lint-analysis",
     "check",
     "lint-rust",
     "test-ast-rules",
@@ -361,6 +382,28 @@ test("pre-commit uses ordered source and test phase targets", () => {
   assert.match(precommit, PRE_COMMIT_TEST_FORMAT_PATTERN);
   assert.match(precommit, PRE_COMMIT_TEST_LINT_PATTERN);
   assert.match(precommit, PRE_COMMIT_TEST_AST_PATTERN);
+  assert.match(precommit, PRE_COMMIT_SOURCE_ANALYSIS_PATTERN);
+  assert.match(precommit, PRE_COMMIT_TEST_ANALYSIS_PATTERN);
+  assert.match(precommit, PRE_COMMIT_DOMAIN_ANALYSIS_PATTERN);
+  const expectedOrder = [
+    "pre-commit-source-format",
+    "pre-commit-source-lint",
+    "pre-commit-source-ast",
+    "pre-commit-source-analysis",
+    "pre-commit-test-format",
+    "pre-commit-test-lint",
+    "pre-commit-test-ast",
+    "pre-commit-test-analysis",
+    "pre-commit-domain-analysis",
+    "pre-commit-test",
+  ];
+  const gates = precommit.split(WHITESPACE_PATTERN);
+  const positions = expectedOrder.map((gate) => gates.indexOf(gate));
+  assert.ok(positions.every((position) => position >= 0));
+  assert.deepEqual(
+    positions,
+    positions.toSorted((left, right) => left - right),
+  );
   assert.match(precommit, PRE_COMMIT_TEST_PATTERN);
   assert.doesNotMatch(precommit, PRE_COMMIT_FORMAT_NEGATIVE_PATTERN);
   assert.doesNotMatch(precommit, PRE_COMMIT_JAVASCRIPT_PATTERN);
@@ -529,4 +572,83 @@ describe("computeSelectionRecord", () => {
       { path: "d_test.py", language: "python", domain: "other" },
     ]);
   });
+});
+
+test("analysis dispatches every strict supported tool", () => {
+  assert.deepEqual(
+    analyzersForPaths([
+      "Cargo.toml",
+      "src/lib.rs",
+      "tools/check.mjs",
+      "tools/check.py",
+      "tools/check.cc",
+      "README.md",
+    ]),
+    [
+      "jscpd",
+      "cargo-machete",
+      "knip",
+      "ruff",
+      "vulture",
+      "clang-tidy",
+      "cppcheck",
+    ],
+  );
+  assert.deepEqual(analyzersForPaths(["package.json"]), ["jscpd", "knip"]);
+});
+
+test("domain analysis widens only to staged domains", () => {
+  assert.deepEqual(
+    selectDomainPaths(
+      ["tools/hooks/run-staged.mjs", "crates/core/wire/src/lib.rs"],
+      [
+        "crates/app/src/main.rs",
+        "crates/core/wire/src/lib.rs",
+        "crates/core/wire/tests/wire.rs",
+        "tools/gates/structure.mjs",
+        "tools/hooks/run-staged.mjs",
+        "tools/release/plugin-export.mjs",
+      ],
+    ),
+    [
+      "crates/core/wire/src/lib.rs",
+      "crates/core/wire/tests/wire.rs",
+      "tools/gates/structure.mjs",
+      "tools/hooks/run-staged.mjs",
+    ],
+  );
+});
+
+test("analysis configuration keeps findings fatal at production limits", () => {
+  const duplication = JSON.parse(
+    readFileSync(join(ROOT, ".jscpd.json"), "utf8"),
+  );
+  const knip = JSON.parse(readFileSync(join(ROOT, "knip.json"), "utf8"));
+  const clangTidy = readFileSync(join(ROOT, ".clang-tidy"), "utf8");
+  const packageManifest = JSON.parse(
+    readFileSync(join(ROOT, "package.json"), "utf8"),
+  );
+  const setup = readFileSync(
+    join(ROOT, "tools", "setup", "analyzers.sh"),
+    "utf8",
+  );
+  assert.equal(duplication.threshold, JSCPD_THRESHOLD);
+  assert.equal(duplication.minLines, JSCPD_MINIMUM_LINES);
+  assert.equal(duplication.minTokens, JSCPD_MINIMUM_TOKENS);
+  assert.deepEqual(duplication.reporters, ["console", "threshold"]);
+  assert.equal(knip.includeEntryExports, true);
+  assert.equal(
+    Object.values(knip.rules).every((severity) => severity === "error"),
+    true,
+  );
+  assert.equal(packageManifest.devDependencies.jscpd, "5.1.2");
+  assert.equal(packageManifest.devDependencies.knip, "6.34.0");
+  assert.match(setup, CARGO_MACHETE_VERSION_PATTERN);
+  assert.match(setup, VULTURE_VERSION_PATTERN);
+  assert.match(setup, CLANG_TIDY_VERSION_PATTERN);
+  assert.match(setup, CPPCHECK_VERSION_PATTERN);
+  assert.match(clangTidy, CLANG_WARNINGS_ERROR_PATTERN);
+  assert.match(clangTidy, CLANG_ANALYZER_PATTERN);
+  assert.match(clangTidy, CLANG_BUGPRONE_PATTERN);
+  assert.match(clangTidy, CLANG_PERFORMANCE_PATTERN);
 });

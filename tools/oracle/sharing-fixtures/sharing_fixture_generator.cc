@@ -67,7 +67,7 @@ public:
           bytes_ = std::move(payload->content.bytes_payload.bytes);
         });
   }
-  bool Save(const std::filesystem::path &path) const {
+  [[nodiscard]] bool Save(const std::filesystem::path &path) const {
     return Write(path, std::string(bytes_.begin(), bytes_.end()));
   }
 
@@ -135,20 +135,39 @@ bool SaveIntroduction(const std::filesystem::path &path,
 
 ExpectedFrame IncomingIntroduction(const char *path, const char *attachment) {
   return {
-      path,           "incoming", "IncomingShareSession.ProcessIntroduction",
-      "introduction", attachment, "",
-      "accepted"};
+      .path = path,
+      .direction = "incoming",
+      .seam = "IncomingShareSession.ProcessIntroduction",
+      .kind = "introduction",
+      .attachment = attachment,
+      .status = "",
+      .outcome = "accepted",
+  };
 }
 
 ExpectedFrame IncomingResponse(const char *path, const char *seam,
                                const char *status, const char *outcome) {
-  return {path, "incoming", seam, "response", "", status, outcome};
+  return {
+      .path = path,
+      .direction = "incoming",
+      .seam = seam,
+      .kind = "response",
+      .attachment = "",
+      .status = status,
+      .outcome = outcome,
+  };
 }
 
 ExpectedFrame OutgoingIntroduction(const char *path, const char *attachment) {
-  return {path,           "outgoing", "OutgoingShareSession.SendIntroduction",
-          "introduction", attachment, "",
-          "written"};
+  return {
+      .path = path,
+      .direction = "outgoing",
+      .seam = "OutgoingShareSession.SendIntroduction",
+      .kind = "introduction",
+      .attachment = attachment,
+      .status = "",
+      .outcome = "written",
+  };
 }
 
 class Incoming {

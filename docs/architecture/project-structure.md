@@ -91,6 +91,7 @@ Directories shown below are reserved locations, not instructions to create empty
 │   ├── gates/
 │   ├── hooks/
 │   ├── oracle/
+│   ├── setup/
 │   └── release/
 └── upstream/
     ├── google/
@@ -197,7 +198,7 @@ Each `fuzz/<domain>` directory is an independent cargo-fuzz package and follows 
 
 ## Tools and upstream inputs
 
-`tools/oracle` owns the small C++ reference executable and its language-neutral command protocol. `tools/codegen` owns pinned protobuf generation. `tools/gates` owns quality-gate orchestration, `tools/hooks` owns the implementation behind the tracked Husky entry points, and `tools/release` produces local release artifacts. The root Makefile remains the only public project task interface.
+`tools/oracle` owns the small C++ reference executable and its language-neutral command protocol. `tools/codegen` owns pinned protobuf generation. `tools/gates` owns quality-gate orchestration, `tools/hooks` owns the implementation behind the tracked Husky entry points, `tools/setup` owns reproducible development-tool provisioning, and `tools/release` produces local release artifacts. The root Makefile remains the only public project task interface.
 
 `upstream/google` contains only the exact source files and licenses required to generate or audit the Rust implementation. `sources.toml` records repository URLs, commits, paths, and hashes. Do not vendor complete Nearby, UKEY2, BlueZ, Android, or emulator repositories. Fetch their pinned trees into `.cache/` for oracle and simulation gates.
 

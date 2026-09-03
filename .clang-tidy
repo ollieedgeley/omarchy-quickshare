@@ -1,0 +1,51 @@
+---
+Checks: >-
+  -*,
+  clang-analyzer-*,
+  bugprone-*,
+  cert-*,
+  concurrency-*,
+  cppcoreguidelines-*,
+  hicpp-*,
+  misc-*,
+  modernize-*,
+  -cppcoreguidelines-pro-type-member-init,
+  performance-*,
+  -cppcoreguidelines-special-member-functions,
+  portability-*,
+  -hicpp-member-init,
+  -hicpp-braces-around-statements,
+  -hicpp-special-member-functions,
+  -hicpp-deprecated-headers,
+  readability-*,
+  -misc-const-correctness,
+  -modernize-use-scoped-lock,
+  -bugprone-easily-swappable-parameters,
+  -modernize-raw-string-literal,
+  -modernize-deprecated-headers,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -performance-enum-size,
+  -performance-unnecessary-value-param,
+  -cppcoreguidelines-owning-memory,
+  -readability-convert-member-functions-to-static,
+  -readability-make-member-function-const,
+  -readability-braces-around-statements,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -hicpp-no-array-decay,
+  -misc-include-cleaner,
+  -misc-non-private-member-variables-in-classes,
+  -modernize-use-trailing-return-type,
+  -readability-identifier-length,
+  -readability-magic-numbers
+WarningsAsErrors: "*"
+HeaderFilterRegex: "(^|/)tools/oracle/"
+FormatStyle: file
+CheckOptions:
+  readability-function-cognitive-complexity.Threshold: 15
+  readability-function-size.BranchThreshold: 10
+  readability-function-size.LineThreshold: 80
+  readability-function-size.NestingThreshold: 4
+  readability-function-size.ParameterThreshold: 6
+  readability-function-size.StatementThreshold: 40
+...

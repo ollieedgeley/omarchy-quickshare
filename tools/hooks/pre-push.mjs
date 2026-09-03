@@ -41,6 +41,28 @@ function readInput() {
   });
 }
 
+function exactEnvironment() {
+  const nodeBin = join(ROOT, "node_modules", ".bin");
+  return {
+    ...process.env,
+    AST_GREP: join(nodeBin, "ast-grep"),
+    CARGO_MACHETE: join(
+      ROOT,
+      ".cache",
+      "tools",
+      "cargo-machete-0.9.2",
+      "bin",
+      "cargo-machete",
+    ),
+    CODEGRAPH: join(nodeBin, "codegraph"),
+    NODE_BIN: nodeBin,
+    PATH: `${nodeBin}:${process.env.PATH}`,
+    RUFF: join(ROOT, ".cache", "tools", "ruff-0.16.5", "ruff"),
+    TEST_ENV_CACHE: join(ROOT, ".cache", "test-env"),
+    VULTURE: join(ROOT, ".cache", "tools", "vulture-2.16", "bin", "vulture"),
+  };
+}
+
 async function main() {
   const input = await readInput();
   const head = output("git", ["rev-parse", "HEAD"], { cwd: ROOT });
@@ -65,16 +87,7 @@ async function main() {
       cwd: ROOT,
     });
     try {
-      const nodeBin = join(ROOT, "node_modules", ".bin");
-      const env = {
-        ...process.env,
-        AST_GREP: join(nodeBin, "ast-grep"),
-        CODEGRAPH: join(nodeBin, "codegraph"),
-        NODE_BIN: nodeBin,
-        PATH: `${nodeBin}:${process.env.PATH}`,
-        RUFF: join(ROOT, ".cache", "tools", "ruff-0.16.0", "ruff"),
-        TEST_ENV_CACHE: join(ROOT, ".cache", "test-env"),
-      };
+      const env = exactEnvironment();
       run("make", ["verify"], { cwd: worktree, env });
       run("make", ["build"], { cwd: worktree, env });
     } finally {

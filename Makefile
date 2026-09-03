@@ -11,17 +11,18 @@ CODEGRAPH ?= $(NODE_BIN)/codegraph
 ESLINT ?= $(NODE_BIN)/eslint
 PRETTIER ?= $(NODE_BIN)/prettier
 MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
-RUFF ?= $(CURDIR)/.cache/tools/ruff-0.16.0/ruff
+RUFF ?= $(CURDIR)/.cache/tools/ruff-0.16.5/ruff
 TEST_ENV_CACHE ?= $(CURDIR)/.cache/test-env
 QUICKSHELL ?= quickshell
 REPOSITORY_FILES = git ls-files --cached --others --exclude-standard -z
 TOOLING_FILES = $(REPOSITORY_FILES) -- ':(exclude)*.md'
 DOCUMENT_FILES = $(REPOSITORY_FILES) -- '*.md'
 
-.PHONY: help setup hooks-install ruff-provision sources-fetch wire-codegen
+.PHONY: help setup hooks-install ruff-provision analyzers-provision
+.PHONY: sources-fetch
 .PHONY: format format-app format-tooling format-docs
 .PHONY: format-check format-app-check format-tooling-check format-docs-check
-.PHONY: lint-rust lint-javascript lint-python lint-ast lint-docs
+.PHONY: lint-rust lint-javascript lint-python lint-ast lint-analysis lint-docs
 .PHONY: lint-structure lint-structure-app lint-structure-tooling
 .PHONY: lint-sources lint-oracle lint-nearshare lint-nearby-linux
 .PHONY: lint-diverse-lan lint-proxies
@@ -46,8 +47,9 @@ DOCUMENT_FILES = $(REPOSITORY_FILES) -- '*.md'
 .PHONY: test-network-hotspot-owner test-network-wifi-direct-client
 .PHONY: verify-app verify-tooling verify build commit-msg
 .PHONY: pre-commit-source-format pre-commit-source-lint pre-commit-source-ast
+.PHONY: pre-commit-source-analysis pre-commit-test-analysis
 .PHONY: pre-commit-test-format pre-commit-test-lint pre-commit-test-ast
-.PHONY: pre-commit-test
+.PHONY: pre-commit-domain-analysis pre-commit-test
 .PHONY: pre-commit pre-commit-prepare pre-commit-structure pre-push
 help: ## List public and targeted gates.
 	@awk 'BEGIN {FS = ":.*## "} \
@@ -59,6 +61,7 @@ setup: ## Install pinned development tools and activate repository hooks.
 	@rustup toolchain install 1.98.0 --profile minimal \
 		--component rustfmt --component clippy --component rust-analyzer
 	@$(MAKE) ruff-provision
+	@$(MAKE) analyzers-provision
 	@$(MAKE) hooks-install
 	@$(MAKE) sources-fetch
 	@$(MAKE) oracle-provision
@@ -78,6 +81,9 @@ hooks-install: ## Activate Husky and initialize the staged CodeGraph mirror.
 
 ruff-provision: ## Install the pinned standalone Python quality tool.
 	@tools/setup/ruff.sh
+
+analyzers-provision: ## Install and verify pinned cross-language analyzers.
+	@tools/setup/analyzers.sh
 
 sources-fetch: ## Download, hash-check, and extract every pinned test source.
 	@node tools/gates/sources.mjs fetch
@@ -135,6 +141,9 @@ lint-ast: ## Run the full error-only ast-grep scan.
 	@$(TIMEOUT) node tools/gates/ast-schema.mjs
 	@$(TIMEOUT) $(AST_GREP) scan --config sgconfig.yml --error \
 		--min-severity=error --max-results=1 --inspect=summary .
+
+lint-analysis: ## Run strict duplication and unused-code analyzers.
+	@$(TIMEOUT) node tools/gates/lib/analysis.mjs --full
 
 lint-docs: ## Run Markdown policy checks.
 	@$(TIMEOUT) $(MARKDOWNLINT) '**/*.md' '#node_modules' '#target' '#.cache'
@@ -387,7 +396,8 @@ verify-tooling: test-tooling test-ast-rules test-nearby-linux-tooling
 
 verify: ## Run the complete local quality suite.
 verify: format-check lint-structure lint-javascript lint-python lint-docs \
-	lint-ast lint-sources lint-oracle lint-nearshare lint-nearby-linux \
+	lint-ast lint-analysis lint-sources lint-oracle lint-nearshare \
+	lint-nearby-linux \
 	lint-diverse-lan lint-proxies lint-dbus lint-bluetooth-radio \
 	lint-network lint-android check lint-rust test-ast-rules \
 	test-nearby-linux-tooling test-tooling test-rust test-source-cache \
@@ -430,6 +440,9 @@ pre-commit-source-lint: ## Lint staged source files and Rust owners.
 pre-commit-source-ast: ## Scan staged sources with applicable AST rules.
 	@$(TIMEOUT) node tools/hooks/run-staged.mjs ast-source
 
+pre-commit-source-analysis: ## Analyze only staged source files.
+	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs analysis-source
+
 pre-commit-test-format: ## Check formatter output for staged test files.
 	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs format-tests
 
@@ -439,12 +452,19 @@ pre-commit-test-lint: ## Lint staged test files and new Rust owners.
 pre-commit-test-ast: ## Scan staged tests with applicable AST rules.
 	@$(TIMEOUT) node tools/hooks/run-staged.mjs ast-tests
 
+pre-commit-test-analysis: ## Analyze only staged test files.
+	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs analysis-tests
+
+pre-commit-domain-analysis: ## Reanalyze complete staged language domains.
+	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs analysis-domain
+
 pre-commit-test: ## Run staged and conservatively affected domain tests.
 	@$(TIMEOUT) node tools/hooks/run-staged.mjs test
 
 pre-commit: pre-commit-prepare pre-commit-structure \
 	pre-commit-source-format pre-commit-source-lint pre-commit-source-ast \
-	pre-commit-test-format pre-commit-test-lint pre-commit-test-ast \
+	pre-commit-source-analysis pre-commit-test-format pre-commit-test-lint \
+	pre-commit-test-ast pre-commit-test-analysis pre-commit-domain-analysis \
 	pre-commit-test
 pre-commit: ## Check the staged snapshot and its conservatively affected tests.
 

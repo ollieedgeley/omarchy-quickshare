@@ -74,6 +74,25 @@ function fakeEslint(root) {
   return { bin, log };
 }
 
+function fakeAnalyzer(root, name) {
+  const bin = join(root, ".fake-analysis-bin");
+  const executable = join(bin, name);
+  const log = join(root, `${name}-argv.json`);
+  const logLiteral = JSON.stringify(log);
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(
+    executable,
+    [
+      "#!/usr/bin/env node",
+      'const { writeFileSync } = require("node:fs");',
+      `writeFileSync(${logLiteral}, JSON.stringify(process.argv.slice(2)));`,
+      "",
+    ].join("\n"),
+  );
+  chmodSync(executable, EXECUTABLE_MODE);
+  return { bin, log };
+}
+
 function fakeCodeGraph(root, affectedTests = []) {
   const executable = join(root, "fake-codegraph");
   const log = join(root, "codegraph-argv.json");
@@ -224,6 +243,54 @@ test("staged lint phases receive only their exact paths", () => {
     assert.notEqual(testResult.status, 0);
     assert.deepEqual(JSON.parse(readFileSync(eslint.log, "utf8")), [
       "tst.test.mjs",
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("analysis phases check exact files then complete touched domains", () => {
+  const root = repository();
+  try {
+    const source = join(root, "tools", "hooks", "change.mjs");
+    const domainPeer = join(root, "tools", "gates", "peer.mjs");
+    mkdirSync(dirname(source), { recursive: true });
+    mkdirSync(dirname(domainPeer), { recursive: true });
+    writeFileSync(source, "export const changed = false;\n");
+    writeFileSync(domainPeer, "export const peer = true;\n");
+    run("git", ["add", source, domainPeer], root);
+    run("git", ["commit", "-m", "test: seed analysis fixture"], root);
+    writeFileSync(source, "export const changed = true;\n");
+    run("git", ["add", source], root);
+    run("node", [PREPARE, "--initialize"], root);
+    const jscpd = fakeAnalyzer(root, "jscpd");
+    const knip = fakeAnalyzer(root, "knip");
+    const environment = { ...process.env, NODE_BIN: jscpd.bin };
+
+    runWithOptions("node", [RUN_STAGED, "analysis-source"], {
+      cwd: root,
+      extraEnvironment: environment,
+    });
+    assert.deepEqual(JSON.parse(readFileSync(jscpd.log, "utf8")), [
+      "--config",
+      ".jscpd.json",
+      "tools/hooks/change.mjs",
+    ]);
+    assert.deepEqual(JSON.parse(readFileSync(knip.log, "utf8")), [
+      "--strict",
+      "--reporter",
+      "compact",
+    ]);
+
+    runWithOptions("node", [RUN_STAGED, "analysis-domain"], {
+      cwd: root,
+      extraEnvironment: environment,
+    });
+    assert.deepEqual(JSON.parse(readFileSync(jscpd.log, "utf8")), [
+      "--config",
+      ".jscpd.json",
+      "tools/gates/peer.mjs",
+      "tools/hooks/change.mjs",
     ]);
   } finally {
     rmSync(root, { recursive: true, force: true });

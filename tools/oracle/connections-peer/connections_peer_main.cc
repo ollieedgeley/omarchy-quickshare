@@ -9,11 +9,13 @@
 #include "connections_peer.h"
 
 namespace {
-absl::Notification g_shutdown;
+absl::Notification *g_shutdown = nullptr;
 
-void QuitHandler(int, siginfo_t *, void *) {
-  if (!g_shutdown.HasBeenNotified())
-    g_shutdown.Notify();
+void QuitHandler([[maybe_unused]] int signal_number,
+                 [[maybe_unused]] siginfo_t *signal_info,
+                 [[maybe_unused]] void *context) {
+  if (!g_shutdown->HasBeenNotified())
+    g_shutdown->Notify();
 }
 } // namespace
 
@@ -24,12 +26,14 @@ int main(int argc, char **argv) {
     return 2;
   }
   struct sigaction action{};
+  static absl::Notification shutdown;
+  g_shutdown = &shutdown;
   action.sa_sigaction = QuitHandler;
   action.sa_flags = SA_SIGINFO;
   sigaction(SIGINT, &action, nullptr);
   sigaction(SIGTERM, &action, nullptr);
   quickshare::connections_peer::ConnectionsPeer peer(std::move(options));
   peer.Start();
-  g_shutdown.WaitForNotification();
+  shutdown.WaitForNotification();
   return 0;
 }

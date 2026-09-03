@@ -8,7 +8,7 @@ Build every behavior change with test-driven development through a confirmed sea
 
 Local hooks are the project's automated verification. The pre-commit hook gives targeted feedback. The pre-push hook is authoritative. It verifies and then builds the exact commit being pushed. Hosted CI and automated release builds are outside the current scope. A future decision may add release automation that calls the same local targets, but it must not replace local verification or the source-build fallback.
 
-Application and development-tool feedback have separate aggregates. `make verify-app` runs only Rust formatting, compiler checks, Rust diagnostics, ast-grep, and Rust tests. `make verify-tooling` runs the separate tooling and documentation formatting checks, every current ESLint core rule, static environment definitions, and fast tooling contracts; it does not start simulators or virtual devices. `make verify` combines both with every programmatic environment check. This keeps environment implementation out of the normal application loop without weakening pre-push verification.
+Application and development-tool feedback have separate aggregates. `make verify-app` runs only Rust formatting, compiler checks, Rust diagnostics, ast-grep, and Rust tests. `make verify-tooling` runs the separate tooling and documentation formatting checks, every current ESLint core rule, static environment definitions, and fast tooling contracts; it does not start simulators or virtual devices. `make verify` adds strict cross-language analysis and every programmatic environment check. This keeps environment implementation out of the normal application loop without weakening pre-push verification.
 
 ## TDD cycle
 
@@ -93,15 +93,27 @@ Deleted files remain impact-analysis inputs even though exact-file formatting an
 
 The top-level `make pre-commit` command is an aggregate and may exceed one minute. Each child test gate remains directly runnable, is listed in `make help`, and has the existing 60-second execution budget. Prepared-environment lifecycle time is measured separately under the connection-test policy.
 
-The public pre-commit sequence is prepare, structure, source-format/lint/ast, test-format/lint/ast, then affected tests.
+The public pre-commit sequence is prepare, structure, exact-file source
+format/lint/ast/analysis, exact-file test format/lint/ast/analysis,
+language-domain analysis, then affected tests.
 
 Run child gates in this fail-fast order:
 
-1. Prepare (staged snapshot validation, mirror refresh, CodeGraph sync, index match proof).
+1. Prepare (staged snapshot validation, mirror refresh, CodeGraph sync, index
+   match proof).
 2. Structure (file-size limits for changed project-authored files).
-3. Source gates: `pre-commit-source-format` (format-source), `pre-commit-source-lint` (lint-source), `pre-commit-source-ast` (ast-source).
-4. Staged-test gates: `pre-commit-test-format` (format-tests), `pre-commit-test-lint` (lint-tests), `pre-commit-test-ast` (ast-tests).
-5. Affected tests via `pre-commit-test` (test) using `computeSelectionRecord` (records `{path,language,domain}` in stagedSources/stagedTests/extendedTests), `parseAffectedJson` (only affected test paths), `packageSelection` (Rust owner/downstream packages).
+3. Source gates: `pre-commit-source-format` (format-source),
+   `pre-commit-source-lint` (lint-source), `pre-commit-source-ast`
+   (ast-source), `pre-commit-source-analysis` (analysis-source).
+4. Staged-test gates: `pre-commit-test-format` (format-tests),
+   `pre-commit-test-lint` (lint-tests), `pre-commit-test-ast` (ast-tests),
+   `pre-commit-test-analysis` (analysis-tests).
+5. `pre-commit-domain-analysis` reruns applicable analyzers over every file in
+   each repository domain touched by the staged change.
+6. Affected tests via `pre-commit-test` (test) using
+   `computeSelectionRecord` (records `{path,language,domain}` in
+   stagedSources/stagedTests/extendedTests), `parseAffectedJson` (only affected
+   test paths), `packageSelection` (Rust owner/downstream packages).
 
 Behavior development begins with the smallest in-process test at an external
 seam. Deterministic fakes, stubs, and mocks provide routine feedback, while the
@@ -116,11 +128,66 @@ The hook prints each selected command before running it. It records staged sourc
 
 Rustfmt can check staged `.rs` files directly in the staged-tree mirror. Cargo's formatter can select packages but does not expose a changed-file selector; see the official [`cargo fmt` options](https://doc.rust-lang.org/cargo/commands/cargo-fmt.html).
 
-Prettier receives only changed files in the formats it supports. ESLint receives only changed, existing JavaScript or TypeScript paths from the staged mirror. Ruff receives only changed Python paths. These checks run separately for staged sources and staged tests; they never widen to unrelated files. Tests are selected separately through CodeGraph and domain ownership.
+Prettier receives only changed files in the formats it supports. ESLint
+receives only changed, existing JavaScript or TypeScript paths from the staged
+mirror. Ruff receives only changed Python paths. These checks run separately
+for staged sources and staged tests; they never widen to unrelated files.
 
-Cargo check, Clippy, and rustdoc operate on packages rather than independent source files. `packageSelection` maps changed Rust paths to their owning workspace packages and transitive downstream workspace packages. Shared workspace inputs or Rust paths without an owner conservatively select every workspace package. `rust-lints.mjs` receives all selected `--package` arguments in one invocation. Rust-analyzer's diagnostics command has no stable package selector, so package-scoped pre-commit runs omit it; the workspace-wide `make lint-rust` gate retains rust-analyzer diagnostics.
+The subsequent analysis phase dispatches only tools applicable to those exact
+paths: jscpd for every file, cargo-machete for Rust owners, Knip for JavaScript
+or TypeScript, Ruff and Vulture for Python, and clang-tidy plus Cppcheck for
+C++. The domain phase repeats the same dispatch over complete touched
+repository domains. Knip and cargo-machete necessarily evaluate their project
+and package graphs while remaining inside the staged-tree mirror. Tests are
+selected separately through CodeGraph and domain ownership.
 
-Use the complete lint flags from the Rust lint policy for every selected package. Do not replace Clippy with LSP diagnostics. Clippy remains the compiler-backed lint result, as described in the [official Clippy usage guide](https://doc.rust-lang.org/clippy/usage.html).
+Cargo check, Clippy, and rustdoc operate on packages rather than independent
+source files. `packageSelection` maps changed Rust paths to their owning
+workspace packages and transitive downstream workspace packages. Shared
+workspace inputs or Rust paths without an owner conservatively select every
+workspace package. `rust-lints.mjs` receives all selected `--package` arguments
+in one invocation. Rust-analyzer's diagnostics command has no stable package
+selector, so package-scoped pre-commit runs omit it; the workspace-wide
+`make lint-rust` gate retains rust-analyzer diagnostics.
+
+Use the complete lint flags from the Rust lint policy for every selected
+package. Do not replace Clippy with LSP diagnostics. Clippy remains the
+compiler-backed lint result, as described in the
+[official Clippy usage guide](https://doc.rust-lang.org/clippy/usage.html).
+
+### Strict cross-language analysis
+
+`make analyzers-provision` installs pinned cargo-machete 0.9.2 and Vulture
+2.16, and requires the exact system clang-tidy 22.1.8 and Cppcheck 2.21.1.
+jscpd 5.1.2 and Knip 6.34.0 are exact npm development dependencies. Ruff
+0.16.5 remains the single pinned Python lint installation.
+
+`make lint-analysis` makes every finding fatal. jscpd recognizes all supported
+languages and rejects duplication above 5%; a reported clone must span at
+least 5 lines and 50 tokens so short syntax is not treated as production
+duplication. Generated code, immutable fixtures, dependency trees, caches,
+and lock data are excluded. Knip enables every configured issue category at
+error severity and includes entry-point exports. Vulture reports only
+100%-confidence dead code. Ruff retains all stable and preview rules.
+
+Cppcheck enables all checkers, exhaustive analysis, inconclusive findings, and
+a nonzero error exit across every project C++ translation unit and standalone
+header. Missing external includes are the only global Cppcheck suppressions.
+The standalone-header pass and exact-file checks also suppress
+cross-translation-unit unused-function and unused-member noise. clang-tidy
+enables the analyzer, bugprone, CERT, concurrency, C++ Core Guidelines, HICPP,
+miscellaneous, modernization, performance, portability, and readability groups
+with every emitted warning promoted to an error. It runs on the local
+connections peer, whose pinned source tree supplies a reproducible compilation
+context; Cppcheck remains the strict checker for the fixture generator, whose
+full BoringSSL compilation graph exists only in the sealed Bazel image.
+
+clang-tidy's production limits are directional maxima: cognitive complexity
+15, branch complexity 10, 80 lines per function, nesting depth 4, 6
+parameters, and 40 statements. Disabled checks are limited to incompatible
+style pairs, synthetic-compilation metadata, external ABI and callback shapes,
+or rules superseded by an enabled equivalent. The configuration records each
+exception centrally; source-level suppressions are forbidden.
 
 ## Affected-test selection
 

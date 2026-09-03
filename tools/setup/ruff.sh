@@ -2,9 +2,9 @@
 
 set -euo pipefail
 
-readonly RUFF_VERSION="0.16.0"
-readonly RUFF_SHA256="98001c995a134d95f9bc83106a7f94b5"\
-"52971b583f1c0ab75fb656a881e13865"
+readonly RUFF_VERSION="0.16.5"
+readonly RUFF_SHA256="65b8bae7e43f12a91b71036a52176012"\
+"b3aefb725d5ae263e2771474110a0983"
 readonly RUFF_ARCHIVE="ruff-x86_64-unknown-linux-gnu.tar.gz"
 readonly RUFF_URL="https://github.com/astral-sh/ruff/releases/download/"\
 "${RUFF_VERSION}/${RUFF_ARCHIVE}"

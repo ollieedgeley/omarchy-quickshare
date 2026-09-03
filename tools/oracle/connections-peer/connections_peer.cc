@@ -95,7 +95,7 @@ private:
     std::cout << "{\"schema\":1,\"event\":\"" << event << "\"";
     if (!detail.empty())
       std::cout << "," << detail;
-    std::cout << "}" << std::endl;
+    std::cout << "}\n" << std::flush;
   }
 
   void EmitConfiguration() {

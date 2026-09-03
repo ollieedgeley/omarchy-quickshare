@@ -78,14 +78,28 @@ Ask for named files or symbols when source is deferred. Treat returned source as
   tooling and repository configuration.
 - `make format-docs-check` checks Markdown; `make format-check` combines all
   formatting domains.
-- `make lint-rust` runs compiler, rustdoc, rust-analyzer, and all enabled Clippy diagnostics as errors.
-- `make ruff-provision` installs the pinned Python tool; `make lint-python` checks all Python tooling.
-- `make lint-javascript` runs every current non-deprecated ESLint core rule as an error with no inline overrides.
-- `make lint-ast` runs the complete error-only ast-grep scan; `make test-ast-rules` checks its rule fixtures and snapshots.
-- `make lint-docs` checks Markdown policy; `make lint-structure-app` and `make lint-structure-tooling` isolate structure feedback. `make lint-structure` combines them.
-- `make pre-commit-source-{format,lint,ast}` checks exact staged non-test files with applicable tools, in that order.
-- `make pre-commit-test-{format,lint,ast}` checks exact staged test files with applicable tools, in that order.
-- `make pre-commit-test` runs directly staged and conservatively affected domain tests selected from CodeGraph, repository ownership, and Cargo metadata.
+- `make lint-rust` runs compiler, rustdoc, rust-analyzer, and all enabled
+  Clippy diagnostics as errors.
+- `make ruff-provision` installs pinned Ruff; `make analyzers-provision`
+  installs or validates every pinned cross-language analyzer.
+- `make lint-python` checks all Python tooling; `make lint-javascript` runs
+  every current non-deprecated ESLint core rule as an error.
+- `make lint-analysis` runs strict jscpd, cargo-machete, Knip, Ruff, Vulture,
+  clang-tidy, and Cppcheck checks with findings treated as errors.
+- `make lint-ast` runs the complete error-only ast-grep scan;
+  `make test-ast-rules` checks its rule fixtures and snapshots.
+- `make lint-docs` checks Markdown policy; `make lint-structure-app` and
+  `make lint-structure-tooling` isolate structure feedback.
+  `make lint-structure` combines them.
+- `make pre-commit-source-{format,lint,ast,analysis}` checks exact staged
+  non-test files with applicable tools, in that order.
+- `make pre-commit-test-{format,lint,ast,analysis}` checks exact staged test
+  files with applicable tools, in that order.
+- `make pre-commit-domain-analysis` reruns applicable analyzers across every
+  complete repository domain touched by the staged change.
+- `make pre-commit-test` runs directly staged and conservatively affected
+  domain tests selected from CodeGraph, repository ownership, and Cargo
+  metadata.
 - `make lint-android` validates Android SDK, probe, and AVD pins; `make android-preflight` checks host and KVM support.
 - `make android-bootstrap` fetches pinned host tools; `make android-orchestrator-provision` prepares the pinned Mobly controller.
 - After `make android-license`, `make android-provision` prepares the SDK, probe, and AVDs; `make android-seed` records clean first boots.
