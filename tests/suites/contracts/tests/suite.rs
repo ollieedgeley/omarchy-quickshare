@@ -6,3 +6,5 @@
 mod control_contract;
 #[path = "suite/scenario_contract.rs"]
 mod scenario_contract;
+#[path = "suite/sharing_contract.rs"]
+mod sharing_contract;

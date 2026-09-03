@@ -1,0 +1,11 @@
+[package]
+name = "quickshare-sharing"
+version = "0.0.0"
+description = "Consent and attachment lifecycle for Quick Share"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true

@@ -35,6 +35,7 @@ name = "quickshare-contract-tests"
 version = "0.0.0"
 dependencies = [
  "omarchy-quickshare",
+ "quickshare-sharing",
  "quickshare-test-support",
  "serde_json",
 ]
@@ -49,6 +50,10 @@ dependencies = [
 
 [[package]]
 name = "quickshare-quality-contracts"
+version = "0.0.0"
+
+[[package]]
+name = "quickshare-sharing"
 version = "0.0.0"
 
 [[package]]
