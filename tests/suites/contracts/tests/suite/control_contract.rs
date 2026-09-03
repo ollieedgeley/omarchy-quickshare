@@ -28,6 +28,29 @@ mod tests {
         worker: JoinHandle<io::Result<String>>,
     }
 
+    struct FileFixture {
+        path: PathBuf,
+        root: PathBuf,
+    }
+
+    impl FileFixture {
+        fn cleanup(self) -> io::Result<()> {
+            fs::remove_dir_all(self.root)
+        }
+
+        fn create() -> io::Result<Self> {
+            let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+            let root = env::temp_dir().join(format!(
+                "omarchy-quickshare-file-{}-{sequence}",
+                process::id()
+            ));
+            fs::create_dir_all(&root)?;
+            let path = root.join("photo.jpg");
+            fs::write(&path, b"fixture bytes")?;
+            Ok(Self { path, root })
+        }
+    }
+
     impl ControlDaemonFake {
         fn finish(self) -> io::Result<String> {
             drop(UnixStream::connect(&self.socket));
@@ -80,6 +103,14 @@ mod tests {
     }
 
     fn assert_submission(value: &str, expected_request: &str) {
+        assert_submission_from(value, Path::new("."), expected_request);
+    }
+
+    fn assert_submission_from(
+        value: &str,
+        current_directory: &Path,
+        expected_request: &str,
+    ) {
         let fake_result = ControlDaemonFake::start();
         assert!(fake_result.is_ok(), "failed to start control fake");
         let Ok(fake) = fake_result else {
@@ -88,8 +119,12 @@ mod tests {
         let mut output = Vec::new();
         let arguments = vec![String::from(value)];
 
-        let run_result =
-            omarchy_quickshare::run(&arguments, fake.socket(), &mut output);
+        let run_result = omarchy_quickshare::run(
+            &arguments,
+            current_directory,
+            fake.socket(),
+            &mut output,
+        );
         assert!(run_result.is_ok(), "submission failed: {run_result:?}");
 
         let request_result = fake.finish();
@@ -110,7 +145,52 @@ mod tests {
     }
 
     #[test]
+    fn directory_is_rejected_before_control_connection() {
+        let fixture_result = FileFixture::create();
+        assert!(fixture_result.is_ok(), "failed to create file fixture");
+        let Ok(fixture) = fixture_result else {
+            return;
+        };
+        let arguments = vec![String::from(".")];
+        let socket = fixture.root.join("missing.sock");
+        let mut output = Vec::new();
+
+        let result = omarchy_quickshare::run(
+            &arguments,
+            &fixture.root,
+            &socket,
+            &mut output,
+        );
+
+        assert!(result.is_err(), "directory submission unexpectedly passed");
+        let Err(error) = result else {
+            return;
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "folder sharing is not supported yet");
+        let cleanup_result = fixture.cleanup();
+        assert!(cleanup_result.is_ok(), "failed to clean file fixture");
+    }
+
+    #[test]
     fn url_is_submitted_to_the_local_endpoint_as_a_url() {
         assert_submission("https://example.com/share", URL_REQUEST_FIXTURE);
+    }
+
+    #[test]
+    fn existing_file_is_submitted_to_the_local_endpoint_as_a_file() {
+        let fixture_result = FileFixture::create();
+        assert!(fixture_result.is_ok(), "failed to create file fixture");
+        let Ok(fixture) = fixture_result else {
+            return;
+        };
+        let path = fixture.path.to_string_lossy();
+        let expected = format!(
+            "{{\"request\":{{\"type\":\"submit_file\",\"path\":\"{path}\"}},\
+             \"version\":1}}\n"
+        );
+        assert_submission_from("photo.jpg", &fixture.root, &expected);
+        let cleanup_result = fixture.cleanup();
+        assert!(cleanup_result.is_ok(), "failed to clean file fixture");
     }
 }

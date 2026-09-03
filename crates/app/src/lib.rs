@@ -20,6 +20,45 @@ use quickshare_control::codec::{read_response, write_request};
 use quickshare_control::request::Envelope as RequestEnvelope;
 use quickshare_control::response::Response;
 
+/// Classifies one command argument without contacting the local endpoint.
+#[expect(
+    clippy::single_call_fn,
+    reason = "Input classification is separate from local control transport"
+)]
+#[inline]
+fn request(
+    arguments: &[String],
+    current_directory: &Path,
+) -> io::Result<RequestEnvelope> {
+    let mut values = arguments.iter();
+    let Some(text) = values.next() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "usage: omarchy-quickshare <text|url|file>",
+        ));
+    };
+    if values.next().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "usage: omarchy-quickshare <text|url|file>",
+        ));
+    }
+    let path = current_directory.join(text);
+    if path.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "folder sharing is not supported yet",
+        ));
+    }
+    if path.is_file() {
+        return Ok(RequestEnvelope::submit_file(&path));
+    }
+    if text.starts_with("http://") || text.starts_with("https://") {
+        return Ok(RequestEnvelope::submit_url(text));
+    }
+    Ok(RequestEnvelope::submit_text(text))
+}
+
 /// Runs one command against the local endpoint.
 ///
 /// # Errors
@@ -28,31 +67,14 @@ use quickshare_control::response::Response;
 #[inline]
 pub fn run<Output>(
     arguments: &[String],
+    current_directory: &Path,
     socket_path: &Path,
     output: &mut Output,
 ) -> io::Result<()>
 where
     Output: Write,
 {
-    let mut values = arguments.iter();
-    let Some(text) = values.next() else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "usage: omarchy-quickshare <text>",
-        ));
-    };
-    if values.next().is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "usage: omarchy-quickshare <text>",
-        ));
-    }
-    let request = if text.starts_with("http://") || text.starts_with("https://")
-    {
-        RequestEnvelope::submit_url(text)
-    } else {
-        RequestEnvelope::submit_text(text)
-    };
+    let request = request(arguments, current_directory)?;
     let mut stream = UnixStream::connect(socket_path)?;
     write_request(&mut stream, &request)?;
     let response = read_response(&mut BufReader::new(stream))?;
@@ -79,6 +101,7 @@ where
 #[inline]
 pub fn run_from_environment() -> io::Result<()> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
+    let current_directory = env::current_dir()?;
     let socket_path = env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .map(|root| root.join("omarchy-quickshare/control.sock"))
@@ -89,5 +112,10 @@ pub fn run_from_environment() -> io::Result<()> {
             )
         })?;
     let stdout = io::stdout();
-    run(&arguments, &socket_path, &mut stdout.lock())
+    run(
+        &arguments,
+        &current_directory,
+        &socket_path,
+        &mut stdout.lock(),
+    )
 }

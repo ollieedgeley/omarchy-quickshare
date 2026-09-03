@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
 use crate::PROTOCOL_VERSION;
@@ -13,6 +15,18 @@ pub struct Envelope {
 }
 
 impl Envelope {
+    /// Creates a request to submit one file for sharing.
+    #[must_use]
+    #[inline]
+    pub fn submit_file(path: &Path) -> Self {
+        Self {
+            request: Request::SubmitFile {
+                path: path.to_path_buf(),
+            },
+            version: PROTOCOL_VERSION,
+        }
+    }
+
     /// Creates a request to submit plain text for sharing.
     #[must_use]
     #[inline]
@@ -43,6 +57,11 @@ impl Envelope {
 #[serde(deny_unknown_fields, rename_all = "snake_case", tag = "type")]
 #[non_exhaustive]
 pub enum Request {
+    /// Submit one file for an outbound share.
+    SubmitFile {
+        /// The path to the file on the local machine.
+        path: PathBuf,
+    },
     /// Submit plain text for an outbound share.
     SubmitText {
         /// The exact text supplied by the user.
