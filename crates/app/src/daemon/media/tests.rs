@@ -214,10 +214,13 @@ fn accept_bandwidth_upgrade_keeps_original_when_join_fails() {
 fn accept_negotiated_upgrade_preserves_bluetooth_payload() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let responder_barrier = Arc::clone(&barrier);
     let responder = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let mut connection =
             accept_connection(stream, Medium::Bluetooth).expect("accept");
+        let _synced = responder_barrier.wait();
         let wifi = accept_negotiated_upgrade(&mut connection, None)
             .expect("no upgrade offer");
         assert!(wifi.is_none());
@@ -228,6 +231,7 @@ fn accept_negotiated_upgrade_preserves_bluetooth_payload() {
     let stream = TcpStream::connect(address).unwrap();
     let connection =
         connect_connection(stream, Medium::Bluetooth).expect("connect");
+    let _synced = barrier.wait();
     let mut session = sharing_session(connection);
     pair(&mut session);
     responder.join().expect("responder");
@@ -237,10 +241,13 @@ fn accept_negotiated_upgrade_preserves_bluetooth_payload() {
 fn initiate_bandwidth_upgrade_without_manager_pairs_on_original() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let responder_barrier = Arc::clone(&barrier);
     let responder = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let mut connection =
             accept_connection(stream, Medium::Bluetooth).expect("accept");
+        let _synced = responder_barrier.wait();
         let wifi = accept_negotiated_upgrade(&mut connection, None)
             .expect("fallback after failure");
         assert!(wifi.is_none());
@@ -251,6 +258,7 @@ fn initiate_bandwidth_upgrade_without_manager_pairs_on_original() {
     let stream = TcpStream::connect(address).unwrap();
     let mut connection =
         connect_connection(stream, Medium::Bluetooth).expect("connect");
+    let _synced = barrier.wait();
     let wifi = initiate_bandwidth_upgrade(&mut connection, None)
         .expect("report missing manager");
     assert!(wifi.is_none());

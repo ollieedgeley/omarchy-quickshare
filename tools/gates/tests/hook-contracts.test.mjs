@@ -495,6 +495,7 @@ describe("isTestPath", () => {
     assert.equal(isTestPath("tests/foo_test.rs"), true);
     assert.equal(isTestPath("tests/environments/env1/quux_test.py"), true);
     assert.equal(isTestPath("src/main.rs"), false);
+    assert.equal(isTestPath("crates/app/src/daemon/media/tests.rs"), true);
     assert.equal(isTestPath("tests/helpers.js"), true);
   });
 });

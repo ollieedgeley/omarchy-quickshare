@@ -167,7 +167,10 @@ export function isTestPath(path) {
   const testSuffix = /_test\./u;
   const testPrefix = /^test_/u;
   const testName =
-    testMarker.test(name) || testSuffix.test(name) || testPrefix.test(name);
+    testMarker.test(name) ||
+    testSuffix.test(name) ||
+    testPrefix.test(name) ||
+    name === "tests.rs";
   const testDirectory = /\/tests?\//u;
   const inTestDirectory =
     testDirectory.test(path) ||
