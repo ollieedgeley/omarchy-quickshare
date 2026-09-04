@@ -3,10 +3,11 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use core::fmt;
 use std::collections::HashMap;
+use std::time::Instant;
 
 use zbus::blocking::Connection;
 use zbus::blocking::fdo::ObjectManagerProxy;
-use zbus::zvariant::OwnedObjectPath;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::{
     DbusAdvertisement, DbusClassicListener, DbusGattServer, DbusL2capListener,
@@ -24,31 +25,28 @@ impl DbusScan {
         &self,
         seen: &mut BTreeSet<Address>,
     ) -> Result<Option<BleCandidate>, Error> {
-        super::scan::wait_until_or_timeout(
-            &self.session.connection,
-            self.deadline,
-            || match collect_ble_candidates(&self.session.connection, seen)? {
-                Some(candidate) => Ok(candidate),
-                None => Err(Error::timeout()),
-            },
-        )
-        .map(Some)
+        match collect_ble_candidates(&self.session.connection, seen)? {
+            Some(candidate) => Ok(Some(candidate)),
+            None => self.none_or_timeout(),
+        }
     }
 
     pub(crate) fn next_classic_candidate(
         &self,
         seen: &mut BTreeSet<Address>,
     ) -> Result<Option<ClassicCandidate>, Error> {
-        super::scan::wait_until_or_timeout(
-            &self.session.connection,
-            self.deadline,
-            || match collect_classic_candidates(&self.session.connection, seen)?
-            {
-                Some(candidate) => Ok(candidate),
-                None => Err(Error::timeout()),
-            },
-        )
-        .map(Some)
+        match collect_classic_candidates(&self.session.connection, seen)? {
+            Some(candidate) => Ok(Some(candidate)),
+            None => self.none_or_timeout(),
+        }
+    }
+
+    fn none_or_timeout<T>(&self) -> Result<Option<T>, Error> {
+        if Instant::now() >= self.deadline {
+            Err(Error::timeout())
+        } else {
+            Ok(None)
+        }
     }
 
     pub(crate) fn stop(&mut self) -> Result<(), Error> {
@@ -90,40 +88,45 @@ impl DbusGattServer {
 
 impl DbusL2capListener {
     pub(crate) fn accept(&mut self) -> Result<Option<L2capChannel>, Error> {
-        match self.incoming.try_take()? {
-            Some(fd) => Ok(Some(L2capChannel::dbus(
-                super::DbusBytePipe::from_owned_fd(fd)?,
-            ))),
-            None => Ok(None),
-        }
+        accept_profile(&self.incoming, L2capChannel::dbus)
     }
 
     pub(crate) fn stop(&mut self) -> Result<(), Error> {
-        if self.stopped {
-            return Ok(());
-        }
-        self.stopped = true;
-        self.session.unregister_profile(&self.path)
+        stop_profile(&mut self.stopped, &self.session, &self.path)
     }
 }
 
 impl DbusClassicListener {
     pub(crate) fn accept(&mut self) -> Result<Option<ClassicSocket>, Error> {
-        match self.incoming.try_take()? {
-            Some(fd) => Ok(Some(ClassicSocket::dbus(
-                super::DbusBytePipe::from_owned_fd(fd)?,
-            ))),
-            None => Ok(None),
-        }
+        accept_profile(&self.incoming, ClassicSocket::dbus)
     }
 
     pub(crate) fn stop(&mut self) -> Result<(), Error> {
-        if self.stopped {
-            return Ok(());
-        }
-        self.stopped = true;
-        self.session.unregister_profile(&self.path)
+        stop_profile(&mut self.stopped, &self.session, &self.path)
     }
+}
+
+fn accept_profile<Channel>(
+    incoming: &super::IncomingSockets,
+    wrap: impl FnOnce(super::DbusBytePipe) -> Channel,
+) -> Result<Option<Channel>, Error> {
+    let Some(fd) = incoming.try_take()? else {
+        return Ok(None);
+    };
+    let pipe = super::DbusBytePipe::from_owned_fd(fd)?;
+    Ok(Some(wrap(pipe)))
+}
+
+fn stop_profile(
+    stopped: &mut bool,
+    session: &super::DbusSession,
+    path: &OwnedObjectPath,
+) -> Result<(), Error> {
+    if *stopped {
+        return Ok(());
+    }
+    *stopped = true;
+    session.unregister_profile(path)
 }
 
 impl fmt::Debug for DbusScan {
@@ -198,27 +201,30 @@ fn collect_ble_candidates(
     connection: &Connection,
     seen: &mut BTreeSet<Address>,
 ) -> Result<Option<BleCandidate>, Error> {
-    for (_path, interfaces) in managed_objects(connection)? {
-        let Some(device) = interfaces.get("org.bluez.Device1") else {
-            continue;
-        };
-        let Some(address) = device_address(device)? else {
-            continue;
-        };
-        if !seen.insert(address) {
-            continue;
-        }
-        if let Some(service_data) = service_data_value(device)? {
-            return Ok(Some(BleCandidate::new(address, service_data)));
-        }
-    }
-    Ok(None)
+    collect_candidate(connection, seen, |address, device| {
+        Ok(service_data_value(device)?
+            .map(|service_data| BleCandidate::new(address, service_data)))
+    })
 }
 
 fn collect_classic_candidates(
     connection: &Connection,
     seen: &mut BTreeSet<Address>,
 ) -> Result<Option<ClassicCandidate>, Error> {
+    collect_candidate(connection, seen, |address, device| {
+        Ok(quick_share_device(device)?
+            .then_some(ClassicCandidate::new(address)))
+    })
+}
+
+fn collect_candidate<Candidate>(
+    connection: &Connection,
+    seen: &mut BTreeSet<Address>,
+    mut select: impl FnMut(
+        Address,
+        &BTreeMap<String, OwnedValue>,
+    ) -> Result<Option<Candidate>, Error>,
+) -> Result<Option<Candidate>, Error> {
     for (_path, interfaces) in managed_objects(connection)? {
         let Some(device) = interfaces.get("org.bluez.Device1") else {
             continue;
@@ -226,17 +232,20 @@ fn collect_classic_candidates(
         let Some(address) = device_address(device)? else {
             continue;
         };
-        if seen.contains(&address) || !quick_share_device(device)? {
+        if seen.contains(&address) {
             continue;
         }
+        let Some(candidate) = select(address, device)? else {
+            continue;
+        };
         let _inserted = seen.insert(address);
-        return Ok(Some(ClassicCandidate::new(address)));
+        return Ok(Some(candidate));
     }
     Ok(None)
 }
 
 fn device_address(
-    properties: &BTreeMap<String, zbus::zvariant::OwnedValue>,
+    properties: &BTreeMap<String, OwnedValue>,
 ) -> Result<Option<Address>, Error> {
     let Some(value) = properties.get("Address") else {
         return Ok(None);
@@ -249,10 +258,7 @@ fn device_address(
 pub(super) fn managed_objects(
     connection: &Connection,
 ) -> Result<
-    HashMap<
-        OwnedObjectPath,
-        HashMap<String, BTreeMap<String, zbus::zvariant::OwnedValue>>,
-    >,
+    HashMap<OwnedObjectPath, HashMap<String, BTreeMap<String, OwnedValue>>>,
     Error,
 > {
     let manager = ObjectManagerProxy::builder(connection)
@@ -297,7 +303,7 @@ fn parse_address(value: &str) -> Result<Address, Error> {
 }
 
 fn service_data_value(
-    properties: &BTreeMap<String, zbus::zvariant::OwnedValue>,
+    properties: &BTreeMap<String, OwnedValue>,
 ) -> Result<Option<Vec<u8>>, Error> {
     let Some(value) = properties.get("ServiceData") else {
         return Ok(None);
@@ -308,7 +314,7 @@ fn service_data_value(
 }
 
 fn quick_share_device(
-    properties: &BTreeMap<String, zbus::zvariant::OwnedValue>,
+    properties: &BTreeMap<String, OwnedValue>,
 ) -> Result<bool, Error> {
     let Some(value) = properties.get("UUIDs") else {
         return Ok(false);

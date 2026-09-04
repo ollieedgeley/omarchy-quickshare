@@ -4,6 +4,7 @@
 )]
 
 use core::time::Duration;
+use std::time::Instant;
 
 use async_io as _;
 use futures_lite as _;
@@ -53,6 +54,39 @@ fn one_client_discovers_ble_and_classic_without_start_conflict() {
     scan.stop().expect("BLE lease should release");
     assert_eq!(fake.stop_count(), 1);
 }
+#[test]
+fn empty_ble_poll_keeps_classic_discovery_responsive() {
+    let fake = FakeBluez::start();
+    let adapter = quickshare_bluez::Adapter::on_bus(fake.address())
+        .expect("connect to fake BlueZ");
+    let mut scan = adapter
+        .scan_ble(Duration::from_secs(2))
+        .expect("BLE scan should start");
+    let mut discovery = adapter
+        .discover_classic(Duration::from_secs(2))
+        .expect("Classic discovery should share the scan");
+    let _ble = scan
+        .next_candidate()
+        .expect("BLE scan should remain healthy")
+        .expect("first BLE candidate");
+
+    let started = Instant::now();
+    assert_eq!(
+        scan.next_candidate().expect("empty BLE poll"),
+        None,
+        "empty BLE polling must be nonblocking"
+    );
+    let classic = discovery
+        .next_candidate()
+        .expect("Classic discovery should remain healthy")
+        .expect("Classic candidate should remain reachable");
+
+    assert_eq!(classic.address(), parse_address(CLASSIC_ADDRESS));
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "BLE polling blocked Classic discovery"
+    );
+}
 
 #[test]
 fn dropping_both_leases_stops_discovery_once() {
@@ -81,7 +115,7 @@ fn classic_discovery_excludes_non_quick_share_devices() {
     let adapter = quickshare_bluez::Adapter::on_bus(fake.address())
         .expect("connect to fake BlueZ");
     let mut discovery = adapter
-        .discover_classic(Duration::from_millis(200))
+        .discover_classic(Duration::ZERO)
         .expect("Classic discovery should start");
     let classic = discovery
         .next_candidate()
