@@ -26,6 +26,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(5);
 const BROWSE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 /// BLE and Classic discovery lease lifetime while searching.
 const DISCOVERY_LEASE: Duration = Duration::from_secs(15);
+/// Minimum delay between full BlueZ object-tree snapshots.
+const BLUETOOTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[expect(
     clippy::needless_pass_by_value,
@@ -52,6 +54,7 @@ pub(super) fn run_worker(
     let mut visibility = VisibilityLeases::default();
     let mut discovery = DiscoveryLeases::default();
     let mut restart_at = Instant::now();
+    let mut next_bluetooth_poll = Instant::now();
     let mut seen = HashSet::new();
     let mut mdns_browse_ok = None;
     let mut advertisement_decode_failed = false;
@@ -75,15 +78,20 @@ pub(super) fn run_worker(
         {
             break;
         }
-        if let Some(sighting) = discovery.next_sighting() {
-            let event = NetworkEvent::PeerSeen {
-                name: sighting.name,
-                peer_id: sighting.peer_id,
-                route: sighting.route,
-            };
-            remember_seen(&mut seen, &event);
-            if events.send(event).is_err() {
-                break;
+        let now = Instant::now();
+        if now >= next_bluetooth_poll {
+            next_bluetooth_poll =
+                now.checked_add(BLUETOOTH_POLL_INTERVAL).unwrap_or(now);
+            if let Some(sighting) = discovery.next_sighting() {
+                let event = NetworkEvent::PeerSeen {
+                    name: sighting.name,
+                    peer_id: sighting.peer_id,
+                    route: sighting.route,
+                };
+                remember_seen(&mut seen, &event);
+                if events.send(event).is_err() {
+                    break;
+                }
             }
         }
         if let Some(stream) = inbound

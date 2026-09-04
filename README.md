@@ -114,14 +114,14 @@ does not publish one. A full checkout can run the same Cargo command.
 The CLI talks to `$XDG_RUNTIME_DIR/omarchy-quickshare/control.sock`. Start
 the user service first.
 
-Submit one argument with `send`. An existing file or directory is a file
-share. Directories are zipped first. `http://` or `https://` is a URL.
-Anything else is text.
+Submit one argument directly, or use the explicit `send` command. An existing
+file or directory is a file share. Directories are zipped first. `http://` or
+`https://` is a URL. Anything else is text.
 
 ```sh
-omarchy-quickshare send "hello from Omarchy"
-omarchy-quickshare send https://example.test/share
-omarchy-quickshare send ./note.txt
+omarchy-quickshare "hello from Omarchy"
+omarchy-quickshare https://example.test/share
+omarchy-quickshare ./note.txt
 omarchy-quickshare send ./photos
 ```
 

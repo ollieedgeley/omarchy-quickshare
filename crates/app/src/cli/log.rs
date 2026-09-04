@@ -19,6 +19,21 @@ pub(super) fn init(log_level: LogLevel) {
 /// Builds the process filter, preferring `RUST_LOG` over the CLI default.
 #[must_use]
 pub(super) fn env_filter(log_level: LogLevel) -> EnvFilter {
-    EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(log_level.as_str()))
+    let rust_log = std::env::var("RUST_LOG").ok();
+    env_filter_from(rust_log.as_deref(), log_level)
+}
+
+/// Builds a filter from an explicit optional environment value.
+#[must_use]
+pub(super) fn env_filter_from(
+    rust_log: Option<&str>,
+    log_level: LogLevel,
+) -> EnvFilter {
+    rust_log.map_or_else(
+        || EnvFilter::new(log_level.as_str()),
+        |value| {
+            EnvFilter::try_new(value)
+                .unwrap_or_else(|_| EnvFilter::new(log_level.as_str()))
+        },
+    )
 }

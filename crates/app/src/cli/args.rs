@@ -3,12 +3,13 @@
 use core::iter;
 use std::ffi::OsString;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum, error::ErrorKind};
 
 const AFTER_HELP: &str = "\
 Examples:
-  omarchy-quickshare send \"hello from Omarchy\"
-  omarchy-quickshare send ./note.txt
+  omarchy-quickshare \"hello from Omarchy\"
+  omarchy-quickshare ./note.txt
+  omarchy-quickshare send https://example.test/share
   omarchy-quickshare status --json
   omarchy-quickshare discover start
   omarchy-quickshare peer pin galaxy-tab
@@ -301,8 +302,21 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    Cli::try_parse_from(
+    let arguments = arguments.into_iter().map(Into::into).collect::<Vec<_>>();
+    match Cli::try_parse_from(
         iter::once(OsString::from("omarchy-quickshare"))
-            .chain(arguments.into_iter().map(Into::into)),
-    )
+            .chain(arguments.iter().cloned()),
+    ) {
+        Err(error)
+            if error.kind() == ErrorKind::InvalidSubcommand
+                && arguments.len() == 1 =>
+        {
+            Cli::try_parse_from(
+                [OsString::from("omarchy-quickshare"), OsString::from("send")]
+                    .into_iter()
+                    .chain(arguments),
+            )
+        }
+        result => result,
+    }
 }

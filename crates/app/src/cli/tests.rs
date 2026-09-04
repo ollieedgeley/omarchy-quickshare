@@ -6,7 +6,7 @@ use std::process;
 use quickshare_control::request::Envelope as RequestEnvelope;
 use tracing_subscriber::EnvFilter;
 
-use super::{Command, LogLevel, env_filter, parse, request, run};
+use super::{Command, LogLevel, env_filter_from, parse, request, run};
 
 fn fixture(name: &str) -> PathBuf {
     let root = std::env::temp_dir()
@@ -171,6 +171,8 @@ fn unknown_option_does_not_submit_text() {
 
 #[test]
 fn send_and_control_commands_map_to_the_command_tree() {
+    let direct = parse(["hello"]).expect("direct send");
+    assert!(matches!(direct.into_command(), Command::Send { .. }));
     let send = parse(["send", "hello"]).expect("send");
     assert!(matches!(send.into_command(), Command::Send { .. }));
     let health = parse(["health"]).expect("health");
@@ -212,9 +214,6 @@ fn daemon_log_level_defaults_to_info() {
 
 #[test]
 fn env_filter_uses_cli_level_when_rust_log_is_unset() {
-    if std::env::var_os("RUST_LOG").is_some() {
-        return;
-    }
-    let filter = env_filter(LogLevel::Warn);
+    let filter = env_filter_from(None, LogLevel::Warn);
     assert_eq!(filter.to_string(), EnvFilter::new("warn").to_string());
 }

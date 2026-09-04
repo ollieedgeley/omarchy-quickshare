@@ -19,4 +19,4 @@ use args::{Command, LogLevel, parse};
 #[cfg(test)]
 use classify::request;
 #[cfg(test)]
-use log::env_filter;
+use log::env_filter_from;

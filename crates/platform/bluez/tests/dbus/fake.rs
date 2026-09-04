@@ -18,6 +18,7 @@ use quickshare_bluez::QUICK_SHARE_BLE_UUID;
 pub(crate) const BLE_ADDRESS: &str = "10:20:30:40:50:60";
 pub(crate) const CLASSIC_ADDRESS: &str = "22:33:44:55:66:77";
 pub(crate) const OTHER_ADDRESS: &str = "AA:BB:CC:DD:EE:FF";
+pub(crate) const MALFORMED_ADDRESS: &str = "12:34:56:78:9A:BC";
 pub(crate) const BLE_SERVICE_DATA: &[u8] = &[0x23, 0x0A, 0x0B];
 const SERIAL_PORT: &str = "00001101-0000-1000-8000-00805f9b34fb";
 
@@ -26,7 +27,7 @@ pub(crate) struct FakeBluez {
     child: Child,
     starts: Arc<AtomicUsize>,
     stops: Arc<AtomicUsize>,
-    _connection: zbus::blocking::Connection,
+    connection: zbus::blocking::Connection,
 }
 
 struct Adapter {
@@ -38,6 +39,7 @@ struct Adapter {
 struct BleDevice;
 struct ClassicDevice;
 struct OtherDevice;
+struct MalformedDevice;
 
 impl FakeBluez {
     pub(crate) fn start() -> Self {
@@ -84,12 +86,20 @@ impl FakeBluez {
             child,
             starts,
             stops,
-            _connection: connection,
+            connection,
         }
     }
 
     pub(crate) fn address(&self) -> &str {
         &self.address
+    }
+
+    pub(crate) fn add_malformed_device(&self) {
+        let _added = self
+            .connection
+            .object_server()
+            .at("/org/bluez/hci0/dev_12_34_56_78_9A_BC", MalformedDevice)
+            .expect("serve malformed device");
     }
 
     pub(crate) fn start_count(&self) -> usize {
@@ -199,5 +209,23 @@ impl OtherDevice {
     #[zbus(property, name = "ServiceData")]
     fn service_data(&self) -> HashMap<String, Vec<u8>> {
         HashMap::new()
+    }
+}
+
+#[interface(name = "org.bluez.Device1")]
+impl MalformedDevice {
+    #[zbus(property, name = "Address")]
+    fn address(&self) -> &str {
+        MALFORMED_ADDRESS
+    }
+
+    #[zbus(property, name = "UUIDs")]
+    fn uuids(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    #[zbus(property, name = "ServiceData")]
+    fn service_data(&self) -> &'static str {
+        "not-a-service-data-map"
     }
 }

@@ -394,10 +394,12 @@ Item {
       width: parent.width
       actionBusy: root.actionBusy
       attachmentName: root.previewText
+      attachmentIcon: root.previewIcon
       cursorActive: root.cursorActive
       peerName: root.peerName
       selectedTarget: root.selectedTarget
       verificationCode: root.consentPin
+      showPasteBadge: root.showPasteBadge
       waiting: root.viewState === "waiting"
       onAcceptRequested: root.accept()
       onCancelRequested: root.cancel()

@@ -17,6 +17,7 @@ const SOURCE = join(ROOT, "packaging", "omarchy-plugin");
 const DESTINATION = join(ROOT, "dist", "omarchy-plugin");
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
 const PLUGIN_FILES = [
+  "AttachmentBadge.qml",
   "BarWidget.qml",
   "ConsentView.qml",
   "LICENSE",

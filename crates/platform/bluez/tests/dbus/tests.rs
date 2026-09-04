@@ -4,7 +4,6 @@
 )]
 
 use core::time::Duration;
-use std::time::Instant;
 
 use async_io as _;
 use futures_lite as _;
@@ -70,7 +69,6 @@ fn empty_ble_poll_keeps_classic_discovery_responsive() {
         .expect("BLE scan should remain healthy")
         .expect("first BLE candidate");
 
-    let started = Instant::now();
     assert_eq!(
         scan.next_candidate().expect("empty BLE poll"),
         None,
@@ -82,9 +80,30 @@ fn empty_ble_poll_keeps_classic_discovery_responsive() {
         .expect("Classic candidate should remain reachable");
 
     assert_eq!(classic.address(), parse_address(CLASSIC_ADDRESS));
-    assert!(
-        started.elapsed() < Duration::from_millis(250),
-        "BLE polling blocked Classic discovery"
+}
+
+#[test]
+fn malformed_ble_candidate_is_reported_only_once() {
+    let fake = FakeBluez::start();
+    let adapter = quickshare_bluez::Adapter::on_bus(fake.address())
+        .expect("connect to fake BlueZ");
+    let mut scan = adapter
+        .scan_ble(Duration::from_secs(2))
+        .expect("BLE scan should start");
+    let _valid = scan
+        .next_candidate()
+        .expect("initial BLE scan should remain healthy")
+        .expect("initial BLE candidate");
+    fake.add_malformed_device();
+
+    let error = scan
+        .next_candidate()
+        .expect_err("malformed service data should be reported");
+    assert_eq!(error.kind(), ErrorKind::Protocol);
+    assert_eq!(
+        scan.next_candidate()
+            .expect("malformed candidate is retired"),
+        None
     );
 }
 

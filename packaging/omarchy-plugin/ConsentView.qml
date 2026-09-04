@@ -7,10 +7,12 @@ Item {
 
   required property bool actionBusy
   required property string attachmentName
+  required property string attachmentIcon
   required property bool cursorActive
   required property string peerName
   required property string selectedTarget
   required property string verificationCode
+  required property bool showPasteBadge
   required property bool waiting
 
   signal acceptRequested()
@@ -48,8 +50,16 @@ Item {
       }
     }
 
+    AttachmentBadge {
+      visible: root.waiting && root.showPasteBadge
+      width: parent.width
+      previewIcon: root.attachmentIcon
+      previewText: root.attachmentName
+    }
+
     Text {
       visible: root.attachmentName.length > 0
+        && (!root.waiting || !root.showPasteBadge)
       width: parent.width
       text: root.attachmentName
       color: Color.foreground

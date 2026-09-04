@@ -235,11 +235,17 @@ fn collect_candidate<Candidate>(
         if seen.contains(&address) {
             continue;
         }
-        let Some(candidate) = select(address, device)? else {
-            continue;
-        };
-        let _inserted = seen.insert(address);
-        return Ok(Some(candidate));
+        match select(address, device) {
+            Ok(Some(candidate)) => {
+                let _inserted = seen.insert(address);
+                return Ok(Some(candidate));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let _inserted = seen.insert(address);
+                return Err(error);
+            }
+        }
     }
     Ok(None)
 }

@@ -28,6 +28,15 @@ ShellRoot {
     }
     return false
   }
+  function rendersVisibleObject(item, expected) {
+    if (item.visible === false) return false
+    if (String(item.objectName || "") === expected) return true
+    var children = item.children || []
+    for (var index = 0; index < children.length; index += 1) {
+      if (rendersVisibleObject(children[index], expected)) return true
+    }
+    return false
+  }
 
   function outboundSnapshot(phase, attachment, peers) {
     return {
@@ -127,7 +136,14 @@ ShellRoot {
       && root.cancelledShare === root.exactShareId
 
     panel.togglePin("tablet", true)
-    return peers && actions && hiddenBadge && shownBadge && !root.pinValue
+    panel.snapshot = outboundSnapshot(
+      "awaiting_peer_consent",
+      {"type": "file", "name": "song.ogg"},
+      [],
+    )
+    var pinnedBadge = rendersVisibleObject(panel, "pasteBadge")
+    return peers && actions && hiddenBadge && shownBadge
+      && pinnedBadge && !root.pinValue
   }
 
   function verifyDiscovery() {

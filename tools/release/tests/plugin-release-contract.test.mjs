@@ -47,6 +47,7 @@ const SOURCE_COMMIT = "a".repeat(COMMIT_LENGTH);
 const SHA256_LENGTH = 64;
 const REJECTED_PROTOCOL = 3;
 const EXPECTED_FILES = [
+  "AttachmentBadge.qml",
   "BarWidget.qml",
   "ConsentView.qml",
   "LICENSE",
@@ -60,6 +61,7 @@ const EXPECTED_FILES = [
   "release.json",
 ];
 const PANEL_FILES = [
+  "AttachmentBadge.qml",
   "ConsentView.qml",
   "PeerChoiceView.qml",
   "SharePanel.qml",
