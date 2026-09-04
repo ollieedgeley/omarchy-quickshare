@@ -54,6 +54,7 @@ function exactEnvironment() {
       "bin",
       "cargo-machete",
     ),
+    CARGO_TARGET_DIR: join(ROOT, "target"),
     CODEGRAPH: join(nodeBin, "codegraph"),
     NODE_BIN: nodeBin,
     PATH: `${nodeBin}:${process.env.PATH}`,
