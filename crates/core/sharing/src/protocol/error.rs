@@ -1,6 +1,85 @@
 use quickshare_connections::Error as ConnectionError;
 use std::{error, fmt, io};
 
+/// One account-free paired-key operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PairingStep {
+    /// Sending the local paired-key encryption frame.
+    SendEncryption,
+    /// Receiving and decoding the peer paired-key encryption frame.
+    ReceiveEncryption,
+    /// Sending the local paired-key result frame.
+    SendResult,
+    /// Receiving and decoding the peer paired-key result frame.
+    ReceiveResult,
+}
+
+impl PairingStep {
+    /// Returns the stable snake-case diagnostic label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SendEncryption => "send_encryption",
+            Self::ReceiveEncryption => "receive_encryption",
+            Self::SendResult => "send_result",
+            Self::ReceiveResult => "receive_result",
+        }
+    }
+}
+
+/// A Sharing protocol failure attributed to one paired-key operation.
+#[derive(Debug)]
+pub struct PairingError {
+    step: PairingStep,
+    source: ProtocolError,
+}
+
+impl PairingError {
+    /// Attributes a protocol failure to the operation that returned it.
+    #[inline(never)]
+    pub(in crate::protocol) fn new(
+        step: PairingStep,
+        source: ProtocolError,
+    ) -> Self {
+        Self { step, source }
+    }
+
+    /// Returns the paired-key operation that failed.
+    #[must_use]
+    pub const fn step(&self) -> PairingStep {
+        self.step
+    }
+
+    /// Borrows the underlying Sharing protocol failure.
+    #[must_use]
+    pub const fn source_error(&self) -> &ProtocolError {
+        &self.source
+    }
+
+    /// Returns the underlying Sharing protocol failure.
+    #[must_use]
+    pub fn into_source(self) -> ProtocolError {
+        self.source
+    }
+}
+
+impl fmt::Display for PairingError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "paired-key {} failed: {}",
+            self.step.as_str(),
+            self.source
+        )
+    }
+}
+
+impl error::Error for PairingError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
 /// Failures while interpreting Sharing messages or transfer events.
 #[derive(Debug)]
 pub enum ProtocolError {
@@ -92,5 +171,57 @@ impl From<io::Error> for ProtocolError {
 impl From<prost::DecodeError> for ProtocolError {
     fn from(error: prost::DecodeError) -> Self {
         Self::Decode(error)
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::inline_modules,
+    reason = "Error contracts stay beside the error types"
+)]
+mod tests {
+    use super::{PairingError, PairingStep, ProtocolError};
+    use core::error::Error as _;
+
+    #[test]
+    fn pairing_steps_have_stable_labels() {
+        let cases = [
+            (PairingStep::SendEncryption, "send_encryption"),
+            (PairingStep::ReceiveEncryption, "receive_encryption"),
+            (PairingStep::SendResult, "send_result"),
+            (PairingStep::ReceiveResult, "receive_result"),
+        ];
+
+        for (step, expected) in cases {
+            assert_eq!(step.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn pairing_error_preserves_its_step_and_source() {
+        let error = PairingError::new(
+            PairingStep::ReceiveEncryption,
+            ProtocolError::Disconnected,
+        );
+
+        assert_eq!(error.step(), PairingStep::ReceiveEncryption);
+        assert!(matches!(error.source_error(), ProtocolError::Disconnected));
+        assert_eq!(
+            error.to_string(),
+            concat!(
+                "paired-key receive_encryption failed: ",
+                "peer disconnected during the share"
+            )
+        );
+        assert!(
+            error
+                .source()
+                .and_then(
+                    <dyn core::error::Error>::downcast_ref::<ProtocolError>
+                )
+                .is_some()
+        );
+
+        assert!(matches!(error.into_source(), ProtocolError::Disconnected));
     }
 }

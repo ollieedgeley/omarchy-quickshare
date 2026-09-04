@@ -14,10 +14,10 @@
 use base64 as _;
 use core::cell::Cell;
 use prost as _;
-use quickshare_connections::{Connection, ConnectionOptions};
+use quickshare_connections::{Connection, ConnectionOptions, Event};
 use quickshare_crypto::Handshake;
 use quickshare_sharing::{
-    OfferKind, PairingStatus, ProtocolError, SharingSession,
+    OfferKind, PairingStatus, PairingStep, ProtocolError, SharingSession,
 };
 use quickshare_wire as _;
 use rand_core as _;
@@ -67,6 +67,39 @@ fn unix_pair_connect_io_establishes_account_free_pairing() {
         session.exchange_account_free_pairing().expect("pair"),
         PairingStatus::Unable
     );
+    responder.join().expect("responder completes");
+}
+
+#[test]
+fn pairing_reports_receive_encryption_when_peer_closes_after_local_encryption()
+{
+    let (initiator_stream, responder_stream) =
+        UnixStream::pair().expect("unix pair");
+    let responder = thread::spawn(move || {
+        let mut connection = Connection::accept_io(
+            responder_stream,
+            Handshake::responder(RESPONDER_RANDOM, RESPONDER_SECRET),
+            ConnectionOptions::new("remote", "Remote"),
+        )
+        .expect("establish peer session");
+        assert!(matches!(
+            connection.receive().expect("receive local encryption"),
+            Event::Bytes { .. }
+        ));
+    });
+
+    let connection = Connection::connect_io(
+        initiator_stream,
+        Handshake::initiator(INITIATOR_RANDOM, INITIATOR_SECRET),
+        ConnectionOptions::new("local", "Omarchy"),
+    )
+    .expect("establish local session");
+    let error = SharingSession::new(connection)
+        .exchange_account_free_pairing()
+        .expect_err("peer closed before encryption response");
+
+    assert_eq!(error.step(), PairingStep::ReceiveEncryption);
+    assert!(matches!(error.source_error(), ProtocolError::Disconnected));
     responder.join().expect("responder completes");
 }
 

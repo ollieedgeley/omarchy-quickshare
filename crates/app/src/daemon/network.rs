@@ -195,6 +195,19 @@ impl TransferCancellation {
     }
 }
 
+fn emit_progress(
+    events: &Sender<NetworkEvent>,
+    medium: &str,
+    share_id: u64,
+    transferred_bytes: u64,
+) {
+    let _result = events.send(NetworkEvent::Progress {
+        medium: String::from(medium),
+        share_id,
+        transferred_bytes,
+    });
+}
+
 /// A background worker that owns Linux network adapters for the daemon.
 #[derive(Debug)]
 pub(super) struct NetworkWorker {

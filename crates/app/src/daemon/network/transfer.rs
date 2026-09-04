@@ -7,12 +7,12 @@ use quickshare_network::NetworkManager;
 use quickshare_sharing::{ProtocolError, SharingSession};
 use quickshare_storage::OutboundSource;
 
-use super::{NetworkEvent, TransferCancellation};
+use super::{NetworkEvent, TransferCancellation, emit_progress};
 use crate::daemon::media::{
     PeerRoute, attempt_order, connect_route, initiate_bandwidth_upgrade,
     medium_name, sharing_session,
 };
-use crate::daemon::observations::protocol_reason;
+use crate::daemon::observations::{protocol_reason, trace_paired_key_exchange};
 use crate::daemon::outbound::{OutboundPayload, OutboundTransfer};
 
 /// Converts one worker transfer attempt into a terminal daemon event.
@@ -109,26 +109,15 @@ fn send_on_connection(
         .map_err(|error| {
             ProtocolError::Io(io::Error::new(io::ErrorKind::BrokenPipe, error))
         })?;
+    let pairing = session.exchange_account_free_pairing();
+    trace_paired_key_exchange(&pairing, "outbound", medium, Some(share_id));
     let _pairing =
-        session
-            .exchange_account_free_pairing()
-            .inspect_err(|error| {
-                tracing::warn!(
-                    share_id,
-                    stage = "handshake",
-                    error_class = protocol_reason(error),
-                    "handshake failed"
-                );
-            })?;
+        pairing.map_err(quickshare_sharing::PairingError::into_source)?;
     let on_accepted = || {
         let _result = events.send(NetworkEvent::OutboundAccepted { share_id });
     };
     let on_progress = |transferred_bytes| {
-        let _result = events.send(NetworkEvent::Progress {
-            medium: String::from(medium),
-            share_id,
-            transferred_bytes,
-        });
+        emit_progress(events, medium, share_id, transferred_bytes);
     };
     let is_cancelled = || cancellation.is_cancelled(share_id);
     match payload {

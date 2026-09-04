@@ -2,7 +2,7 @@
 
 use core::time::Duration;
 
-use quickshare_sharing::ProtocolError;
+use quickshare_sharing::{PairingError, PairingStatus, ProtocolError};
 use quickshare_storage::Error as StorageError;
 
 /// LAN TCP medium name exposed on the public snapshot.
@@ -54,6 +54,71 @@ pub(super) const fn protocol_reason(error: &ProtocolError) -> &'static str {
     }
 }
 
+/// Maps a paired-key failure to its safe protocol discriminant.
+#[must_use]
+pub(super) const fn pairing_error_class(error: &ProtocolError) -> &'static str {
+    match error {
+        ProtocolError::Connection(source) => match source {
+            quickshare_connections::Error::Io(_) => "connection_io",
+            quickshare_connections::Error::Wire(_) => "connection_wire",
+            quickshare_connections::Error::FrameTooLarge => {
+                "connection_frame_too_large"
+            }
+            quickshare_connections::Error::UnexpectedFrame => {
+                "connection_unexpected_frame"
+            }
+            quickshare_connections::Error::Rejected => "connection_rejected",
+            quickshare_connections::Error::Handshake => "connection_handshake",
+            quickshare_connections::Error::Crypto => "connection_crypto",
+            quickshare_connections::Error::InvalidPayload => {
+                "connection_invalid_payload"
+            }
+            _ => "connection_unknown",
+        },
+        ProtocolError::Decode(_) => "sharing_decode",
+        ProtocolError::Io(_) => "sharing_io",
+        ProtocolError::Cancelled => "cancelled",
+        ProtocolError::InvalidAdvertisement => "invalid_advertisement",
+        ProtocolError::InvalidMdnsInstance => "invalid_mdns_instance",
+        ProtocolError::InvalidFrame => "invalid_frame",
+        ProtocolError::InvalidOffer(_) => "invalid_offer",
+        ProtocolError::Rejected => "rejected",
+        ProtocolError::InvalidPayload => "invalid_payload",
+        ProtocolError::Disconnected => "disconnected",
+        ProtocolError::TimedOut => "timed_out",
+        ProtocolError::Unsupported => "unsupported",
+    }
+}
+
+/// Emits the safe result of one paired-key exchange.
+pub(super) fn trace_paired_key_exchange(
+    result: &Result<PairingStatus, PairingError>,
+    direction: &'static str,
+    medium: &str,
+    share_id: Option<u64>,
+) {
+    match result {
+        Ok(_) => tracing::debug!(
+            share_id,
+            stage = "paired_key",
+            direction,
+            medium,
+            outcome = "completed",
+            "paired-key exchange completed"
+        ),
+        Err(error) => tracing::warn!(
+            share_id,
+            stage = "paired_key",
+            direction,
+            medium,
+            pairing_step = error.step().as_str(),
+            error_class = pairing_error_class(error.source_error()),
+            outcome = "failed",
+            "paired-key exchange failed"
+        ),
+    }
+}
+
 /// Maps a storage failure to a stable snake_case reason.
 #[must_use]
 pub(super) const fn storage_reason(error: &StorageError) -> &'static str {
@@ -101,12 +166,32 @@ pub(super) fn recovery_guidance(reason: &str) -> &'static str {
 )]
 mod tests {
     use super::{
-        WIFI_LAN, protocol_reason, recovery_guidance, remaining_seconds,
-        storage_reason,
+        WIFI_LAN, pairing_error_class, protocol_reason, recovery_guidance,
+        remaining_seconds, storage_reason,
     };
     use core::time::Duration;
+    use prost::Message as _;
+    use quickshare_connections::Error as ConnectionError;
     use quickshare_sharing::ProtocolError;
     use quickshare_storage::Error as StorageError;
+    use std::io;
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    struct DecodeProbe {
+        #[prost(uint32, tag = "1")]
+        value: u32,
+    }
+
+    #[expect(
+        clippy::panic,
+        reason = "A fixed malformed protobuf must not decode"
+    )]
+    fn decode_error() -> prost::DecodeError {
+        let Err(error) = DecodeProbe::decode(&[0x80_u8][..]) else {
+            panic!("malformed protobuf decoded");
+        };
+        error
+    }
 
     #[test]
     fn eta_uses_observed_throughput() {
@@ -134,6 +219,57 @@ mod tests {
         );
         assert_eq!(storage_reason(&StorageError::Interrupted), "interrupted");
         assert_eq!(WIFI_LAN, "wifi_lan");
+    }
+
+    #[test]
+    fn paired_key_error_classes_identify_every_protocol_discriminant() {
+        let cases = [
+            (ProtocolError::Decode(decode_error()), "sharing_decode"),
+            (ProtocolError::Io(io::Error::other("test")), "sharing_io"),
+            (ProtocolError::Cancelled, "cancelled"),
+            (ProtocolError::InvalidAdvertisement, "invalid_advertisement"),
+            (ProtocolError::InvalidMdnsInstance, "invalid_mdns_instance"),
+            (ProtocolError::InvalidFrame, "invalid_frame"),
+            (ProtocolError::InvalidOffer("test"), "invalid_offer"),
+            (ProtocolError::Rejected, "rejected"),
+            (ProtocolError::InvalidPayload, "invalid_payload"),
+            (ProtocolError::Disconnected, "disconnected"),
+            (ProtocolError::TimedOut, "timed_out"),
+            (ProtocolError::Unsupported, "unsupported"),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(pairing_error_class(&error), expected);
+        }
+    }
+
+    #[test]
+    fn paired_key_connection_classes_preserve_the_public_reason() {
+        let cases = [
+            (
+                ConnectionError::Io(io::Error::other("test")),
+                "connection_io",
+            ),
+            (ConnectionError::Wire(decode_error()), "connection_wire"),
+            (ConnectionError::FrameTooLarge, "connection_frame_too_large"),
+            (
+                ConnectionError::UnexpectedFrame,
+                "connection_unexpected_frame",
+            ),
+            (ConnectionError::Rejected, "connection_rejected"),
+            (ConnectionError::Handshake, "connection_handshake"),
+            (ConnectionError::Crypto, "connection_crypto"),
+            (
+                ConnectionError::InvalidPayload,
+                "connection_invalid_payload",
+            ),
+        ];
+
+        for (source, expected) in cases {
+            let error = ProtocolError::Connection(source);
+            assert_eq!(pairing_error_class(&error), expected);
+            assert_eq!(protocol_reason(&error), "disconnected");
+        }
     }
 
     #[test]

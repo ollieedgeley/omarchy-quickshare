@@ -19,12 +19,16 @@ use quickshare_sharing::{
 };
 use quickshare_storage::{ReceiveTarget, StagedFile};
 
-use super::{NetworkCommand, NetworkEvent, TransferCancellation};
+use super::{
+    NetworkCommand, NetworkEvent, TransferCancellation, emit_progress,
+};
 use crate::daemon::media::{
     ENDPOINT_ID_BYTES, accept_connection, accept_negotiated_upgrade,
     endpoint_name, medium_name, sharing_session,
 };
-use crate::daemon::observations::{protocol_reason, storage_reason};
+use crate::daemon::observations::{
+    protocol_reason, storage_reason, trace_paired_key_exchange,
+};
 
 const LAN_PORT: u16 = 53_318;
 const TEST_LAN_PORT: &str = "OMARCHY_QUICKSHARE_TEST_LAN_PORT";
@@ -78,17 +82,126 @@ pub(super) fn receive_share<Stream>(
 where
     Stream: quickshare_connections::ConnectionIo + 'static,
 {
-    match receive_share_result(
-        stream,
-        medium,
-        commands,
-        events,
-        cancellation,
-        receive_directory,
-        consent_deadline,
-        manager,
-        on_other,
-    ) {
+    match (|| -> Result<NetworkEvent, (String, Option<u64>)> {
+        let mut connection = accept_connection(stream, medium)
+            .map_err(|error| (String::from(protocol_reason(&error)), None))?;
+        let _wifi = accept_negotiated_upgrade(&mut connection, manager)
+            .map_err(|error| {
+                tracing::warn!(
+                    stage = "upgrade",
+                    medium = medium_name(medium),
+                    error_class = protocol_reason(&error),
+                    "upgrade failed"
+                );
+                (String::from(protocol_reason(&error)), None)
+            })?;
+        let pairing_medium = medium_name(connection.medium());
+        let mut session = sharing_session(connection);
+        let pairing = session.exchange_account_free_pairing();
+        trace_paired_key_exchange(&pairing, "inbound", pairing_medium, None);
+        let _pairing = pairing.map_err(|error| {
+            (String::from(protocol_reason(error.source_error())), None)
+        })?;
+        let offer = session.receive_incoming_offer().map_err(|error| {
+            tracing::warn!(
+                stage = "consent",
+                error_class = protocol_reason(&error),
+                "consent failed"
+            );
+            (String::from(protocol_reason(&error)), None)
+        })?;
+        announce_offer(&offer, session.verification_code(), events).map_err(
+            |_| {
+                tracing::warn!(
+                    stage = "consent",
+                    error_class = "disconnected",
+                    "consent failed"
+                );
+                (String::from("disconnected"), None)
+            },
+        )?;
+        let share_id =
+            match wait_for_consent(commands, consent_deadline, on_other)? {
+                Consent::Accepted(share_id) => share_id,
+                Consent::Rejected(share_id) => {
+                    session.reject_incoming_offer().map_err(|error| {
+                        (String::from(protocol_reason(&error)), Some(share_id))
+                    })?;
+                    cancellation.finish(share_id);
+                    return Ok(NetworkEvent::InboundRejected { share_id });
+                }
+                Consent::TimedOut => {
+                    tracing::warn!(
+                        stage = "consent",
+                        error_class = "timed_out",
+                        "consent failed"
+                    );
+                    session.timeout_incoming_offer().map_err(|error| {
+                        (String::from(protocol_reason(&error)), None)
+                    })?;
+                    return Err((String::from("timed_out"), None));
+                }
+            };
+        let bytes = u64::try_from(offer.size_bytes())
+            .map_err(|_| (String::from("invalid_payload"), Some(share_id)))?;
+        let mut staged = if offer.kind().persists_as_file() {
+            let target = ReceiveTarget::open(receive_directory)
+                .map_err(|error| payload_storage_failure(share_id, &error))?;
+            target
+                .preflight(bytes)
+                .map_err(|error| payload_storage_failure(share_id, &error))?;
+            let mut files = Vec::with_capacity(offer.file_count());
+            for index in 0..offer.file_count() {
+                let part = offer
+                    .file(index)
+                    .ok_or((String::from("invalid_payload"), Some(share_id)))?;
+                let size = u64::try_from(part.size_bytes()).map_err(|_| {
+                    (String::from("invalid_payload"), Some(share_id))
+                })?;
+                files.push(target.stage(part.name(), size).map_err(
+                    |error| payload_storage_failure(share_id, &error),
+                )?);
+            }
+            files
+        } else {
+            Vec::new()
+        };
+        session.accept_incoming_offer().map_err(|error| {
+            (String::from(protocol_reason(&error)), Some(share_id))
+        })?;
+        let transfer = receive_payload(
+            &mut session,
+            &offer,
+            &mut staged,
+            share_id,
+            medium_name(medium),
+            events,
+            cancellation,
+        );
+        cancellation.finish(share_id);
+        match transfer {
+            Ok(event) => {
+                for file in staged {
+                    drop(file.commit().map_err(|error| {
+                        payload_storage_failure(share_id, &error)
+                    })?);
+                }
+                Ok(event)
+            }
+            Err(ProtocolError::Cancelled) => {
+                Ok(NetworkEvent::InboundCancelled { share_id })
+            }
+            Err(error) => {
+                tracing::warn!(
+                    share_id,
+                    stage = "payload_transfer",
+                    error_class = protocol_reason(&error),
+                    "share failed"
+                );
+                Err((String::from(protocol_reason(&error)), Some(share_id)))
+            }
+        }
+    })() {
         Ok(event) => event,
         Err((reason, share_id)) => {
             NetworkEvent::InboundFailed { reason, share_id }
@@ -96,168 +209,17 @@ where
     }
 }
 
-fn receive_share_result<Stream>(
-    stream: Stream,
-    medium: Medium,
-    commands: &Receiver<NetworkCommand>,
-    events: &Sender<NetworkEvent>,
-    cancellation: &TransferCancellation,
-    receive_directory: &Path,
-    consent_deadline: Duration,
-    manager: Option<&quickshare_network::NetworkManager>,
-    on_other: &mut dyn FnMut(NetworkCommand) -> bool,
-) -> Result<NetworkEvent, (String, Option<u64>)>
-where
-    Stream: quickshare_connections::ConnectionIo + 'static,
-{
-    let mut connection = accept_connection(stream, medium)
-        .map_err(|error| (String::from(protocol_reason(&error)), None))?;
-    let _wifi = accept_negotiated_upgrade(&mut connection, manager).map_err(
-        |error| {
-            tracing::warn!(
-                stage = "upgrade",
-                medium = medium_name(medium),
-                error_class = protocol_reason(&error),
-                "upgrade failed"
-            );
-            (String::from(protocol_reason(&error)), None)
-        },
-    )?;
-    let mut session = sharing_session(connection);
-    let _pairing =
-        session.exchange_account_free_pairing().map_err(|error| {
-            tracing::warn!(
-                stage = "handshake",
-                error_class = protocol_reason(&error),
-                "handshake failed"
-            );
-            (String::from(protocol_reason(&error)), None)
-        })?;
-    let offer = session.receive_incoming_offer().map_err(|error| {
-        tracing::warn!(
-            stage = "consent",
-            error_class = protocol_reason(&error),
-            "consent failed"
-        );
-        (String::from(protocol_reason(&error)), None)
-    })?;
-    announce_offer(&offer, session.verification_code(), events).map_err(
-        |_| {
-            tracing::warn!(
-                stage = "consent",
-                error_class = "disconnected",
-                "consent failed"
-            );
-            (String::from("disconnected"), None)
-        },
-    )?;
-    let share_id = match wait_for_consent(commands, consent_deadline, on_other)?
-    {
-        Consent::Accepted(share_id) => share_id,
-        Consent::Rejected(share_id) => {
-            session.reject_incoming_offer().map_err(|error| {
-                (String::from(protocol_reason(&error)), Some(share_id))
-            })?;
-            cancellation.finish(share_id);
-            return Ok(NetworkEvent::InboundRejected { share_id });
-        }
-        Consent::TimedOut => {
-            tracing::warn!(
-                stage = "consent",
-                error_class = "timed_out",
-                "consent failed"
-            );
-            session.timeout_incoming_offer().map_err(|error| {
-                (String::from(protocol_reason(&error)), None)
-            })?;
-            return Err((String::from("timed_out"), None));
-        }
-    };
-    let bytes = u64::try_from(offer.size_bytes())
-        .map_err(|_| (String::from("invalid_payload"), Some(share_id)))?;
-    let mut staged = if offer.kind().persists_as_file() {
-        let target =
-            ReceiveTarget::open(receive_directory).map_err(|error| {
-                tracing::warn!(
-                    share_id,
-                    stage = "payload_transfer",
-                    error_class = storage_reason(&error),
-                    "share failed"
-                );
-                (String::from(storage_reason(&error)), Some(share_id))
-            })?;
-        target.preflight(bytes).map_err(|error| {
-            tracing::warn!(
-                share_id,
-                stage = "payload_transfer",
-                error_class = storage_reason(&error),
-                "share failed"
-            );
-            (String::from(storage_reason(&error)), Some(share_id))
-        })?;
-        let mut files = Vec::with_capacity(offer.file_count());
-        for index in 0..offer.file_count() {
-            let part = offer
-                .file(index)
-                .ok_or((String::from("invalid_payload"), Some(share_id)))?;
-            let size = u64::try_from(part.size_bytes()).map_err(|_| {
-                (String::from("invalid_payload"), Some(share_id))
-            })?;
-            files.push(target.stage(part.name(), size).map_err(|error| {
-                tracing::warn!(
-                    share_id,
-                    stage = "payload_transfer",
-                    error_class = storage_reason(&error),
-                    "share failed"
-                );
-                (String::from(storage_reason(&error)), Some(share_id))
-            })?);
-        }
-        files
-    } else {
-        Vec::new()
-    };
-    session.accept_incoming_offer().map_err(|error| {
-        (String::from(protocol_reason(&error)), Some(share_id))
-    })?;
-    let transfer = receive_payload(
-        &mut session,
-        &offer,
-        &mut staged,
+fn payload_storage_failure(
+    share_id: u64,
+    error: &quickshare_storage::Error,
+) -> (String, Option<u64>) {
+    tracing::warn!(
         share_id,
-        medium_name(medium),
-        events,
-        cancellation,
+        stage = "payload_transfer",
+        error_class = storage_reason(error),
+        "share failed"
     );
-    cancellation.finish(share_id);
-    match transfer {
-        Ok(event) => {
-            for file in staged {
-                let _published = file.commit().map_err(|error| {
-                    tracing::warn!(
-                        share_id,
-                        stage = "payload_transfer",
-                        error_class = storage_reason(&error),
-                        "share failed"
-                    );
-                    (String::from(storage_reason(&error)), Some(share_id))
-                })?;
-            }
-            Ok(event)
-        }
-        Err(ProtocolError::Cancelled) => {
-            Ok(NetworkEvent::InboundCancelled { share_id })
-        }
-        Err(error) => {
-            tracing::warn!(
-                share_id,
-                stage = "payload_transfer",
-                error_class = protocol_reason(&error),
-                "share failed"
-            );
-            Err((String::from(protocol_reason(&error)), Some(share_id)))
-        }
-    }
+    (String::from(storage_reason(error)), Some(share_id))
 }
 
 fn receive_payload(
@@ -282,12 +244,12 @@ fn receive_payload(
                 &part,
                 writer,
                 |transferred_bytes| {
-                    let _result = events.send(NetworkEvent::Progress {
-                        medium: String::from(medium),
+                    emit_progress(
+                        events,
+                        medium,
                         share_id,
-                        transferred_bytes: prior
-                            .saturating_add(transferred_bytes),
-                    });
+                        prior.saturating_add(transferred_bytes),
+                    );
                 },
                 || cancellation.is_cancelled(share_id),
             )?;
@@ -299,11 +261,7 @@ fn receive_payload(
         (received, None)
     } else {
         let on_progress = |transferred_bytes| {
-            let _result = events.send(NetworkEvent::Progress {
-                medium: String::from(medium),
-                share_id,
-                transferred_bytes,
-            });
+            emit_progress(events, medium, share_id, transferred_bytes);
         };
         let is_cancelled = || cancellation.is_cancelled(share_id);
         match offer.kind() {

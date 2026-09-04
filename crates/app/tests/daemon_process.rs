@@ -13,6 +13,7 @@
 )]
 
 use clap as _;
+use prost as _;
 use quickshare_bluez as _;
 use quickshare_connections as _;
 use quickshare_crypto as _;

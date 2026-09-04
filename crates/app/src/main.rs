@@ -5,6 +5,8 @@
     reason = "Locked deps pin overlapping getrandom and syn versions"
 )]
 use clap as _;
+#[cfg(test)]
+use prost as _;
 use std::io;
 
 use quickshare_bluez as _;

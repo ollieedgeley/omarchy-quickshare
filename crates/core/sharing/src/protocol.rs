@@ -19,6 +19,6 @@ mod text;
 mod types;
 
 pub use advertisement::{EndpointInfo, MdnsInstance};
-pub use error::ProtocolError;
+pub use error::{PairingError, PairingStep, ProtocolError};
 pub use session::SharingSession;
 pub use types::{IncomingOffer, OfferKind, PairingStatus};

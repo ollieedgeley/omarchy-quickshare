@@ -1,5 +1,6 @@
 use crate::protocol::{
-    EndpointInfo, IncomingOffer, PairingStatus, ProtocolError, frames, offer,
+    EndpointInfo, IncomingOffer, PairingError, PairingStatus, PairingStep,
+    ProtocolError, frames, offer,
 };
 use quickshare_connections::{Connection, ConnectionIo, ConnectionOptions};
 use quickshare_crypto::Handshake;
@@ -110,20 +111,44 @@ impl SharingSession {
     ///
     /// # Errors
     ///
-    /// Returns an error when a connection or peer frame is invalid.
+    /// Returns an error attributed to the paired-key operation that failed.
     pub fn exchange_account_free_pairing(
         &mut self,
-    ) -> Result<PairingStatus, ProtocolError> {
-        self.connection.send_sharing_frame(
-            PAIRING_PAYLOAD_ID,
-            &frames::account_free_encryption(),
-        )?;
-        let _ = frames::decode_pairing(&self.receive_bytes()?)?;
-        self.connection.send_sharing_frame(
-            PAIRING_PAYLOAD_ID + 1,
-            &frames::account_free_result(),
-        )?;
-        frames::decode_pairing(&self.receive_bytes()?)
+    ) -> Result<PairingStatus, PairingError> {
+        self.connection
+            .send_sharing_frame(
+                PAIRING_PAYLOAD_ID,
+                &frames::account_free_encryption(),
+            )
+            .map_err(|source| {
+                PairingError::new(
+                    PairingStep::SendEncryption,
+                    ProtocolError::from(source),
+                )
+            })?;
+        let encryption = self.receive_bytes().map_err(|source| {
+            PairingError::new(PairingStep::ReceiveEncryption, source)
+        })?;
+        let _ = frames::decode_pairing(&encryption).map_err(|source| {
+            PairingError::new(PairingStep::ReceiveEncryption, source)
+        })?;
+        self.connection
+            .send_sharing_frame(
+                PAIRING_PAYLOAD_ID + 1,
+                &frames::account_free_result(),
+            )
+            .map_err(|source| {
+                PairingError::new(
+                    PairingStep::SendResult,
+                    ProtocolError::from(source),
+                )
+            })?;
+        let result = self.receive_bytes().map_err(|source| {
+            PairingError::new(PairingStep::ReceiveResult, source)
+        })?;
+        frames::decode_pairing(&result).map_err(|source| {
+            PairingError::new(PairingStep::ReceiveResult, source)
+        })
     }
 
     /// Returns the account-free paired-key result frame.

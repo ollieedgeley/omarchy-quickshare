@@ -106,8 +106,8 @@ pub use attachment::Attachment;
 pub use coordinator::Coordinator;
 pub use peer::PeerSnapshot;
 pub use protocol::{
-    EndpointInfo, IncomingOffer, MdnsInstance, OfferKind, PairingStatus,
-    ProtocolError, SharingSession,
+    EndpointInfo, IncomingOffer, MdnsInstance, OfferKind, PairingError,
+    PairingStatus, PairingStep, ProtocolError, SharingSession,
 };
 pub use snapshot::{
     Direction, DiscoveryState, EndpointSnapshot, Phase, ShareId, ShareSnapshot,
