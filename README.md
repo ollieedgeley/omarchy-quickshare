@@ -224,9 +224,10 @@ User config is `~/.config/omarchy-quickshare/config.toml`, or
 `$XDG_CONFIG_HOME/omarchy-quickshare/config.toml`. Missing files use
 defaults. Unknown keys are rejected.
 
-Documented keys: `receive_directory`, `pinned_peer_id`,
+Documented keys: `device_name`, `receive_directory`, `pinned_peer_id`,
 `discovery_timeout_secs`, `visibility_timeout_secs`,
-`transfer_timeout_secs`.
+`transfer_timeout_secs`. `device_name` overrides the system hostname advertised
+to nearby devices.
 
 Default receive directory is `~/Downloads/omarchy-quickshare`. Incomplete
 transfers stage a hidden file there and drop it if the share does not

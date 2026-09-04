@@ -190,11 +190,10 @@ fn config_set_persists_and_rejects_unknown_keys() {
     };
     let updated =
         run(&root, &["config", "set", "receive_directory", receive_path]);
-    assert!(updated.is_ok(), "config-set");
-    let Ok(updated) = updated else {
-        return;
-    };
-    assert!(updated.status.success(), "config-set failed");
+    assert!(matches!(updated, Ok(output) if output.status.success()));
+    let device_name =
+        run(&root, &["config", "set", "device_name", "omarchy-macbook"]);
+    assert!(matches!(device_name, Ok(output) if output.status.success()));
     let inspect = run(&root, &["config", "show"]);
     assert!(inspect.is_ok(), "config inspect");
     let Ok(inspect) = inspect else {
@@ -202,6 +201,7 @@ fn config_set_persists_and_rejects_unknown_keys() {
     };
     let body = String::from_utf8_lossy(&inspect.stdout);
     assert!(body.contains(&receive.display().to_string()));
+    assert!(body.contains("device_name = \"omarchy-macbook\""));
     let unknown = run(&root, &["config", "set", "not_a_key", "1"]);
     assert!(unknown.is_ok(), "unknown key");
     let Ok(unknown) = unknown else {

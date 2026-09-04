@@ -297,6 +297,34 @@ pub fn local_ipv4_addresses() -> Result<Vec<Ipv4Addr>, Error> {
     }
     Ok(addresses)
 }
+/// Derives one lowercase DNS host label from a user-visible device name.
+#[must_use]
+#[inline]
+pub fn host_label(name: &str) -> String {
+    let mut label = String::with_capacity(name.len().min(63));
+    for byte in name.bytes() {
+        let byte = if byte.is_ascii_alphanumeric() {
+            byte.to_ascii_lowercase()
+        } else {
+            b'-'
+        };
+        if byte == b'-' && (label.is_empty() || label.ends_with('-')) {
+            continue;
+        }
+        if label.len() == 63 {
+            break;
+        }
+        label.push(char::from(byte));
+    }
+    while label.ends_with('-') {
+        let _removed = label.pop();
+    }
+    if label.is_empty() {
+        String::from("omarchy")
+    } else {
+        label
+    }
+}
 
 fn convert_error(error: mdns_sd::Error) -> Error {
     Error(error.to_string())

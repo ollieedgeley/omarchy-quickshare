@@ -15,6 +15,8 @@ pub const DEFAULT_TRANSFER_TIMEOUT_SECS: u64 = 120;
 /// Strict local settings for the endpoint.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
+    /// Optional device name advertised instead of the system hostname.
+    pub device_name: Option<String>,
     /// Outbound search deadline in seconds.
     pub discovery_timeout_secs: u64,
     /// Preferred peer identifier persisted across restarts.
@@ -31,6 +33,7 @@ impl Default for Config {
     #[inline]
     fn default() -> Self {
         Self {
+            device_name: None,
             discovery_timeout_secs: DEFAULT_DISCOVERY_TIMEOUT_SECS,
             pinned_peer_id: None,
             receive_directory: default_receive_directory(),
@@ -74,6 +77,12 @@ impl Config {
             self.transfer_timeout_secs,
             self.visibility_timeout_secs,
         );
+        if let Some(device_name) = &self.device_name {
+            body.push_str(&format!(
+                "device_name = \"{}\"\n",
+                escape_toml(device_name)
+            ));
+        }
         if let Some(peer_id) = &self.pinned_peer_id {
             body.push_str(&format!(
                 "pinned_peer_id = \"{}\"\n",
@@ -90,6 +99,9 @@ impl Config {
     /// Returns an error for an unknown key, invalid value, or write failure.
     pub fn set(&mut self, key: &str, value: &str) -> io::Result<()> {
         match key {
+            "device_name" => {
+                self.device_name = parse_device_name(value)?;
+            }
             "discovery_timeout_secs" => {
                 self.discovery_timeout_secs = parse_timeout(value)?;
             }
@@ -109,7 +121,7 @@ impl Config {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "unknown config key '{key}'; expected \
+                        "unknown config key '{key}'; expected device_name, \
                          receive_directory, pinned_peer_id, \
                          discovery_timeout_secs, visibility_timeout_secs, or \
                          transfer_timeout_secs"
@@ -181,6 +193,9 @@ fn parse_toml(body: &str) -> io::Result<Config> {
         let key = key.trim();
         let value = value.trim();
         match key {
+            "device_name" => {
+                config.device_name = parse_device_name(&parse_string(value)?)?;
+            }
             "discovery_timeout_secs" => {
                 config.discovery_timeout_secs = parse_timeout(value)?;
             }
@@ -254,6 +269,20 @@ fn parse_string(value: &str) -> io::Result<String> {
         ));
     }
     Ok(String::from(value))
+}
+/// Parses an optional endpoint name that fits the wire advertisement.
+fn parse_device_name(value: &str) -> io::Result<Option<String>> {
+    let name = non_empty(value);
+    if name
+        .as_ref()
+        .is_some_and(|name| name.len() > u8::MAX.into())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "device_name must be at most 255 bytes",
+        ));
+    }
+    Ok(name)
 }
 
 /// Treats an empty string as an unset optional value.

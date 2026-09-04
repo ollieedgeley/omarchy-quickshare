@@ -9,10 +9,21 @@ use core::time::Duration;
 
 use if_addrs as _;
 use mdns_sd as _;
-use quickshare_network::{Advertisement, DnsSd, lan::Listener};
+use quickshare_network::{Advertisement, DnsSd, host_label, lan::Listener};
 use zbus as _;
 
 const SERVICE_TYPE: &str = "_quickshare-test._tcp.local.";
+#[test]
+fn host_label_sanitizes_and_bounds_human_readable_names() {
+    assert_eq!(host_label("Ollie's MacBook"), "ollie-s-macbook");
+    let label = host_label(&"Ollie's MacBook ".repeat(8));
+    assert!(label.len() <= 63);
+    assert!(!label.starts_with('-'));
+    assert!(!label.ends_with('-'));
+    assert!(label.bytes().all(|byte| byte.is_ascii_lowercase()
+        || byte.is_ascii_digit()
+        || byte == b'-'));
+}
 
 #[test]
 fn advertised_service_is_resolved_through_mdns() {

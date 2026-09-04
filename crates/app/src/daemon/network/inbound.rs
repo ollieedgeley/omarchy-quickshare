@@ -9,7 +9,7 @@ use std::{env, io};
 
 use quickshare_connections::Medium;
 use quickshare_network::{
-    Advertisement, DnsSd,
+    Advertisement, DnsSd, host_label,
     lan::{Listener, PublishedLanListener},
     local_ipv4_addresses,
 };
@@ -406,7 +406,7 @@ fn advertisement_for(
     let properties = BTreeMap::from([(String::from("n"), endpoint.property())]);
     Ok(Advertisement {
         addresses,
-        hostname: format!("{name}.local."),
+        hostname: format!("{}.local.", host_label(name)),
         instance: MdnsInstance::new(ENDPOINT_ID_BYTES).label(),
         port,
         properties,
@@ -482,7 +482,7 @@ mod tests {
     fn advertisement_uses_laptop_hostname_and_fixed_port() {
         let record = advertisement_for(
             LAN_PORT,
-            "omarchy-macbook",
+            "Ollie's MacBook",
             vec![Ipv4Addr::LOCALHOST],
         )
         .expect("advertisement");
@@ -491,8 +491,8 @@ mod tests {
         )
         .expect("endpoint info");
         assert_eq!((endpoint.encode()[0] >> 1) & 7, 3);
-        assert_eq!(endpoint.device_name(), Some("omarchy-macbook"));
-        assert_eq!(record.hostname, "omarchy-macbook.local.");
+        assert_eq!(endpoint.device_name(), Some("Ollie's MacBook"));
+        assert_eq!(record.hostname, "ollie-s-macbook.local.");
         assert_eq!(record.port, LAN_PORT);
     }
 }

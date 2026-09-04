@@ -45,7 +45,7 @@ pub mod lan;
 pub mod network_manager;
 
 pub use dns_sd::{
-    Advertisement, Browser, DnsSd, Registration, ResolvedService,
+    Advertisement, Browser, DnsSd, Registration, ResolvedService, host_label,
     local_ipv4_addresses,
 };
 pub use network_manager::{

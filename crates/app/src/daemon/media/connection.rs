@@ -16,8 +16,11 @@ use quickshare_network::lan::connect as connect_lan;
 use quickshare_sharing::{EndpointInfo, ProtocolError, SharingSession};
 use rand_core::{OsRng, RngCore as _};
 
-use crate::daemon::observations::{
-    BLE, BLUETOOTH, WIFI_DIRECT, WIFI_HOTSPOT, WIFI_LAN, protocol_reason,
+use crate::{
+    config::Config,
+    daemon::observations::{
+        BLE, BLUETOOTH, WIFI_DIRECT, WIFI_HOTSPOT, WIFI_LAN, protocol_reason,
+    },
 };
 
 /// Connections endpoint identifier used by every SharingSession identity.
@@ -29,9 +32,14 @@ const FALLBACK_ENDPOINT_NAME: &str = "Omarchy";
 /// Google advertisement value for a laptop-class endpoint.
 const LAPTOP_DEVICE_TYPE: u8 = 3;
 static ENDPOINT_NAME: LazyLock<String> = LazyLock::new(|| {
-    normalized_endpoint_name(
-        fs::read_to_string("/etc/hostname").ok().as_deref(),
-    )
+    Config::load()
+        .ok()
+        .and_then(|config| config.device_name)
+        .unwrap_or_else(|| {
+            normalized_endpoint_name(
+                fs::read_to_string("/etc/hostname").ok().as_deref(),
+            )
+        })
 });
 
 /// Bluetooth connect budget after a candidate is already stored.
@@ -107,16 +115,7 @@ pub(crate) fn connect_connection<Stream>(
 where
     Stream: ConnectionIo + 'static,
 {
-    let result = (|| {
-        let mut rng = OsRng;
-        let options = connection_options(&mut rng, medium)?;
-        Ok(Connection::connect_io(
-            stream,
-            Handshake::initiator_with_rng(&mut rng),
-            options,
-        )?)
-    })();
-    trace_handshake(medium, result)
+    open_connection(stream, medium, ConnectionRole::Initiator)
 }
 
 /// Opens a responder Connections relationship over any byte stream.
@@ -131,14 +130,38 @@ pub(crate) fn accept_connection<Stream>(
 where
     Stream: ConnectionIo + 'static,
 {
+    open_connection(stream, medium, ConnectionRole::Responder)
+}
+#[derive(Clone, Copy)]
+enum ConnectionRole {
+    Initiator,
+    Responder,
+}
+
+fn open_connection<Stream>(
+    stream: Stream,
+    medium: Medium,
+    role: ConnectionRole,
+) -> Result<Connection, ProtocolError>
+where
+    Stream: ConnectionIo + 'static,
+{
     let result = (|| {
         let mut rng = OsRng;
         let options = connection_options(&mut rng, medium)?;
-        Ok(Connection::accept_io(
-            stream,
-            Handshake::responder_with_rng(&mut rng),
-            options,
-        )?)
+        let connection = match role {
+            ConnectionRole::Initiator => Connection::connect_io(
+                stream,
+                Handshake::initiator_with_rng(&mut rng),
+                options,
+            )?,
+            ConnectionRole::Responder => Connection::accept_io(
+                stream,
+                Handshake::responder_with_rng(&mut rng),
+                options,
+            )?,
+        };
+        Ok(connection)
     })();
     trace_handshake(medium, result)
 }
@@ -393,7 +416,7 @@ fn connection_options(
         .with_medium(medium))
 }
 
-/// Returns the stable host name shown to nearby peers.
+/// Returns the configured device name or system hostname shown to nearby peers.
 pub(crate) fn endpoint_name() -> &'static str {
     &ENDPOINT_NAME
 }
@@ -415,14 +438,16 @@ fn optional_lease<T, E>(
     stage: &'static str,
     result: Result<T, E>,
 ) -> Option<T> {
-    result
-        .inspect(|_| {
-            tracing::debug!(stage, available = true, "adapter stage ready");
-        })
-        .inspect_err(|_| {
+    result.map_or_else(
+        |_| {
             tracing::warn!(stage, available = false, "adapter stage failed");
-        })
-        .ok()
+            None
+        },
+        |value| {
+            tracing::debug!(stage, available = true, "adapter stage ready");
+            Some(value)
+        },
+    )
 }
 
 fn trace_handshake<T>(
