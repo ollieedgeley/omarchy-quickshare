@@ -18,10 +18,14 @@ const DESTINATION = join(ROOT, "dist", "omarchy-plugin");
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
 const PLUGIN_FILES = [
   "BarWidget.qml",
+  "ConsentView.qml",
   "LICENSE",
+  "PeerChoiceView.qml",
   "README.md",
   "SharePanel.qml",
   "StatusProbe.qml",
+  "TerminalView.qml",
+  "TransferView.qml",
   "manifest.json",
   "release.json",
 ];

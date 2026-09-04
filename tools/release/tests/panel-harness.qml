@@ -73,7 +73,7 @@ ShellRoot {
     }
   }
 
-  function verifyAttachmentsAndPeerChoice() {
+  function verifyAttachmentTypes() {
     panel.snapshot = outboundSnapshot(
       "waiting_for_peer",
       {"type": "url", "value": "https://example.test/<b>unsafe</b>"},
@@ -82,7 +82,6 @@ ShellRoot {
     var preview = panel.viewState === "peer_choice"
       && panel.previewIcon === ""
       && panel.previewText === "https://example.test/<b>unsafe</b>"
-      && rendersPlainText(panel, "https://example.test/<b>unsafe</b>")
 
     panel.snapshot = outboundSnapshot(
       "waiting_for_peer",
@@ -96,7 +95,10 @@ ShellRoot {
       [],
     )
     var apkName = panel.previewIcon === ""
+    return preview && apkType && apkName
+  }
 
+  function verifyPeerChoice() {
     panel.snapshot = outboundSnapshot(
       "waiting_for_peer",
       {"type": "file", "name": "song.ogg"},
@@ -105,20 +107,27 @@ ShellRoot {
         {"id": "tablet", "name": "Tablet", "pinned": true},
       ],
     )
-    var typed = panel.previewIcon === "󰝚"
+    panel.showPasteBadge = false
+    var hiddenBadge = !rendersPlainText(panel, "song.ogg")
+    panel.showPasteBadge = true
+    var shownBadge = rendersPlainText(panel, "song.ogg")
+    var peers = panel.previewIcon === "󰝚"
       && panel.peers.length === 2
+      && panel.orderedPeers.length === 2
+      && panel.orderedPeers[0].id === "tablet"
       && panel.viewState === "peer_choice"
       && rendersPlainText(panel, "<b>Ollie's Pixel</b>")
     panel.choosePeer("pixel-8")
     panel.togglePin("pixel-8", false)
-    var exactAction = root.selectedShare === root.exactShareId
+    panel.cancel()
+    var actions = root.selectedShare === root.exactShareId
       && root.selectedPeer === "pixel-8"
       && root.pinnedPeer === "pixel-8"
       && root.pinValue
+      && root.cancelledShare === root.exactShareId
 
     panel.togglePin("tablet", true)
-    return preview && apkType && apkName && typed && exactAction
-      && !root.pinValue
+    return peers && actions && hiddenBadge && shownBadge && !root.pinValue
   }
 
   function verifyDiscovery() {
@@ -128,7 +137,7 @@ ShellRoot {
       [],
     )
     panel.snapshot = snapshot
-    var searching = panel.discoveryMessage === "Searching for peers…"
+    var searching = panel.discoveryMessage === "Searching for devices…"
     panel.toggleDiscovery()
     var expiredSnapshot = outboundSnapshot(
       "waiting_for_peer",
@@ -137,7 +146,8 @@ ShellRoot {
     )
     expiredSnapshot.discovery = "timed_out"
     panel.snapshot = expiredSnapshot
-    var expired = panel.discoveryMessage === "No peers found"
+    var expired = panel.discoveryMessage
+      === "No devices found. Turn on Bluetooth and make Quick Share visible."
     panel.toggleDiscovery()
     return searching && expired && root.stopDiscoveryRequests === 1
       && root.discoveryRequests === 1
@@ -145,12 +155,16 @@ ShellRoot {
 
   function verifyConsentAndWaiting() {
     panel.snapshot = incomingSnapshot("awaiting_local_consent", 0)
-    var consent = panel.viewState === "consent"
-      && panel.previewText === "<b>photo.jpg</b>"
-      && panel.consentPin === "0427"
-      && rendersPlainText(panel, "<b>photo.jpg</b>")
-      && rendersPlainText(panel, "<img src=x onerror=alert(1)>")
-      && panel.peerName === "<img src=x onerror=alert(1)>"
+    var consentState = panel.viewState === "consent"
+    var consentPreview = panel.previewText === "<b>photo.jpg</b>"
+    var consentCode = panel.consentPin === "0427"
+    var consentAttachment = rendersPlainText(panel, "<b>photo.jpg</b>")
+    var consentPeer =
+      rendersPlainText(panel, "From <img src=x onerror=alert(1)>")
+    var consentPeerName =
+      panel.peerName === "<img src=x onerror=alert(1)>"
+    var consent = consentState && consentPreview && consentCode
+      && consentAttachment && consentPeer && consentPeerName
     panel.accept()
     panel.reject()
 
@@ -161,14 +175,27 @@ ShellRoot {
     )
     waiting.active_share.verification_code = "7391"
     panel.snapshot = waiting
-    return consent
-      && root.acceptedShare === root.exactShareId
+    var actions = root.acceptedShare === root.exactShareId
       && root.rejectedShare === root.exactShareId
-      && panel.viewState === "waiting"
+    var waitingValid = panel.viewState === "waiting"
       && panel.previewIcon === ""
       && panel.consentPin === "7391"
-      && rendersPlainText(panel, "PIN 7391")
+      && rendersPlainText(panel, "7391")
+    if (!consent || !actions || !waitingValid) {
+      console.error(
+        "CONSENT_FAIL",
+        consentState,
+        consentPreview,
+        consentCode,
+        consentAttachment,
+        consentPeer,
+        consentPeerName,
+        actions,
+        waitingValid,
+      )
     }
+    return consent && actions && waitingValid
+  }
 
   function verifyTransfer() {
     var current = incomingSnapshot("transferring", 1024)
@@ -181,8 +208,12 @@ ShellRoot {
 
     panel.snapshot = incomingSnapshot("transferring", 1024)
     var optional = panel.etaText === "Estimating time remaining…"
+    var preparing = incomingSnapshot("transferring", 0)
+    preparing.active_share.total_bytes = 0
+    panel.snapshot = preparing
+    var preparingVisible = rendersPlainText(panel, "Preparing transfer…")
     panel.cancel()
-    return transfer && optional
+    return transfer && optional && preparingVisible
       && root.cancelledShare === root.exactShareId
   }
 
@@ -206,47 +237,44 @@ ShellRoot {
     panel.snapshot = {"visibility": "closed"}
     panel.actionError = "<b>Native command failed</b>"
     var nativeError = rendersPlainText(panel, "<b>Native command failed</b>")
+    var idleInstruction = rendersPlainText(
+      panel,
+      "Paste while this panel is open to choose a nearby device.",
+    )
     panel.toggleVisibility()
-    return complete && failed && nativeError
+    return complete && failed && nativeError && idleInstruction
       && root.dismissedShare === root.exactShareId
       && panel.viewState === "idle" && root.visibilityRequested
   }
 
   function verifyPanel() {
-    var valid = verifyAttachmentsAndPeerChoice()
-      && verifyDiscovery()
-      && verifyConsentAndWaiting()
-      && verifyTransfer()
-      && verifyTerminalAndIdle()
-    if (valid) {
+    var attachments = verifyAttachmentTypes() && verifyPeerChoice()
+    var discovery = verifyDiscovery()
+    var consent = verifyConsentAndWaiting()
+    var transfer = verifyTransfer()
+    var terminal = verifyTerminalAndIdle()
+    if (attachments && discovery && consent && transfer && terminal) {
       console.log("HARNESS_OK")
       Qt.quit()
       return
     }
-    console.error("HARNESS_FAIL", panel.viewState, panel.progressPercent)
+    console.error(
+      "HARNESS_FAIL",
+      "attachments=" + attachments,
+      "discovery=" + discovery,
+      "consent=" + consent,
+      "transfer=" + transfer,
+      "terminal=" + terminal,
+    )
     Qt.exit(1)
   }
 
   SharePanel {
     id: panel
     width: 300
-    accentColor: "#7aa2f7"
-    dangerColor: "#f7768e"
-    borderWidth: 1
-    focusBorderWidth: 2
-    hoverFillAlpha: 0.12
-    pressedFillAlpha: 0.22
-    foregroundColor: "#d8dee9"
-    mutedColor: "#8f98a8"
-    surfaceColor: "#24283b"
-    radius: 6
-    controlHeight: 34
-    gap: 8
-    smallGap: 4
-    bodyFontSize: 12
-    smallFontSize: 11
-    fontFamily: "monospace"
     snapshot: ({})
+    actionBusy: false
+    showPasteBadge: false
     onStopDiscoveryRequested: function() {
       root.stopDiscoveryRequests += 1
     }

@@ -51,59 +51,67 @@ ShellRoot {
       && !actionFailure.actionError.includes("clipboard-secret")
     var commandsMatch = JSON.stringify(commands.command(["plain <b>text</b>"]))
         === '["env","omarchy-quickshare","plain <b>text</b>"]'
-      && JSON.stringify(commands.command(["--accept", root.exactShareId]))
-        === '["env","omarchy-quickshare","--accept","'
-          + root.exactShareId + '"]'
-      && JSON.stringify(commands.command(["--reject", root.exactShareId]))
-        === '["env","omarchy-quickshare","--reject","'
-          + root.exactShareId + '"]'
-      && JSON.stringify(commands.command(["--cancel", root.exactShareId]))
-        === '["env","omarchy-quickshare","--cancel","'
-          + root.exactShareId + '"]'
-      && JSON.stringify(commands.command(["--dismiss", root.exactShareId]))
-        === '["env","omarchy-quickshare","--dismiss","'
-          + root.exactShareId + '"]'
-      && JSON.stringify(commands.command(["--discover"]))
-        === '["env","omarchy-quickshare","--discover"]'
-      && JSON.stringify(commands.command(["--pin", "pixel-8"]))
-        === '["env","omarchy-quickshare","--pin","pixel-8"]'
-      && JSON.stringify(commands.command(["--unpin"]))
-        === '["env","omarchy-quickshare","--unpin"]'
       && JSON.stringify(commands.command([
-        "--send-to", root.exactShareId, "pixel-8",
-      ])) === '["env","omarchy-quickshare","--send-to","'
+        "share", "accept", root.exactShareId,
+      ]))
+        === '["env","omarchy-quickshare","share","accept","'
+          + root.exactShareId + '"]'
+      && JSON.stringify(commands.command([
+        "share", "reject", root.exactShareId,
+      ]))
+        === '["env","omarchy-quickshare","share","reject","'
+          + root.exactShareId + '"]'
+      && JSON.stringify(commands.command([
+        "share", "cancel", root.exactShareId,
+      ]))
+        === '["env","omarchy-quickshare","share","cancel","'
+          + root.exactShareId + '"]'
+      && JSON.stringify(commands.command([
+        "share", "dismiss", root.exactShareId,
+      ]))
+        === '["env","omarchy-quickshare","share","dismiss","'
+          + root.exactShareId + '"]'
+      && JSON.stringify(commands.command(["discover", "start"]))
+        === '["env","omarchy-quickshare","discover","start"]'
+      && JSON.stringify(commands.command(["peer", "pin", "pixel-8"]))
+        === '["env","omarchy-quickshare","peer","pin","pixel-8"]'
+      && JSON.stringify(commands.command(["peer", "unpin"]))
+        === '["env","omarchy-quickshare","peer","unpin"]'
+      && JSON.stringify(commands.command([
+        "share", "select", root.exactShareId, "pixel-8",
+      ])) === '["env","omarchy-quickshare","share","select","'
         + root.exactShareId + '","pixel-8"]'
-      && JSON.stringify(commands.command(["--open-visibility"]))
-        === '["env","omarchy-quickshare","--open-visibility"]'
-      && JSON.stringify(commands.command(["--close-visibility"]))
-        === '["env","omarchy-quickshare","--close-visibility"]'
-      && JSON.stringify(commands.command(["--stop-discovery"]))
-        === '["env","omarchy-quickshare","--stop-discovery"]'
+      && JSON.stringify(commands.command(["visibility", "open"]))
+        === '["env","omarchy-quickshare","visibility","open"]'
+      && JSON.stringify(commands.command(["visibility", "close"]))
+        === '["env","omarchy-quickshare","visibility","close"]'
+      && JSON.stringify(commands.command(["discover", "stop"]))
+        === '["env","omarchy-quickshare","discover","stop"]'
     var methodsMatch = actionMatches(
-      acceptAction, ["--accept", root.exactShareId],
+      acceptAction, ["share", "accept", root.exactShareId],
     ) && actionMatches(
-      rejectAction, ["--reject", root.exactShareId],
+      rejectAction, ["share", "reject", root.exactShareId],
     ) && actionMatches(
-      cancelAction, ["--cancel", root.exactShareId],
+      cancelAction, ["share", "cancel", root.exactShareId],
     ) && actionMatches(
-      dismissAction, ["--dismiss", root.exactShareId],
-    ) && actionMatches(discoverAction, ["--discover"])
-      && actionMatches(pinAction, ["--pin", "pixel-8"])
-      && actionMatches(unpinAction, ["--unpin"])
+      dismissAction, ["share", "dismiss", root.exactShareId],
+    ) && actionMatches(discoverAction, ["discover", "start"])
+      && actionMatches(pinAction, ["peer", "pin", "pixel-8"])
+      && actionMatches(unpinAction, ["peer", "unpin"])
       && actionMatches(
-        sendToAction, ["--send-to", root.exactShareId, "pixel-8"],
+        sendToAction, ["share", "select", root.exactShareId, "pixel-8"],
       )
-      && actionMatches(openAction, ["--open-visibility"])
-      && actionMatches(closeAction, ["--close-visibility"])
-      && actionMatches(stopAction, ["--stop-discovery"])
+      && actionMatches(openAction, ["visibility", "open"])
+      && actionMatches(closeAction, ["visibility", "close"])
+      && actionMatches(stopAction, ["discover", "stop"])
     var pasteMatch = actionMatches(
-      filePaste, ["file:///tmp/Quick%20Share.apk"],
+      filePaste, ["send", "file:///tmp/Quick%20Share.apk"],
     ) && actionMatches(
-      folderPaste, ["/tmp/Quick Share Folder"],
+      folderPaste, ["send", "/tmp/Quick Share Folder"],
     ) && actionMatches(
-      textPaste, ["plain <b>text</b> with spaces"],
+      textPaste, ["send", "plain <b>text</b> with spaces"],
     ) && actionMatches(
-      urlPaste, ["https://example.test/a?x=1&y=<b>2</b>"],
+      urlPaste, ["send", "https://example.test/a?x=1&y=<b>2</b>"],
     )
     var integrationMatch = root.firstPasteResult === "ok"
       && root.secondPasteResult === "busy"
@@ -255,7 +263,7 @@ ShellRoot {
     executableCommand: [
       "sh",
       "-c",
-      "printf '%s\\n' \"$0\" >> \"$QUICKSHARE_TEST_LOG\"; sleep 2",
+      "printf '%s %s\\n' \"$0\" \"$1\" >> \"$QUICKSHARE_TEST_LOG\"; sleep 2",
     ]
     probeOnStartup: false
     Component.onCompleted: {

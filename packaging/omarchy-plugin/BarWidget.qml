@@ -9,11 +9,27 @@ BarWidget {
   moduleName: "io.github.ollieedgeley.omarchy-quickshare"
 
   property bool popupOpen: false
-  readonly property bool opened: popupOpen
+  property bool popoutSwitchClosing: false
   property bool pastePending: false
   property bool pasteActionComplete: false
+  property bool pasteLatch: false
+  property string pasteShareId: ""
+  property real iconOpacity: 1.0
+  readonly property bool opened: popupOpen
   readonly property bool transferring:
     status.activeShare.phase === "transferring"
+  readonly property bool showPasteBadge:
+    pasteLatch
+    && pasteShareId.length > 0
+    && String((status.endpointSnapshot.active_share || {}).id_string || "")
+      === pasteShareId
+  readonly property bool protocolReady: status.protocolState === "ready"
+  readonly property color foreground:
+    bar ? bar.foreground : Color.foreground
+  readonly property string fontFamily:
+    bar ? bar.fontFamily : Style.font.family
+  readonly property string protocolMeta:
+    status.protocolState === "checking" ? "Checking" : "Unavailable"
 
   function open() {
     popupOpen = true
@@ -25,7 +41,9 @@ BarWidget {
   }
 
   function closeForPopoutSwitch() {
+    popoutSwitchClosing = true
     close()
+    Qt.callLater(function() { root.popoutSwitchClosing = false })
   }
 
   function toggle() {
@@ -33,10 +51,23 @@ BarWidget {
     else open()
   }
 
+  function switchPanel(direction) {
+    if (bar && typeof bar.switchPanelFrom === "function")
+      return bar.switchPanelFrom(root, direction)
+    return false
+  }
+
+  function clearPasteBadge() {
+    pasteLatch = false
+    pasteShareId = ""
+  }
+
   function submit(value) {
     if (!status.submit(value)) return false
+    clearPasteBadge()
     pastePending = true
     pasteActionComplete = false
+    pasteLatch = opened
     return true
   }
 
@@ -59,19 +90,33 @@ BarWidget {
       }
       if (succeeded) {
         root.pasteActionComplete = true
-      } else {
-        root.pastePending = false
-        root.pasteActionComplete = false
-        root.open()
+        return
       }
-    }
-    function onEndpointSnapshotChanged() {
-      if (!root.pastePending || !root.pasteActionComplete) return
-      var share = status.endpointSnapshot.active_share || ({})
-      var phase = String(share.phase || "")
       root.pastePending = false
       root.pasteActionComplete = false
-      if (phase === "waiting_for_peer") root.open()
+      root.clearPasteBadge()
+      root.open()
+    }
+
+    function onEndpointSnapshotChanged() {
+      var share = status.endpointSnapshot.active_share || ({})
+      var shareId = String(share.id_string || "")
+      var phase = String(share.phase || "")
+      if (root.pastePending && root.pasteActionComplete) {
+        root.pastePending = false
+        root.pasteActionComplete = false
+        if (root.pasteLatch) root.pasteShareId = shareId
+        if (phase === "waiting_for_peer") root.open()
+      }
+      if (root.pastePending) return
+      if (shareId.length === 0
+          || phase === "completed"
+          || phase === "cancelled"
+          || phase === "rejected"
+          || phase === "failed"
+          || (root.pasteShareId.length > 0 && shareId !== root.pasteShareId)) {
+        root.clearPasteBadge()
+      }
     }
   }
 
@@ -95,6 +140,18 @@ BarWidget {
     text: ""
     active: root.opened
     tooltipText: "Quick Share"
+    iconComponent: Component {
+      OpticalGlyph {
+        anchors.fill: parent
+        text: ""
+        fontFamily: button.fontFamily
+        fontSize: button.fontSize
+        color: button.active && button.useActiveColor
+          ? button.activeColor
+          : button.foreground
+        opacity: root.iconOpacity
+      }
+    }
     onPressed: root.toggle()
   }
 
@@ -103,8 +160,8 @@ BarWidget {
     running: root.transferring
 
     NumberAnimation {
-      target: button
-      property: "opacity"
+      target: root
+      property: "iconOpacity"
       from: 1.0
       to: 0.2
       duration: 1000
@@ -112,110 +169,116 @@ BarWidget {
     }
 
     NumberAnimation {
-      target: button
-      property: "opacity"
+      target: root
+      property: "iconOpacity"
       from: 0.2
       to: 1.0
       duration: 1000
       easing.type: Easing.InQuart
     }
 
-    onRunningChanged: if (!running) button.opacity = 1.0
+    onRunningChanged: if (!running) root.iconOpacity = 1.0
   }
 
-  PopupCard {
+  KeyboardPanel {
+    id: panel
     anchorItem: button
     bar: root.bar
     owner: root
     open: root.opened
-    contentWidth: Style.space(320)
-    contentHeight: Style.space(360)
+    focusTarget: keyCatcher
+    contentWidth: panel.fittedContentWidth(Style.space(380))
+    contentHeight: panel.fittedContentHeight(
+      panelColumn.implicitHeight,
+      Style.space(560),
+    )
 
-    Column {
+    PanelKeyCatcher {
+      id: keyCatcher
       anchors.fill: parent
-      spacing: Style.spacing.lg
-
-      Text {
-        width: parent.width
-        text: "Quick Share"
-        color: Color.foreground
-        font.family: Style.font.family
-        font.pixelSize: Style.font.heading
-        textFormat: Text.PlainText
-        visible: status.protocolState !== "ready"
+      onMoveRequested: function(dx, dy) {
+        sharePanel.moveCursor(dx, dy)
+      }
+      onActivateRequested: sharePanel.activateCursor()
+      onCloseRequested: root.close()
+      onTabRequested: function(direction) {
+        root.switchPanel(direction)
+      }
+      onTextKey: function(text) {
+        if (text === "p" || text === "P") sharePanel.toggleSelectedPin()
       }
 
-      Text {
+      Column {
+        id: panelColumn
         width: parent.width
-        text: status.statusTitle
-        color: status.protocolState === "ready"
-          ? Color.accent
-          : Color.foreground
-        font.family: Style.font.family
-        font.pixelSize: Style.font.body
-        textFormat: Text.PlainText
-        visible: status.protocolState !== "ready"
-      }
+        spacing: Style.spacing.panelGap
 
-      Text {
-        width: parent.width
-        text: status.statusDetail
-        color: Color.muted
-        font.family: Style.font.family
-        font.pixelSize: Style.font.bodySmall
-        wrapMode: Text.WordWrap
-        textFormat: Text.PlainText
-        visible: status.protocolState !== "ready"
-      }
+        PanelHero {
+          visible: !root.protocolReady
+          width: parent.width
+          title: "Quick Share"
+          meta: root.protocolMeta
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          iconComponent: Component {
+            Text {
+              text: ""
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.display
+              textFormat: Text.PlainText
+            }
+          }
+        }
 
-      SharePanel {
-        width: parent.width
-        accentColor: Color.accent
-        actionError: status.actionError
-        bodyFontSize: Style.font.body
-        borderWidth: Style.normalBorderWidth
-        focusBorderWidth: Style.focusBorderWidth
-        hoverFillAlpha: Style.hoverFillAlpha
-        pressedFillAlpha: Style.pressedFillAlpha
-        controlHeight: Style.spacing.controlHeight
-        dangerColor: Color.urgent
-        fontFamily: Style.font.family
-        foregroundColor: Color.foreground
-        gap: Style.spacing.lg
-        mutedColor: Color.muted
-        radius: Style.cornerRadius
-        smallFontSize: Style.font.bodySmall
-        smallGap: Style.spacing.sm
-        snapshot: status.endpointSnapshot
-        surfaceColor: Color.popups.background
-        visible: status.protocolState === "ready"
-        onAcceptRequested: function(shareId) {
-          status.accept(shareId)
+        Text {
+          visible: !root.protocolReady
+          width: parent.width
+          text: status.statusDetail
+          color: Color.muted
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          wrapMode: Text.WordWrap
+          textFormat: Text.PlainText
         }
-        onCancelRequested: function(shareId) {
-          status.cancel(shareId)
-        }
-        onDismissRequested: function(shareId) {
-          status.dismiss(shareId)
-        }
-        onDiscoverRequested: function() {
-          status.discover()
-        }
-        onStopDiscoveryRequested: function() {
-          status.stopDiscovery()
-        }
-        onPeerSelected: function(shareId, peerId) {
-          status.sendTo(shareId, peerId)
-        }
-        onPinRequested: function(peerId, shouldPin) {
-          if (shouldPin) status.pin(peerId)
-          else status.unpin()
-        }
-        onRejectRequested: function(shareId) {
-          status.reject(shareId)
-        }
-        onVisibilityRequested: function(shouldOpen) {
-          status.setVisibility(shouldOpen)
+
+        SharePanel {
+          id: sharePanel
+          width: parent.width
+          visible: root.protocolReady
+          snapshot: status.endpointSnapshot
+          actionError: status.actionError
+          actionBusy: status.actionBusy
+          showPasteBadge: root.showPasteBadge
+          onAcceptRequested: function(shareId) {
+            status.accept(shareId)
+          }
+          onCancelRequested: function(shareId) {
+            status.cancel(shareId)
+          }
+          onDismissRequested: function(shareId) {
+            if (root.pasteShareId === shareId) root.clearPasteBadge()
+            status.dismiss(shareId)
+          }
+          onDiscoverRequested: function() {
+            status.discover()
+          }
+          onStopDiscoveryRequested: function() {
+            status.stopDiscovery()
+          }
+          onPeerSelected: function(shareId, peerId) {
+            status.sendTo(shareId, peerId)
+          }
+          onPinRequested: function(peerId, shouldPin) {
+            if (shouldPin) status.pin(peerId)
+            else status.unpin()
+          }
+          onRejectRequested: function(shareId) {
+            status.reject(shareId)
+          }
+          onVisibilityRequested: function(shouldOpen) {
+            status.setVisibility(shouldOpen)
+          }
         }
       }
     }

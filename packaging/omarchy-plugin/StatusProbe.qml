@@ -17,9 +17,9 @@ QtObject {
   property bool releaseReady: false
   property bool probeOnStartup: true
   property var executableCommand: ["env", "omarchy-quickshare"]
-  property var versionCommand: command(["--protocol-version"])
-  property var runtimeCommand: command(["--runtime-status"])
-  property var statusCommand: command(["--status-json"])
+  property var versionCommand: command(["protocol-version"])
+  property var runtimeCommand: command(["health"])
+  property var statusCommand: command(["status", "--json"])
   signal actionFinished(bool succeeded)
   readonly property string releasePath:
     Qt.resolvedUrl("release.json").toString()
@@ -52,11 +52,11 @@ QtObject {
   }
 
   function accept(shareId) {
-    runAction(["--accept", String(shareId)])
+    runAction(["share", "accept", String(shareId)])
   }
 
   function cancel(shareId) {
-    runAction(["--cancel", String(shareId)])
+    runAction(["share", "cancel", String(shareId)])
   }
 
 
@@ -64,11 +64,11 @@ QtObject {
     return executableCommand.concat(arguments)
   }
   function dismiss(shareId) {
-    runAction(["--dismiss", String(shareId)])
+    runAction(["share", "dismiss", String(shareId)])
   }
 
   function discover() {
-    runAction(["--discover"])
+    runAction(["discover", "start"])
   }
 
   function acceptRelease(source) {
@@ -150,11 +150,11 @@ QtObject {
   }
 
   function pin(peerId) {
-    runAction(["--pin", String(peerId)])
+    runAction(["peer", "pin", String(peerId)])
   }
 
   function unpin() {
-    runAction(["--unpin"])
+    runAction(["peer", "unpin"])
   }
 
   function refresh() {
@@ -168,7 +168,7 @@ QtObject {
   }
 
   function reject(shareId) {
-    runAction(["--reject", String(shareId)])
+    runAction(["share", "reject", String(shareId)])
   }
 
   function runAction(arguments) {
@@ -181,21 +181,22 @@ QtObject {
   }
 
   function sendTo(shareId, peerId) {
-    runAction(["--send-to", String(shareId), String(peerId)])
+    runAction(["share", "select", String(shareId), String(peerId)])
   }
 
   function submit(value) {
-    return runAction([String(value)])
+    return runAction(["send", String(value)])
   }
 
   function setVisibility(shouldOpen) {
     runAction([
-      shouldOpen ? "--open-visibility" : "--close-visibility",
+      "visibility",
+      shouldOpen ? "open" : "close",
     ])
   }
 
   function stopDiscovery() {
-    runAction(["--stop-discovery"])
+    runAction(["discover", "stop"])
   }
 
   property Process actionProbe: Process {

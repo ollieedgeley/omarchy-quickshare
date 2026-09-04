@@ -20,6 +20,7 @@ import {
   createPluginRepository,
   loadReleaseArtifacts,
 } from "../plugin-export.mjs";
+import { HARNESS_STUBS } from "./plugin-harness-stubs.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const STATUS_HARNESS = join(
@@ -47,105 +48,47 @@ const SHA256_LENGTH = 64;
 const REJECTED_PROTOCOL = 3;
 const EXPECTED_FILES = [
   "BarWidget.qml",
+  "ConsentView.qml",
   "LICENSE",
+  "PeerChoiceView.qml",
   "README.md",
   "SharePanel.qml",
   "StatusProbe.qml",
+  "TerminalView.qml",
+  "TransferView.qml",
   "manifest.json",
   "release.json",
 ];
-const QML_FILES = ["BarWidget.qml", "SharePanel.qml", "StatusProbe.qml"];
+const PANEL_FILES = [
+  "ConsentView.qml",
+  "PeerChoiceView.qml",
+  "SharePanel.qml",
+  "TerminalView.qml",
+  "TransferView.qml",
+];
+const QML_FILES = ["BarWidget.qml", ...PANEL_FILES, "StatusProbe.qml"];
 const FADE_DURATION_PATTERN = /duration: 1000/gu;
 const FORBIDDEN_QML_COMMAND_PATTERN =
   /\b(?:bluetoothctl|cargo|curl|nmcli|pacman|paru|rsync|scp|wget|yay)\b/u;
 const IPC_PASTE_FUNCTION_PATTERN =
   /function paste\(value: string\): string \{/u;
-const ONE_VALUE_ACTION_PATTERN = /runAction\(\[String\(value\)\]\)/u;
+const ONE_VALUE_ACTION_PATTERN = /runAction\(\["send", String\(value\)\]\)/u;
 const PASTE_FORWARD_PATTERN = /return root\.paste\(value\)/u;
 const PEER_CHOICE_OPEN_PATTERN =
   /if \(phase === "waiting_for_peer"\) root\.open\(\)/u;
 const PINNED_AUTO_START_OPEN_PATTERN =
   /phase === "awaiting_peer_consent"\) root\.open\(\)/u;
 const SUBMIT_FUNCTION_PATTERN = /function submit\(value\) \{/u;
+const KEYBOARD_PANEL_PATTERN = /\bKeyboardPanel\s*\{/u;
+const POPUP_CARD_PATTERN = /\bPopupCard\s*\{/u;
+const SHOW_PASTE_BADGE_PATTERN = /showPasteBadge:/u;
+const ACTION_BUSY_PATTERN = /actionBusy:/u;
 const MAX_QML_LINES = 500;
 const EXECUTABLE_MODE = 0o755;
 const NATIVE_COMMIT_MISMATCH =
   /native artifact sourceCommit does not match export/u;
 const SOURCE_COMMIT_MISMATCH =
   /source artifact sourceCommit does not match export/u;
-const HARNESS_STUBS = {
-  "qs/Commons/Color.qml": `pragma Singleton
-import QtQuick
-QtObject {
-  readonly property color accent: "#7aa2f7"
-  readonly property color foreground: "#d8dee9"
-  readonly property color muted: "#8f98a8"
-  readonly property color popupsBackground: "#24283b"
-  readonly property color urgent: "#f7768e"
-  readonly property QtObject popups: QtObject {
-    readonly property color background: "#24283b"
-  }
-}
-`,
-  "qs/Commons/qmldir": `module qs.Commons
-singleton Color 1.0 Color.qml
-singleton Style 1.0 Style.qml
-`,
-  "qs/Commons/Style.qml": `pragma Singleton
-import QtQuick
-QtObject {
-  readonly property int cornerRadius: 6
-  readonly property int focusBorderWidth: 2
-  readonly property int hoverFillAlpha: 0
-  readonly property int normalBorderWidth: 1
-  readonly property int pressedFillAlpha: 0
-  readonly property QtObject font: QtObject {
-    readonly property int body: 12
-    readonly property int bodySmall: 11
-    readonly property string family: "monospace"
-    readonly property int heading: 14
-  }
-  readonly property QtObject spacing: QtObject {
-    readonly property int controlHeight: 34
-    readonly property int lg: 8
-    readonly property int sm: 4
-  }
-  function space(value) { return value }
-}
-`,
-  "qs/Ui/BarIconButton.qml": `import QtQuick
-Item {
-  property bool active: false
-  property var bar
-  property string text: ""
-  property string tooltipText: ""
-  signal pressed()
-  implicitHeight: 24
-  implicitWidth: 24
-}
-`,
-  "qs/Ui/BarWidget.qml": `import QtQuick
-Item {
-  property var bar
-  property string moduleName: ""
-}
-`,
-  "qs/Ui/PopupCard.qml": `import QtQuick
-Item {
-  property Item anchorItem
-  property var bar
-  property real contentHeight: 0
-  property real contentWidth: 0
-  property bool open: false
-  property var owner
-}
-`,
-  "qs/Ui/qmldir": `module qs.Ui
-BarIconButton 1.0 BarIconButton.qml
-BarWidget 1.0 BarWidget.qml
-PopupCard 1.0 PopupCard.qml
-`,
-};
 const temporaryDirectories = new Set();
 
 function temporaryDirectory() {
@@ -154,22 +97,21 @@ function temporaryDirectory() {
   return directory;
 }
 
-function prepareHarness(root) {
-  const directory = join(root, "harness");
-  mkdirSync(directory);
-  for (const file of [
-    "BarWidget.qml",
-    "SharePanel.qml",
-    "StatusProbe.qml",
-    "release.json",
-  ]) {
-    copyFileSync(join(PLUGIN_SOURCE, file), join(directory, file));
-  }
+function writeHarnessStubs(directory) {
   for (const [file, source] of Object.entries(HARNESS_STUBS)) {
     const path = join(directory, file);
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, source);
   }
+}
+
+function prepareHarness(root) {
+  const directory = join(root, "harness");
+  mkdirSync(directory);
+  for (const file of [...QML_FILES, "release.json"]) {
+    copyFileSync(join(PLUGIN_SOURCE, file), join(directory, file));
+  }
+  writeHarnessStubs(directory);
   const nativeDirectory = join(root, "native");
   const actionLog = join(root, "actions.log");
   mkdirSync(nativeDirectory);
@@ -179,13 +121,13 @@ function prepareHarness(root) {
     `#!/usr/bin/env bash
 set -Eeuo pipefail
 case "\${1-}" in
-  --protocol-version) printf '2' ;;
-  --runtime-status) ;;
-  --status-json)
+  protocol-version) printf '2' ;;
+  health) ;;
+  status)
     printf '%s' '{"response":{"type":"snapshot","snapshot":{}},"version":2}'
     ;;
   *)
-    printf '%s\\n' "\${1-}" >> "\${QUICKSHARE_TEST_LOG:?}"
+    printf '%s\\n' "$*" >> "\${QUICKSHARE_TEST_LOG:?}"
     sleep 0.2
     ;;
 esac
@@ -200,10 +142,10 @@ esac
 function preparePanelHarness(root) {
   const directory = join(root, "harness");
   mkdirSync(directory);
-  copyFileSync(
-    join(PLUGIN_SOURCE, "SharePanel.qml"),
-    join(directory, "SharePanel.qml"),
-  );
+  for (const file of PANEL_FILES) {
+    copyFileSync(join(PLUGIN_SOURCE, file), join(directory, file));
+  }
+  writeHarnessStubs(directory);
   const harness = join(directory, "panel-harness.qml");
   copyFileSync(PANEL_HARNESS, harness);
   return harness;
@@ -256,6 +198,10 @@ test("plugin QML delegates one-value paste and native transfer work", () => {
   assert.match(bar, PEER_CHOICE_OPEN_PATTERN);
   assert.doesNotMatch(bar, PINNED_AUTO_START_OPEN_PATTERN);
   assert.equal((bar.match(FADE_DURATION_PATTERN) ?? []).length, 2);
+  assert.match(bar, KEYBOARD_PANEL_PATTERN);
+  assert.doesNotMatch(bar, POPUP_CARD_PATTERN);
+  assert.match(bar, SHOW_PASTE_BADGE_PATTERN);
+  assert.match(bar, ACTION_BUSY_PATTERN);
 
   const status = readFileSync(join(PLUGIN_SOURCE, "StatusProbe.qml"), "utf8");
   assert.match(status, SUBMIT_FUNCTION_PATTERN);
@@ -346,7 +292,10 @@ test("Quick Shell exercises availability and busy paste integration", () => {
 
   assert.equal(result.status, 0, output);
   assert.match(output, SUCCESS_PATTERN);
-  assert.equal(readFileSync(prepared.actionLog, "utf8").trim(), "first-paste");
+  assert.equal(
+    readFileSync(prepared.actionLog, "utf8").trim(),
+    "send first-paste",
+  );
 });
 
 test("Quick Shell renders safe transfer states and exact controls", () => {
