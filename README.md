@@ -212,8 +212,10 @@ Default receive directory is `~/Downloads/omarchy-quickshare`. Incomplete
 transfers stage a hidden file there and drop it if the share does not
 commit.
 
-Live inbound LAN currently saves files. Simulated inbound text and URL
-flags exist for local UI work.
+Live inbound LAN saves files under `receive_directory`. Text and URL
+payloads complete on the same path; their values appear in
+`--status-json`. Simulated inbound flags remain for local UI work
+without a peer.
 
 ## Hyprland
 
@@ -221,10 +223,12 @@ This project does not edit your Hyprland config. Add binds yourself.
 
 ```conf
 bindd = SUPER SHIFT, S, Quick Share paste, exec, sh -c 'value=$(wl-paste --type text/uri-list --no-newline 2>/dev/null || wl-paste --no-newline); omarchy shell io.github.ollieedgeley.omarchy-quickshare paste "$value"'
+bindd = SUPER SHIFT, Q, Quick Share panel, exec, omarchy shell io.github.ollieedgeley.omarchy-quickshare open
 ```
 
-Paste sends clipboard text, a URL, or one copied file or folder. You can
-also click .
+Paste sends clipboard text, a URL, or one copied file or folder. If no
+peer is pinned, the panel opens so you can choose one. The panel-open
+bind does not send. You can also click .
 
 ## Evidence
 
