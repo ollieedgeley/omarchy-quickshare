@@ -1,0 +1,5 @@
+# Default local endpoint configuration.
+discovery_timeout_secs = 15
+receive_directory = "~/Downloads/omarchy-quickshare"
+transfer_timeout_secs = 120
+visibility_timeout_secs = 300

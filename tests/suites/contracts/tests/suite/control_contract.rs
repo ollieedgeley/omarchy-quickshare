@@ -16,18 +16,18 @@ mod tests {
     use omarchy_quickshare::daemon::Daemon;
 
     const REQUEST_FIXTURE: &str = include_str!(
-        "../../../../fixtures/control/v1/submit-text-request.jsonl"
+        "../../../../fixtures/control/v2/submit-text-request.jsonl"
     );
     const RESPONSE_FIXTURE: &str = include_str!(
-        "../../../../fixtures/control/v1/submit-text-queued-response.jsonl"
+        "../../../../fixtures/control/v2/submit-text-queued-response.jsonl"
     );
     const URL_REQUEST_FIXTURE: &str = include_str!(
-        "../../../../fixtures/control/v1/submit-url-request.jsonl"
+        "../../../../fixtures/control/v2/submit-url-request.jsonl"
     );
     const STATUS_REQUEST_FIXTURE: &str =
-        include_str!("../../../../fixtures/control/v1/status-request.jsonl");
+        include_str!("../../../../fixtures/control/v2/status-request.jsonl");
     const STATUS_RESPONSE_FIXTURE: &str = include_str!(
-        "../../../../fixtures/control/v1/status-ready-response.jsonl"
+        "../../../../fixtures/control/v2/status-ready-response.jsonl"
     );
     const EXPECTED_OUTPUT: &[u8] = b"Share 1 queued.\n";
     static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
@@ -196,29 +196,18 @@ mod tests {
     }
 
     #[test]
-    fn directory_is_rejected_before_control_connection() {
+    fn directory_is_submitted_to_the_local_endpoint_for_archiving() {
         let fixture_result = FileFixture::create();
         assert!(fixture_result.is_ok(), "failed to create file fixture");
         let Ok(fixture) = fixture_result else {
             return;
         };
-        let arguments = vec![String::from(".")];
-        let socket = fixture.root.join("missing.sock");
-        let mut output = Vec::new();
-
-        let result = omarchy_quickshare::run(
-            &arguments,
-            &fixture.root,
-            &socket,
-            &mut output,
+        let path = fixture.root.join(".").to_string_lossy().into_owned();
+        let expected = format!(
+            "{{\"request\":{{\"type\":\"submit_file\",\"path\":\"{path}\"}},\
+             \"version\":2}}\n"
         );
-
-        assert!(result.is_err(), "directory submission unexpectedly passed");
-        let Err(error) = result else {
-            return;
-        };
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert_eq!(error.to_string(), "folder sharing is not supported yet");
+        assert_submission_from(".", &fixture.root, &expected);
         let cleanup_result = fixture.cleanup();
         assert!(cleanup_result.is_ok(), "failed to clean file fixture");
     }
@@ -238,7 +227,7 @@ mod tests {
         let path = fixture.path.to_string_lossy();
         let expected = format!(
             "{{\"request\":{{\"type\":\"submit_file\",\"path\":\"{path}\"}},\
-             \"version\":1}}\n"
+             \"version\":2}}\n"
         );
         assert_submission_from("photo.jpg", &fixture.root, &expected);
         let cleanup_result = fixture.cleanup();
@@ -258,7 +247,7 @@ mod tests {
         );
 
         assert!(result.is_ok(), "version query failed: {result:?}");
-        assert_eq!(output, b"1\n");
+        assert_eq!(output, b"2\n");
     }
 
     #[test]

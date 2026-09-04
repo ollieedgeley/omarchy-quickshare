@@ -97,7 +97,7 @@ mod attachment;
 mod coordinator;
 /// Public facts about discovered peers.
 mod peer;
-/// LAN advertisements and one-file Sharing sessions.
+/// LAN advertisements and Sharing sessions.
 mod protocol;
 /// Read-only endpoint and share state.
 mod snapshot;
@@ -106,8 +106,8 @@ pub use attachment::Attachment;
 pub use coordinator::Coordinator;
 pub use peer::PeerSnapshot;
 pub use protocol::{
-    EndpointInfo, IncomingOffer, MdnsInstance, PairingStatus, ProtocolError,
-    SharingSession,
+    EndpointInfo, IncomingOffer, MdnsInstance, OfferKind, PairingStatus,
+    ProtocolError, SharingSession,
 };
 pub use snapshot::{
     Direction, DiscoveryState, EndpointSnapshot, Phase, ShareId, ShareSnapshot,

@@ -12,6 +12,7 @@ use std::io::{Read as _, Write as _};
 use if_addrs as _;
 use mdns_sd as _;
 use quickshare_network::lan::{Listener, connect};
+use zbus as _;
 
 #[test]
 fn listener_accepts_a_connected_stream_without_blocking_when_empty() {

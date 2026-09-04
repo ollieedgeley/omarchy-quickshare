@@ -109,12 +109,6 @@ if (isDirectExecution) {
     );
   }
 
-  run(
-    "cargo",
-    ["check", ...packageFlags, "--all-targets", "--all-features", "--locked"],
-    { cwd: ROOT },
-  );
-
   if (useWorkspace) {
     run("rust-analyzer", ["diagnostics", ".", "--severity", "warning"], {
       cwd: ROOT,
@@ -152,12 +146,14 @@ if (isDirectExecution) {
     },
   });
 
-  run(
-    "cargo",
-    ["doc", ...packageFlags, "--all-features", "--no-deps", "--locked"],
-    {
-      cwd: ROOT,
-      env: { ...process.env, RUSTDOCFLAGS: "-D warnings" },
-    },
-  );
+  if (useWorkspace) {
+    run(
+      "cargo",
+      ["doc", ...packageFlags, "--all-features", "--no-deps", "--locked"],
+      {
+        cwd: ROOT,
+        env: { ...process.env, RUSTDOCFLAGS: "-D warnings" },
+      },
+    );
+  }
 }

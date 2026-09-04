@@ -143,7 +143,11 @@ function runLint(phasePaths, phase) {
   }
   run("node", args, {
     cwd: staged.mirror,
-    env: { ...process.env, GATE_ROOT: staged.mirror },
+    env: {
+      ...process.env,
+      CARGO_TARGET_DIR: join(ROOT, "target"),
+      GATE_ROOT: staged.mirror,
+    },
   });
 }
 
@@ -329,26 +333,32 @@ function writeSelectionReport(reportParams) {
   );
 }
 function runPackageTests(packages) {
-  for (const pkg of packages) {
+  if (!packages.length) {
+    return;
+  }
+  const cargoEnv = {
+    ...process.env,
+    CARGO_TARGET_DIR: join(ROOT, "target"),
+  };
+  const packageFlags = packages.flatMap((pkg) => ["--package", pkg.name]);
+  run(
+    "cargo",
+    ["test", ...packageFlags, "--all-targets", "--all-features", "--locked"],
+    { cwd: staged.mirror, env: cargoEnv },
+  );
+  const libraries = packages.filter((pkg) => pkg.hasLibrary);
+  if (libraries.length) {
     run(
       "cargo",
       [
         "test",
-        "--package",
-        pkg.name,
-        "--all-targets",
+        ...libraries.flatMap((pkg) => ["--package", pkg.name]),
+        "--doc",
         "--all-features",
         "--locked",
       ],
-      { cwd: staged.mirror },
+      { cwd: staged.mirror, env: cargoEnv },
     );
-    if (pkg.hasLibrary) {
-      run(
-        "cargo",
-        ["test", "--package", pkg.name, "--doc", "--all-features", "--locked"],
-        { cwd: staged.mirror },
-      );
-    }
   }
 }
 

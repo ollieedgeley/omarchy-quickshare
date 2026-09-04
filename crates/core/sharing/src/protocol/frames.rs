@@ -79,6 +79,21 @@ pub(in crate::protocol) fn decode_response(
     .map_err(|_| ProtocolError::InvalidFrame)
 }
 
+pub(in crate::protocol) fn consent_result(
+    status: connection_response_frame::Status,
+) -> Result<(), ProtocolError> {
+    match status {
+        connection_response_frame::Status::Accept => Ok(()),
+        connection_response_frame::Status::TimedOut => {
+            Err(ProtocolError::TimedOut)
+        }
+        connection_response_frame::Status::UnsupportedAttachmentType => {
+            Err(ProtocolError::Unsupported)
+        }
+        _ => Err(ProtocolError::Rejected),
+    }
+}
+
 pub(in crate::protocol) fn introduction(name: &str, size: i64) -> Frame {
     use quickshare_wire::sharing::{
         FileMetadata, IntroductionFrame, file_metadata,
@@ -107,16 +122,28 @@ pub(in crate::protocol) fn introduction(name: &str, size: i64) -> Frame {
     )
 }
 
-pub(in crate::protocol) fn cancel() -> Frame {
-    frame(v1_frame::FrameType::Cancel, V1Frame::default())
-}
+pub(in crate::protocol) fn text_introduction(
+    title: &str,
+    size: i64,
+    kind: quickshare_wire::sharing::text_metadata::Type,
+) -> Frame {
+    use quickshare_wire::sharing::{IntroductionFrame, TextMetadata};
 
-pub(in crate::protocol) fn accept_response() -> Frame {
+    const TEXT_ATTACHMENT_ID: i64 = 4;
+    const TEXT_PAYLOAD_ID: i64 = 3;
     frame(
-        v1_frame::FrameType::Response,
+        v1_frame::FrameType::Introduction,
         V1Frame {
-            connection_response: Some(ConnectionResponseFrame {
-                status: Some(connection_response_frame::Status::Accept as i32),
+            introduction: Some(IntroductionFrame {
+                text_metadata: vec![TextMetadata {
+                    id: Some(TEXT_ATTACHMENT_ID),
+                    text_title: Some(title.into()),
+                    r#type: Some(kind as i32),
+                    payload_id: Some(TEXT_PAYLOAD_ID),
+                    size: Some(size),
+                    ..Default::default()
+                }],
+                start_transfer: Some(true),
                 ..Default::default()
             }),
             ..Default::default()
@@ -124,12 +151,34 @@ pub(in crate::protocol) fn accept_response() -> Frame {
     )
 }
 
+pub(in crate::protocol) fn cancel() -> Frame {
+    frame(v1_frame::FrameType::Cancel, V1Frame::default())
+}
+
+pub(in crate::protocol) fn accept_response() -> Frame {
+    status_response(connection_response_frame::Status::Accept)
+}
+
 pub(in crate::protocol) fn reject_response() -> Frame {
+    status_response(connection_response_frame::Status::Reject)
+}
+
+pub(in crate::protocol) fn timeout_response() -> Frame {
+    status_response(connection_response_frame::Status::TimedOut)
+}
+
+pub(in crate::protocol) fn unsupported_response() -> Frame {
+    status_response(
+        connection_response_frame::Status::UnsupportedAttachmentType,
+    )
+}
+
+fn status_response(status: connection_response_frame::Status) -> Frame {
     frame(
         v1_frame::FrameType::Response,
         V1Frame {
             connection_response: Some(ConnectionResponseFrame {
-                status: Some(connection_response_frame::Status::Reject as i32),
+                status: Some(status as i32),
                 ..Default::default()
             }),
             ..Default::default()

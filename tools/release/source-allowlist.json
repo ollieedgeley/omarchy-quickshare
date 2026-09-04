@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "files": [
+    "Cargo.lock",
+    "Cargo.toml",
+    "LICENSE",
+    "README.md",
+    "packaging/systemd/omarchy-quickshare.service",
+    "packaging/systemd/omarchy-quickshare.toml",
+    "rust-toolchain.toml"
+  ],
+  "trees": [
+    "crates/app",
+    "crates/core/connections",
+    "crates/core/control",
+    "crates/core/crypto",
+    "crates/core/sharing",
+    "crates/core/wire",
+    "crates/platform/bluez",
+    "crates/platform/network",
+    "crates/platform/storage"
+  ]
+}

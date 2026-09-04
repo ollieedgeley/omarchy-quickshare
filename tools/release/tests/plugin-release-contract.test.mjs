@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   copyFileSync,
   lstatSync,
   mkdirSync,
@@ -8,13 +9,17 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { afterEach } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { createPluginRepository } from "../plugin-export.mjs";
+import {
+  createPluginRepository,
+  loadReleaseArtifacts,
+} from "../plugin-export.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const STATUS_HARNESS = join(
@@ -38,6 +43,8 @@ const QUICKSHELL = process.env.QUICKSHELL ?? "quickshell";
 const QUICKSHELL_VERSION_PATTERN = /^Quickshell 0\.3\.1\b/u;
 const SUCCESS_PATTERN = /HARNESS_OK/u;
 const SOURCE_COMMIT = "a".repeat(COMMIT_LENGTH);
+const SHA256_LENGTH = 64;
+const REJECTED_PROTOCOL = 3;
 const EXPECTED_FILES = [
   "BarWidget.qml",
   "LICENSE",
@@ -47,6 +54,98 @@ const EXPECTED_FILES = [
   "manifest.json",
   "release.json",
 ];
+const QML_FILES = ["BarWidget.qml", "SharePanel.qml", "StatusProbe.qml"];
+const FADE_DURATION_PATTERN = /duration: 1000/gu;
+const FORBIDDEN_QML_COMMAND_PATTERN =
+  /\b(?:bluetoothctl|cargo|curl|nmcli|pacman|paru|rsync|scp|wget|yay)\b/u;
+const IPC_PASTE_FUNCTION_PATTERN =
+  /function paste\(value: string\): string \{/u;
+const ONE_VALUE_ACTION_PATTERN = /runAction\(\[String\(value\)\]\)/u;
+const PASTE_FORWARD_PATTERN = /return root\.paste\(value\)/u;
+const PEER_CHOICE_OPEN_PATTERN =
+  /if \(phase === "waiting_for_peer"\) root\.open\(\)/u;
+const PINNED_AUTO_START_OPEN_PATTERN =
+  /phase === "awaiting_peer_consent"\) root\.open\(\)/u;
+const SUBMIT_FUNCTION_PATTERN = /function submit\(value\) \{/u;
+const MAX_QML_LINES = 500;
+const EXECUTABLE_MODE = 0o755;
+const NATIVE_COMMIT_MISMATCH =
+  /native artifact sourceCommit does not match export/u;
+const SOURCE_COMMIT_MISMATCH =
+  /source artifact sourceCommit does not match export/u;
+const HARNESS_STUBS = {
+  "qs/Commons/Color.qml": `pragma Singleton
+import QtQuick
+QtObject {
+  readonly property color accent: "#7aa2f7"
+  readonly property color foreground: "#d8dee9"
+  readonly property color muted: "#8f98a8"
+  readonly property color popupsBackground: "#24283b"
+  readonly property color urgent: "#f7768e"
+  readonly property QtObject popups: QtObject {
+    readonly property color background: "#24283b"
+  }
+}
+`,
+  "qs/Commons/qmldir": `module qs.Commons
+singleton Color 1.0 Color.qml
+singleton Style 1.0 Style.qml
+`,
+  "qs/Commons/Style.qml": `pragma Singleton
+import QtQuick
+QtObject {
+  readonly property int cornerRadius: 6
+  readonly property int focusBorderWidth: 2
+  readonly property int hoverFillAlpha: 0
+  readonly property int normalBorderWidth: 1
+  readonly property int pressedFillAlpha: 0
+  readonly property QtObject font: QtObject {
+    readonly property int body: 12
+    readonly property int bodySmall: 11
+    readonly property string family: "monospace"
+    readonly property int heading: 14
+  }
+  readonly property QtObject spacing: QtObject {
+    readonly property int controlHeight: 34
+    readonly property int lg: 8
+    readonly property int sm: 4
+  }
+  function space(value) { return value }
+}
+`,
+  "qs/Ui/BarIconButton.qml": `import QtQuick
+Item {
+  property bool active: false
+  property var bar
+  property string text: ""
+  property string tooltipText: ""
+  signal pressed()
+  implicitHeight: 24
+  implicitWidth: 24
+}
+`,
+  "qs/Ui/BarWidget.qml": `import QtQuick
+Item {
+  property var bar
+  property string moduleName: ""
+}
+`,
+  "qs/Ui/PopupCard.qml": `import QtQuick
+Item {
+  property Item anchorItem
+  property var bar
+  property real contentHeight: 0
+  property real contentWidth: 0
+  property bool open: false
+  property var owner
+}
+`,
+  "qs/Ui/qmldir": `module qs.Ui
+BarIconButton 1.0 BarIconButton.qml
+BarWidget 1.0 BarWidget.qml
+PopupCard 1.0 PopupCard.qml
+`,
+};
 const temporaryDirectories = new Set();
 
 function temporaryDirectory() {
@@ -58,12 +157,44 @@ function temporaryDirectory() {
 function prepareHarness(root) {
   const directory = join(root, "harness");
   mkdirSync(directory);
-  for (const file of ["StatusProbe.qml", "release.json"]) {
+  for (const file of [
+    "BarWidget.qml",
+    "SharePanel.qml",
+    "StatusProbe.qml",
+    "release.json",
+  ]) {
     copyFileSync(join(PLUGIN_SOURCE, file), join(directory, file));
   }
+  for (const [file, source] of Object.entries(HARNESS_STUBS)) {
+    const path = join(directory, file);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, source);
+  }
+  const nativeDirectory = join(root, "native");
+  const actionLog = join(root, "actions.log");
+  mkdirSync(nativeDirectory);
+  const executable = join(nativeDirectory, "omarchy-quickshare");
+  writeFileSync(
+    executable,
+    `#!/usr/bin/env bash
+set -Eeuo pipefail
+case "\${1-}" in
+  --protocol-version) printf '2' ;;
+  --runtime-status) ;;
+  --status-json)
+    printf '%s' '{"response":{"type":"snapshot","snapshot":{}},"version":2}'
+    ;;
+  *)
+    printf '%s\\n' "\${1-}" >> "\${QUICKSHARE_TEST_LOG:?}"
+    sleep 0.2
+    ;;
+esac
+`,
+  );
+  chmodSync(executable, EXECUTABLE_MODE);
   const harness = join(directory, "status-harness.qml");
   copyFileSync(STATUS_HARNESS, harness);
-  return harness;
+  return { actionLog, harness, nativeDirectory };
 }
 
 function preparePanelHarness(root) {
@@ -103,6 +234,93 @@ test("plugin export contains only its allowlisted release files", () => {
     readFileSync(join(destination, "release.json"), "utf8"),
   );
   assert.equal(release.sourceCommit, SOURCE_COMMIT);
+  assert.deepEqual(release.controlProtocol, { minimum: 2, maximum: 2 });
+  assert.equal(release.nativeArtifact.published, false);
+  assert.equal("sha256" in release.nativeArtifact, false);
+  assert.equal("sourceBuild" in release, false);
+});
+
+test("plugin QML delegates one-value paste and native transfer work", () => {
+  for (const file of QML_FILES) {
+    const source = readFileSync(join(PLUGIN_SOURCE, file), "utf8");
+    assert.ok(
+      source.trimEnd().split("\n").length <= MAX_QML_LINES,
+      `${file} exceeds ${MAX_QML_LINES} lines`,
+    );
+    assert.doesNotMatch(source, FORBIDDEN_QML_COMMAND_PATTERN);
+  }
+
+  const bar = readFileSync(join(PLUGIN_SOURCE, "BarWidget.qml"), "utf8");
+  assert.match(bar, IPC_PASTE_FUNCTION_PATTERN);
+  assert.match(bar, PASTE_FORWARD_PATTERN);
+  assert.match(bar, PEER_CHOICE_OPEN_PATTERN);
+  assert.doesNotMatch(bar, PINNED_AUTO_START_OPEN_PATTERN);
+  assert.equal((bar.match(FADE_DURATION_PATTERN) ?? []).length, 2);
+
+  const status = readFileSync(join(PLUGIN_SOURCE, "StatusProbe.qml"), "utf8");
+  assert.match(status, SUBMIT_FUNCTION_PATTERN);
+  assert.match(status, ONE_VALUE_ACTION_PATTERN);
+});
+
+test("plugin export omits checksums when native artifacts are absent", () => {
+  const source = join(temporaryDirectory(), "plugin");
+  mkdirSync(source);
+  for (const file of EXPECTED_FILES) {
+    copyFileSync(join(PLUGIN_SOURCE, file), join(source, file));
+  }
+  const polluted = JSON.parse(
+    readFileSync(join(source, "release.json"), "utf8"),
+  );
+  polluted.nativeArtifact.sha256 = "d".repeat(SHA256_LENGTH);
+  polluted.nativeArtifact.published = true;
+  polluted.controlProtocol = { minimum: 1, maximum: REJECTED_PROTOCOL };
+  polluted.sourceBuild = { sha256: "e".repeat(SHA256_LENGTH) };
+  writeFileSync(
+    join(source, "release.json"),
+    `${JSON.stringify(polluted, null, 2)}\n`,
+  );
+  const destination = join(temporaryDirectory(), "export");
+
+  createPluginRepository({
+    destination,
+    source,
+    sourceCommit: SOURCE_COMMIT,
+  });
+
+  const release = JSON.parse(
+    readFileSync(join(destination, "release.json"), "utf8"),
+  );
+  assert.equal(release.sourceCommit, SOURCE_COMMIT);
+  assert.equal(release.nativeArtifact.published, false);
+  assert.equal("sha256" in release.nativeArtifact, false);
+  assert.deepEqual(release.controlProtocol, { minimum: 2, maximum: 2 });
+  assert.equal("sourceBuild" in release, false);
+});
+
+test("plugin export records native and source-build checksums", () => {
+  const destination = join(temporaryDirectory(), "export");
+  const nativeSha256 = "b".repeat(SHA256_LENGTH);
+  const sourceSha256 = "c".repeat(SHA256_LENGTH);
+
+  createPluginRepository({
+    artifacts: {
+      nativeSha256,
+      nativeVersion: "0.0.0",
+      sourceSha256,
+    },
+    destination,
+    sourceCommit: SOURCE_COMMIT,
+  });
+
+  const release = JSON.parse(
+    readFileSync(join(destination, "release.json"), "utf8"),
+  );
+  assert.equal(release.sourceCommit, SOURCE_COMMIT);
+  assert.equal(release.nativeArtifact.version, "0.0.0");
+  assert.equal(release.nativeArtifact.sha256, nativeSha256);
+  assert.equal(release.nativeArtifact.published, true);
+  assert.deepEqual(release.controlProtocol, { minimum: 2, maximum: 2 });
+  assert.equal(release.sourceBuild.sha256, sourceSha256);
 });
 
 test("Quick Shell runtime matches the supported version", () => {
@@ -113,8 +331,26 @@ test("Quick Shell runtime matches the supported version", () => {
   assert.match(output, QUICKSHELL_VERSION_PATTERN);
 });
 
-test("Quick Shell observes every native availability state", () => {
-  const harness = prepareHarness(temporaryDirectory());
+test("Quick Shell exercises availability and busy paste integration", () => {
+  const prepared = prepareHarness(temporaryDirectory());
+  const result = spawnSync(QUICKSHELL, ["--no-color", "-p", prepared.harness], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${prepared.nativeDirectory}:${process.env.PATH ?? ""}`,
+      QUICKSHARE_TEST_LOG: prepared.actionLog,
+    },
+    timeout: HARNESS_TIMEOUT_MS,
+  });
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+
+  assert.equal(result.status, 0, output);
+  assert.match(output, SUCCESS_PATTERN);
+  assert.equal(readFileSync(prepared.actionLog, "utf8").trim(), "first-paste");
+});
+
+test("Quick Shell renders safe transfer states and exact controls", () => {
+  const harness = preparePanelHarness(temporaryDirectory());
   const result = spawnSync(QUICKSHELL, ["--no-color", "-p", harness], {
     encoding: "utf8",
     timeout: HARNESS_TIMEOUT_MS,
@@ -125,14 +361,76 @@ test("Quick Shell observes every native availability state", () => {
   assert.match(output, SUCCESS_PATTERN);
 });
 
-test("Quick Shell renders and controls both transfer directions", () => {
-  const harness = preparePanelHarness(temporaryDirectory());
-  const result = spawnSync(QUICKSHELL, ["--no-color", "-p", harness], {
-    encoding: "utf8",
-    timeout: HARNESS_TIMEOUT_MS,
-  });
-  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+test("plugin export records artifacts that match the export commit", () => {
+  const root = temporaryDirectory();
+  const nativeMeta = join(root, "native.json");
+  const sourceMeta = join(root, "source.json");
+  writeFileSync(
+    nativeMeta,
+    `${JSON.stringify({
+      sha256: "b".repeat(SHA256_LENGTH),
+      sourceCommit: SOURCE_COMMIT,
+      version: "0.0.0",
+    })}\n`,
+  );
+  writeFileSync(
+    sourceMeta,
+    `${JSON.stringify({
+      sha256: "c".repeat(SHA256_LENGTH),
+      sourceCommit: SOURCE_COMMIT,
+    })}\n`,
+  );
 
-  assert.equal(result.status, 0, output);
-  assert.match(output, SUCCESS_PATTERN);
+  const artifacts = loadReleaseArtifacts({
+    nativeMeta,
+    sourceCommit: SOURCE_COMMIT,
+    sourceMeta,
+  });
+
+  assert.equal(artifacts.nativeSha256, "b".repeat(SHA256_LENGTH));
+  assert.equal(artifacts.nativeVersion, "0.0.0");
+  assert.equal(artifacts.sourceSha256, "c".repeat(SHA256_LENGTH));
+});
+
+test("plugin export rejects stale artifact commits", () => {
+  const root = temporaryDirectory();
+  const nativeMeta = join(root, "native.json");
+  writeFileSync(
+    nativeMeta,
+    `${JSON.stringify({
+      sha256: "b".repeat(SHA256_LENGTH),
+      sourceCommit: "c".repeat(COMMIT_LENGTH),
+      version: "0.0.0",
+    })}\n`,
+  );
+
+  assert.throws(
+    () =>
+      loadReleaseArtifacts({
+        nativeMeta,
+        sourceCommit: SOURCE_COMMIT,
+      }),
+    NATIVE_COMMIT_MISMATCH,
+  );
+});
+
+test("plugin export rejects stale source-build commits", () => {
+  const root = temporaryDirectory();
+  const sourceMeta = join(root, "source.json");
+  writeFileSync(
+    sourceMeta,
+    `${JSON.stringify({
+      sha256: "c".repeat(SHA256_LENGTH),
+      sourceCommit: "d".repeat(COMMIT_LENGTH),
+    })}\n`,
+  );
+
+  assert.throws(
+    () =>
+      loadReleaseArtifacts({
+        sourceCommit: SOURCE_COMMIT,
+        sourceMeta,
+      }),
+    SOURCE_COMMIT_MISMATCH,
+  );
 });

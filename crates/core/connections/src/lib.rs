@@ -1,4 +1,4 @@
-//! Encrypted Nearby Connections sessions over TCP.
+//! Encrypted Nearby Connections sessions over a byte stream.
 
 #![forbid(unsafe_code)]
 #![expect(
@@ -66,7 +66,7 @@
 )]
 #![expect(
     clippy::std_instead_of_alloc,
-    reason = "The connection crate requires std TCP I/O"
+    reason = "The connection crate requires std stream I/O"
 )]
 #![cfg_attr(
     test,
@@ -80,7 +80,10 @@
     reason = "The architecture requires a stable crate-root interface"
 )]
 
-/// TCP session establishment and encrypted frame transport.
+/// Session establishment and encrypted frame transport.
 mod session;
 
-pub use session::{Connection, ConnectionOptions, Error, Event};
+pub use session::{
+    Connection, ConnectionIo, ConnectionOptions, Error, Event, Medium,
+    UpgradeCredentials, UpgradeDecision, UpgradeEvent, UpgradeState,
+};

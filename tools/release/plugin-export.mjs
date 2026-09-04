@@ -35,14 +35,33 @@ function assertSourceFile(source, file) {
   return path;
 }
 
-function writeRelease(destination, sourceCommit) {
+function writeRelease(destination, sourceCommit, artifacts) {
   const path = join(destination, "release.json");
   const release = JSON.parse(readFileSync(path, "utf8"));
   release.sourceCommit = sourceCommit;
+  release.controlProtocol = { maximum: 2, minimum: 2 };
+  const nativeArtifact = {
+    version: artifacts.nativeVersion ?? release.nativeArtifact.version,
+    published: Boolean(artifacts.nativeSha256),
+  };
+  if (artifacts.nativeSha256) {
+    nativeArtifact.sha256 = artifacts.nativeSha256;
+  }
+  release.nativeArtifact = nativeArtifact;
+  if (artifacts.sourceSha256) {
+    release.sourceBuild = { sha256: artifacts.sourceSha256 };
+  } else {
+    delete release.sourceBuild;
+  }
   writeFileSync(path, `${JSON.stringify(release, null, 2)}\n`);
 }
 
-export function exportPlugin({ destination, source = SOURCE, sourceCommit }) {
+export function exportPlugin({
+  artifacts = {},
+  destination,
+  source = SOURCE,
+  sourceCommit,
+}) {
   if (!COMMIT_PATTERN.test(sourceCommit)) {
     throw new Error("plugin export needs a full source commit");
   }
@@ -53,7 +72,7 @@ export function exportPlugin({ destination, source = SOURCE, sourceCommit }) {
   for (const file of PLUGIN_FILES) {
     copyFileSync(assertSourceFile(source, file), join(destination, file));
   }
-  writeRelease(destination, sourceCommit);
+  writeRelease(destination, sourceCommit, artifacts);
 }
 
 export function createPluginRepository(options) {
@@ -81,11 +100,48 @@ function cleanDestination(destination) {
   rmSync(destination, { force: true, recursive: true });
 }
 
+function assertMatchingCommit(label, meta, sourceCommit) {
+  if (meta.sourceCommit !== sourceCommit) {
+    throw new Error(`${label} artifact sourceCommit does not match export`);
+  }
+}
+
+export function loadReleaseArtifacts({
+  nativeMeta,
+  sourceCommit,
+  sourceMeta,
+} = {}) {
+  if (!COMMIT_PATTERN.test(sourceCommit)) {
+    throw new Error("plugin export needs a full source commit");
+  }
+  const artifacts = {};
+  if (nativeMeta && existsSync(nativeMeta)) {
+    const native = JSON.parse(readFileSync(nativeMeta, "utf8"));
+    assertMatchingCommit("native", native, sourceCommit);
+    artifacts.nativeSha256 = native.sha256;
+    artifacts.nativeVersion = native.version;
+  }
+  if (sourceMeta && existsSync(sourceMeta)) {
+    const source = JSON.parse(readFileSync(sourceMeta, "utf8"));
+    assertMatchingCommit("source", source, sourceCommit);
+    artifacts.sourceSha256 = source.sha256;
+  }
+  return artifacts;
+}
+
 function main() {
   run("git", ["diff", "--quiet", "HEAD", "--", "packaging/omarchy-plugin"]);
   const sourceCommit = output("git", ["rev-parse", "HEAD"]);
   cleanDestination(DESTINATION);
-  createPluginRepository({ destination: DESTINATION, sourceCommit });
+  createPluginRepository({
+    artifacts: loadReleaseArtifacts({
+      nativeMeta: join(ROOT, "dist", "native", "version.json"),
+      sourceCommit,
+      sourceMeta: join(ROOT, "dist", "source", "version.json"),
+    }),
+    destination: DESTINATION,
+    sourceCommit,
+  });
   run("omarchy", ["plugin", "validate", DESTINATION]);
   process.stdout.write(`Exported plugin for ${sourceCommit}.\n`);
 }

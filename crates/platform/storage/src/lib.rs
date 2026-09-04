@@ -12,6 +12,10 @@
     reason = "The stable adapter interface uses crate re-exports and Error"
 )]
 
+/// Safe inbound basename checks.
+mod path;
+/// Free-space preflight for inbound shares.
+mod quota;
 /// Retained outbound source files.
 mod source;
 /// Safe staging and atomic publication.
@@ -28,15 +32,21 @@ use std::io;
 #[non_exhaustive]
 pub enum Error {
     /// The completed receive name is already in use.
-    DestinationExists,
+    Collision,
+    /// An inbound file stopped before its declared size was written.
+    Interrupted,
     /// A peer supplied a non-basename receive name.
     InvalidName,
     /// An outbound attachment is not a regular file with a basename.
     InvalidSource,
     /// The operating system rejected a filesystem operation.
     Io(io::Error),
-    /// An outbound attachment changed size after it was accepted.
-    SourceChanged,
+    /// An outbound attachment was replaced or changed after it was accepted.
+    Mutation,
+    /// The receive root does not have enough free space.
+    Quota,
+    /// Written bytes did not match the attachment's declared size.
+    SizeMismatch,
 }
 
 impl fmt::Display for Error {
@@ -47,13 +57,24 @@ impl fmt::Display for Error {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DestinationExists => {
+            Self::Collision => {
                 f.write_str("receive destination already exists")
+            }
+            Self::Interrupted => {
+                f.write_str("inbound file was interrupted before completion")
             }
             Self::InvalidName => f.write_str("receive name is not a basename"),
             Self::InvalidSource => f.write_str("outbound source is not a file"),
             Self::Io(error) => write!(f, "local storage failed: {error}"),
-            Self::SourceChanged => f.write_str("outbound source changed size"),
+            Self::Mutation => {
+                f.write_str("outbound source was replaced or changed")
+            }
+            Self::Quota => {
+                f.write_str("not enough free space for the inbound share")
+            }
+            Self::SizeMismatch => f.write_str(
+                "inbound file size does not match the declared size",
+            ),
         }
     }
 }

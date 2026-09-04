@@ -19,16 +19,16 @@ use quickshare_sharing::{
 
 const BINARY: &str = env!("CARGO_BIN_EXE_omarchy-quickshare");
 const ACTIVE_TEXT_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v1/active-text-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v2/active-text-snapshot-response.jsonl"
 );
 const ACTIVE_FILE_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v1/active-file-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v2/active-file-snapshot-response.jsonl"
 );
 const ACTIVE_URL_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v1/active-url-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v2/active-url-snapshot-response.jsonl"
 );
 const CANCELLED_TEXT_SNAPSHOT: &str = include_str!(concat!(
-    "../../../../tests/fixtures/control/v1/",
+    "../../../../tests/fixtures/control/v2/",
     "cancelled-text-snapshot-response.jsonl"
 ));
 const RETRY_DELAY: Duration = Duration::from_millis(5);
@@ -62,9 +62,13 @@ impl DaemonProcessFixture {
 
     fn start_with(root: PathBuf, arguments: &[&str]) -> io::Result<Self> {
         fs::create_dir_all(&root)?;
-        let child = Command::new(BINARY)
-            .args(arguments)
-            .env("XDG_RUNTIME_DIR", &root)
+        let home = root.join("home");
+        fs::create_dir_all(&home)?;
+        let mut permissions = fs::metadata(&home)?.permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&home, permissions)?;
+        fs::create_dir_all(root.join("received"))?;
+        let child = isolated_command(&root, arguments)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
@@ -131,21 +135,32 @@ fn runtime_fixture_path() -> PathBuf {
     ))
 }
 
+fn isolated_command(runtime_directory: &Path, arguments: &[&str]) -> Command {
+    let mut command = Command::new(BINARY);
+    let _ = command
+        .args(arguments)
+        .env("HOME", runtime_directory.join("home"))
+        .env("XDG_CONFIG_HOME", runtime_directory.join("config"))
+        .env("XDG_DOWNLOAD_DIR", runtime_directory.join("received"))
+        .env("XDG_RUNTIME_DIR", runtime_directory);
+    if arguments
+        .iter()
+        .any(|argument| argument.starts_with("--simulate"))
+    {
+        let _ = command.env("OMARCHY_QUICKSHARE_ALLOW_SIMULATION", "1");
+    }
+    command
+}
+
 fn runtime_status(runtime_directory: &Path) -> io::Result<Output> {
-    Command::new(BINARY)
-        .arg("--runtime-status")
-        .env("XDG_RUNTIME_DIR", runtime_directory)
-        .output()
+    isolated_command(runtime_directory, &["--runtime-status"]).output()
 }
 
 fn run_command(
     runtime_directory: &Path,
     arguments: &[&str],
 ) -> io::Result<Output> {
-    Command::new(BINARY)
-        .args(arguments)
-        .env("XDG_RUNTIME_DIR", runtime_directory)
-        .output()
+    isolated_command(runtime_directory, arguments).output()
 }
 
 #[test]
@@ -166,6 +181,17 @@ fn daemon_process_accepts_clients_and_recovers_from_a_stale_socket() {
     };
     assert!(status.status.success(), "daemon rejected status request");
     assert_eq!(status.stdout, b"available\n");
+    assert!(
+        first
+            .runtime_directory()
+            .join("received/omarchy-quickshare")
+            .is_dir(),
+        "daemon should create the XDG download receive directory"
+    );
+    assert!(
+        !first.runtime_directory().join("home/Downloads").exists(),
+        "daemon should not write under read-only HOME"
+    );
     let first_stop = first.kill();
     assert!(first_stop.is_ok(), "failed to stop first daemon");
 

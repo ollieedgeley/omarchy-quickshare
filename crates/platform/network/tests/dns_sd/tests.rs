@@ -10,6 +10,7 @@ use core::time::Duration;
 use if_addrs as _;
 use mdns_sd as _;
 use quickshare_network::{Advertisement, DnsSd, lan::Listener};
+use zbus as _;
 
 const SERVICE_TYPE: &str = "_quickshare-test._tcp.local.";
 

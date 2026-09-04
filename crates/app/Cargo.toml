@@ -8,10 +8,14 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+quickshare-bluez = { path = "../platform/bluez" }
+quickshare-connections = { path = "../core/connections" }
 quickshare-control = { path = "../core/control" }
+quickshare-crypto = { path = "../core/crypto" }
 quickshare-network = { path = "../platform/network" }
 quickshare-sharing = { path = "../core/sharing" }
 quickshare-storage = { path = "../platform/storage" }
-
+rand_core.workspace = true
+zbus.workspace = true
 [lints]
 workspace = true

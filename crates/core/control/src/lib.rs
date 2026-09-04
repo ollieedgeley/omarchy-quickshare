@@ -1,6 +1,10 @@
 //! Versioned local control messages shared by the endpoint and its clients.
 
 #![forbid(unsafe_code)]
+#![expect(
+    clippy::large_enum_variant,
+    reason = "Snapshot responses carry full endpoint state locally"
+)]
 #![cfg_attr(
     test,
     allow(
@@ -17,4 +21,4 @@ pub mod request;
 pub mod response;
 
 /// The local control protocol version implemented by this crate.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;

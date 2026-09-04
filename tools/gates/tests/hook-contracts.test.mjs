@@ -5,7 +5,11 @@ import { fileURLToPath } from "node:url";
 import test, { describe, it } from "node:test";
 
 import blockMainGates from "../../../.omp/hooks/pre/block-main-gates.js";
-import { analyzersForPaths, selectDomainPaths } from "../lib/analysis.mjs";
+import {
+  analyzersForPaths,
+  duplicationScanPaths,
+  selectDomainPaths,
+} from "../lib/analysis.mjs";
 import {
   codeGraphAffectedArgs,
   computeSelectionRecord,
@@ -595,6 +599,23 @@ test("analysis dispatches every strict supported tool", () => {
     ],
   );
   assert.deepEqual(analyzersForPaths(["package.json"]), ["jscpd", "knip"]);
+});
+
+test("test-only analysis skips jscpd on a tests-only corpus", () => {
+  assert.deepEqual(
+    duplicationScanPaths(
+      [
+        "crates/app/tests/daemon_process.rs",
+        "tools/release/tests/plugin-release-contract.test.mjs",
+      ],
+      "files",
+    ),
+    [],
+  );
+  assert.deepEqual(duplicationScanPaths(["crates/app/src/lib.rs"], "files"), [
+    "crates/app/src/lib.rs",
+  ]);
+  assert.deepEqual(duplicationScanPaths(["src/lib.rs"], "full"), ["."]);
 });
 
 test("domain analysis widens only to staged domains", () => {

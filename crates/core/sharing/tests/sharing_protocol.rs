@@ -16,11 +16,12 @@ use prost::Message as _;
 use quickshare_connections::{Connection, ConnectionOptions};
 use quickshare_crypto::Handshake;
 use quickshare_sharing::{
-    EndpointInfo, MdnsInstance, PairingStatus, ProtocolError, SharingSession,
+    EndpointInfo, MdnsInstance, OfferKind, PairingStatus, ProtocolError,
+    SharingSession,
 };
 use quickshare_wire::sharing::{
-    FileMetadata, Frame, IntroductionFrame, PairedKeyResultFrame, V1Frame,
-    connection_response_frame, file_metadata, v1_frame,
+    AppMetadata, FileMetadata, Frame, IntroductionFrame, PairedKeyResultFrame,
+    V1Frame, connection_response_frame, file_metadata, v1_frame,
 };
 use rand_core as _;
 use serde as _;
@@ -154,6 +155,69 @@ fn decodes_google_file_introduction_with_negative_payload_identifier() {
 }
 
 #[test]
+fn decodes_aligned_split_apk_introduction() {
+    let frame = Frame {
+        version: Some(1_i32),
+        v1: Some(V1Frame {
+            r#type: Some(i32::from(v1_frame::FrameType::Introduction)),
+            introduction: Some(IntroductionFrame {
+                app_metadata: vec![AppMetadata {
+                    app_name: Some(String::from("Chat")),
+                    size: Some(24),
+                    payload_id: vec![11, 12],
+                    file_name: vec![
+                        String::from("base.apk"),
+                        String::from("config.apk"),
+                    ],
+                    file_size: vec![16, 8],
+                    package_name: Some(String::from("dev.chat")),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+    };
+    let offer = SharingSession::decode_offer(&frame.encode_to_vec())
+        .expect("split apk introduction");
+    assert_eq!(offer.kind(), OfferKind::AndroidApp);
+    assert_eq!(offer.file_count(), 2);
+    assert_eq!(offer.name(), "base.apk");
+    assert_eq!(offer.size_bytes(), 24);
+    assert_eq!(offer.payload_id(), 11);
+    assert_eq!(offer.package_name(), Some("dev.chat"));
+    let split = offer.file(1).expect("config split");
+    assert_eq!(split.name(), "config.apk");
+    assert_eq!(split.size_bytes(), 8);
+    assert_eq!(split.payload_id(), 12);
+}
+
+#[test]
+fn rejects_misaligned_split_apk_introduction() {
+    let frame = Frame {
+        version: Some(1_i32),
+        v1: Some(V1Frame {
+            r#type: Some(i32::from(v1_frame::FrameType::Introduction)),
+            introduction: Some(IntroductionFrame {
+                app_metadata: vec![AppMetadata {
+                    size: Some(16),
+                    payload_id: vec![11, 12],
+                    file_name: vec![String::from("base.apk")],
+                    file_size: vec![16],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+    };
+    assert!(matches!(
+        SharingSession::decode_offer(&frame.encode_to_vec()),
+        Err(ProtocolError::InvalidOffer(_))
+    ));
+}
+
+#[test]
 fn outbound_tcp_connect_establishes_encryption_with_a_loopback_peer() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
     let address = listener.local_addr().expect("listener address");
@@ -205,10 +269,23 @@ fn account_free_pairing_chunks_one_file_across_connection_events() {
         assert_eq!(offer.name(), "note.txt");
         session.accept_incoming_offer().expect("accept offer");
         let mut received = Vec::new();
+        let mut last_progress = 0_u64;
         session
-            .receive_incoming_file(&offer, &mut received, || false)
+            .receive_incoming_file(
+                &offer,
+                &mut received,
+                |transferred| {
+                    assert!(transferred >= last_progress);
+                    last_progress = transferred;
+                },
+                || false,
+            )
             .expect("receive file");
         assert_eq!(received, expected);
+        assert_eq!(
+            last_progress,
+            u64::try_from(MULTI_FRAME_FILE_SIZE).expect("file size")
+        );
     });
 
     let stream = TcpStream::connect(address).expect("connect peer");
@@ -235,6 +312,7 @@ fn account_free_pairing_chunks_one_file_across_connection_events() {
             u64::try_from(MULTI_FRAME_FILE_SIZE).expect("file size"),
             &mut reader,
             || accepted.set(true),
+            |_| {},
             || false,
         )
         .expect("send file after accept");
@@ -275,6 +353,7 @@ fn receiver_rejection_reaches_the_outbound_sender() {
             1,
             &mut Cursor::new([1_u8]),
             || {},
+            |_| {},
             || false,
         )
         .expect_err("peer rejection");
@@ -301,7 +380,7 @@ fn outbound_cancellation_reaches_the_receiver_between_file_chunks() {
         session.accept_incoming_offer().expect("accept offer");
         let mut received = Vec::new();
         let error = session
-            .receive_incoming_file(&offer, &mut received, || false)
+            .receive_incoming_file(&offer, &mut received, |_| {}, || false)
             .expect_err("sender cancellation");
         assert!(matches!(error, ProtocolError::Cancelled));
         assert_eq!(received.len(), 0x0001_0000);
@@ -323,6 +402,7 @@ fn outbound_cancellation_reaches_the_receiver_between_file_chunks() {
             u64::try_from(MULTI_FRAME_FILE_SIZE).expect("file size"),
             &mut Cursor::new(bytes),
             || {},
+            |_| {},
             || {
                 let checks = cancellation_checks.get();
                 cancellation_checks.set(checks.saturating_add(1));

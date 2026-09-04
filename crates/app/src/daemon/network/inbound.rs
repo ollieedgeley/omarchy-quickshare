@@ -1,37 +1,40 @@
-//! Incoming LAN advertisement, consent, and file persistence.
+//! Incoming LAN advertisement, consent, and attachment persistence.
 
 use alloc::collections::BTreeMap;
+use core::time::Duration;
 use std::io;
-use std::net::TcpStream;
-use std::sync::mpsc::{Receiver, Sender};
+use std::path::Path;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::time::Instant;
 
+use quickshare_connections::Medium;
 use quickshare_network::{
     Advertisement, DnsSd,
     lan::{Listener, PublishedLanListener},
     local_ipv4_addresses,
 };
 use quickshare_sharing::{
-    EndpointInfo, IncomingOffer, MdnsInstance, ProtocolError, SharingSession,
+    EndpointInfo, IncomingOffer, MdnsInstance, OfferKind, ProtocolError,
+    SharingSession,
 };
-use quickshare_storage::ReceiveTarget;
+use quickshare_storage::{ReceiveTarget, StagedFile};
 
-use super::{
-    ENDPOINT_ID, ENDPOINT_NAME, NetworkCommand, NetworkEvent,
-    TransferCancellation,
+use super::{NetworkCommand, NetworkEvent, TransferCancellation};
+use crate::daemon::media::{
+    ENDPOINT_ID_BYTES, ENDPOINT_NAME, accept_connection,
+    accept_negotiated_upgrade, medium_name, sharing_session,
 };
+use crate::daemon::observations::{protocol_reason, storage_reason};
 
-/// Hostname published with the first daemon identity.
 const HOSTNAME: &str = "omarchy-quickshare.local.";
+const CONSENT_POLL: Duration = Duration::from_millis(50);
 
-/// User decision returned to the blocked inbound session.
 enum Consent {
-    /// The local user approved the stable share identifier.
     Accepted(u64),
-    /// The local user refused the stable share identifier.
     Rejected(u64),
+    TimedOut,
 }
 
-/// Creates and advertises the platform-owned incoming TCP listener.
 pub(super) fn open_listener(
     dns_sd: &DnsSd,
 ) -> io::Result<PublishedLanListener> {
@@ -40,81 +43,215 @@ pub(super) fn open_listener(
     listener.publish(dns_sd, &advertisement)
 }
 
-/// Encrypts one sender session, waits for consent, and saves its file.
-pub(super) fn receive_file(
-    stream: TcpStream,
+pub(super) fn receive_share<Stream>(
+    stream: Stream,
+    medium: Medium,
     commands: &Receiver<NetworkCommand>,
     events: &Sender<NetworkEvent>,
     cancellation: &TransferCancellation,
-) -> NetworkEvent {
-    match receive_file_result(stream, commands, events, cancellation) {
+    receive_directory: &Path,
+    consent_deadline: Duration,
+    manager: Option<&quickshare_network::NetworkManager>,
+    on_other: &mut dyn FnMut(NetworkCommand) -> bool,
+) -> NetworkEvent
+where
+    Stream: quickshare_connections::ConnectionIo + 'static,
+{
+    match receive_share_result(
+        stream,
+        medium,
+        commands,
+        events,
+        cancellation,
+        receive_directory,
+        consent_deadline,
+        manager,
+        on_other,
+    ) {
         Ok(event) => event,
-        Err((error, share_id)) => NetworkEvent::InboundFailed {
-            reason: error.to_string(),
-            share_id,
-        },
+        Err((reason, share_id)) => {
+            NetworkEvent::InboundFailed { reason, share_id }
+        }
     }
 }
 
-/// Runs the fallible inbound protocol while retaining the accepted share ID.
-fn receive_file_result(
-    stream: TcpStream,
+fn receive_share_result<Stream>(
+    stream: Stream,
+    medium: Medium,
     commands: &Receiver<NetworkCommand>,
     events: &Sender<NetworkEvent>,
     cancellation: &TransferCancellation,
-) -> Result<NetworkEvent, (io::Error, Option<u64>)> {
-    let mut session =
-        SharingSession::accept(stream, ENDPOINT_ID, ENDPOINT_NAME)
-            .map_err(|error| (io::Error::other(error), None))?;
+    receive_directory: &Path,
+    consent_deadline: Duration,
+    manager: Option<&quickshare_network::NetworkManager>,
+    on_other: &mut dyn FnMut(NetworkCommand) -> bool,
+) -> Result<NetworkEvent, (String, Option<u64>)>
+where
+    Stream: quickshare_connections::ConnectionIo + 'static,
+{
+    let mut connection = accept_connection(stream, medium)
+        .map_err(|error| (String::from(protocol_reason(&error)), None))?;
+    let _wifi = accept_negotiated_upgrade(&mut connection, manager)
+        .map_err(|error| (String::from(protocol_reason(&error)), None))?;
+    let mut session = sharing_session(connection);
     let _pairing = session
         .exchange_account_free_pairing()
-        .map_err(|error| (io::Error::other(error), None))?;
+        .map_err(|error| (String::from(protocol_reason(&error)), None))?;
     let offer = session
         .receive_incoming_offer()
-        .map_err(|error| (io::Error::other(error), None))?;
+        .map_err(|error| (String::from(protocol_reason(&error)), None))?;
     announce_offer(&offer, session.verification_code(), events)
-        .map_err(|error| (error, None))?;
-    let consent = wait_for_consent(commands).map_err(|error| (error, None))?;
-    let share_id = match consent {
+        .map_err(|_| (String::from("disconnected"), None))?;
+    let share_id = match wait_for_consent(commands, consent_deadline, on_other)?
+    {
         Consent::Accepted(share_id) => share_id,
         Consent::Rejected(share_id) => {
-            session
-                .reject_incoming_offer()
-                .map_err(|error| (io::Error::other(error), Some(share_id)))?;
+            session.reject_incoming_offer().map_err(|error| {
+                (String::from(protocol_reason(&error)), Some(share_id))
+            })?;
             cancellation.finish(share_id);
             return Ok(NetworkEvent::InboundRejected { share_id });
         }
+        Consent::TimedOut => {
+            session.timeout_incoming_offer().map_err(|error| {
+                (String::from(protocol_reason(&error)), None)
+            })?;
+            return Err((String::from("timed_out"), None));
+        }
     };
-    let target = ReceiveTarget::downloads()
-        .map_err(|error| (io::Error::other(error), Some(share_id)))?;
-    let mut staged = target
-        .stage(offer.name())
-        .map_err(|error| (io::Error::other(error), Some(share_id)))?;
     let bytes = u64::try_from(offer.size_bytes())
-        .map_err(|error| (io::Error::other(error), Some(share_id)))?;
-    session
-        .accept_incoming_offer()
-        .map_err(|error| (io::Error::other(error), Some(share_id)))?;
-    let transfer = session.receive_incoming_file(&offer, &mut staged, || {
-        cancellation.is_cancelled(share_id)
-    });
+        .map_err(|_| (String::from("invalid_payload"), Some(share_id)))?;
+    let mut staged = if offer.kind().persists_as_file() {
+        let target =
+            ReceiveTarget::open(receive_directory).map_err(|error| {
+                (String::from(storage_reason(&error)), Some(share_id))
+            })?;
+        target.preflight(bytes).map_err(|error| {
+            (String::from(storage_reason(&error)), Some(share_id))
+        })?;
+        let mut files = Vec::with_capacity(offer.file_count());
+        for index in 0..offer.file_count() {
+            let part = offer
+                .file(index)
+                .ok_or((String::from("invalid_payload"), Some(share_id)))?;
+            let size = u64::try_from(part.size_bytes()).map_err(|_| {
+                (String::from("invalid_payload"), Some(share_id))
+            })?;
+            files.push(target.stage(part.name(), size).map_err(|error| {
+                (String::from(storage_reason(&error)), Some(share_id))
+            })?);
+        }
+        files
+    } else {
+        Vec::new()
+    };
+    session.accept_incoming_offer().map_err(|error| {
+        (String::from(protocol_reason(&error)), Some(share_id))
+    })?;
+    let transfer = receive_payload(
+        &mut session,
+        &offer,
+        &mut staged,
+        share_id,
+        medium_name(medium),
+        events,
+        cancellation,
+    );
     cancellation.finish(share_id);
     match transfer {
-        Ok(()) => {}
+        Ok(event) => {
+            for file in staged {
+                let _published = file.commit().map_err(|error| {
+                    (String::from(storage_reason(&error)), Some(share_id))
+                })?;
+            }
+            Ok(event)
+        }
         Err(ProtocolError::Cancelled) => {
-            return Ok(NetworkEvent::InboundCancelled { share_id });
+            Ok(NetworkEvent::InboundCancelled { share_id })
         }
         Err(error) => {
-            return Err((io::Error::other(error), Some(share_id)));
+            Err((String::from(protocol_reason(&error)), Some(share_id)))
         }
     }
-    let _destination = staged
-        .commit()
-        .map_err(|error| (io::Error::other(error), Some(share_id)))?;
-    Ok(NetworkEvent::InboundCompleted { bytes, share_id })
 }
 
-/// Publishes the validated offer to the daemon state owner.
+fn receive_payload(
+    session: &mut SharingSession,
+    offer: &IncomingOffer,
+    staged: &mut [StagedFile],
+    share_id: u64,
+    medium: &'static str,
+    events: &Sender<NetworkEvent>,
+    cancellation: &TransferCancellation,
+) -> Result<NetworkEvent, ProtocolError> {
+    let (bytes, value) = if offer.kind().persists_as_file() {
+        if staged.len() != offer.file_count() {
+            return Err(ProtocolError::InvalidPayload);
+        }
+        let mut received = 0_u64;
+        for (index, writer) in staged.iter_mut().enumerate() {
+            let part =
+                offer.file(index).ok_or(ProtocolError::InvalidPayload)?;
+            let prior = received;
+            session.receive_incoming_file(
+                &part,
+                writer,
+                |transferred_bytes| {
+                    let _result = events.send(NetworkEvent::Progress {
+                        medium: String::from(medium),
+                        share_id,
+                        transferred_bytes: prior
+                            .saturating_add(transferred_bytes),
+                    });
+                },
+                || cancellation.is_cancelled(share_id),
+            )?;
+            received = prior.saturating_add(
+                u64::try_from(part.size_bytes())
+                    .map_err(|_| ProtocolError::InvalidPayload)?,
+            );
+        }
+        (received, None)
+    } else {
+        let on_progress = |transferred_bytes| {
+            let _result = events.send(NetworkEvent::Progress {
+                medium: String::from(medium),
+                share_id,
+                transferred_bytes,
+            });
+        };
+        let is_cancelled = || cancellation.is_cancelled(share_id);
+        match offer.kind() {
+            OfferKind::Text => {
+                let value = session.receive_incoming_text(
+                    offer,
+                    on_progress,
+                    is_cancelled,
+                )?;
+                (u64::try_from(value.len()).unwrap_or(0), Some(value))
+            }
+            OfferKind::Url => {
+                let value = session.receive_incoming_url(
+                    offer,
+                    on_progress,
+                    is_cancelled,
+                )?;
+                (u64::try_from(value.len()).unwrap_or(0), Some(value))
+            }
+            OfferKind::AndroidApp | OfferKind::File => {
+                return Err(ProtocolError::InvalidPayload);
+            }
+        }
+    };
+    Ok(NetworkEvent::InboundCompleted {
+        bytes,
+        kind: offer.kind(),
+        share_id,
+        value,
+    })
+}
+
 fn announce_offer(
     offer: &IncomingOffer,
     verification_code: &str,
@@ -124,6 +261,7 @@ fn announce_offer(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     events
         .send(NetworkEvent::InboundOffered {
+            kind: offer.kind(),
             name: offer.name().to_owned(),
             size_bytes,
             verification_code: String::from(verification_code),
@@ -131,33 +269,40 @@ fn announce_offer(
         .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error))
 }
 
-/// Waits for the local-control owner to decide the pending sender.
 fn wait_for_consent(
     commands: &Receiver<NetworkCommand>,
-) -> io::Result<Consent> {
+    deadline: Duration,
+    on_other: &mut dyn FnMut(NetworkCommand) -> bool,
+) -> Result<Consent, (String, Option<u64>)> {
+    let started = Instant::now();
     loop {
-        match commands.recv() {
+        if started.elapsed() >= deadline {
+            return Ok(Consent::TimedOut);
+        }
+        match commands.recv_timeout(CONSENT_POLL) {
             Ok(NetworkCommand::AcceptInbound { share_id }) => {
                 return Ok(Consent::Accepted(share_id));
             }
             Ok(NetworkCommand::RejectInbound { share_id }) => {
                 return Ok(Consent::Rejected(share_id));
             }
-            Ok(NetworkCommand::CloseVisibility) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "visibility closed before local consent",
-                ));
+            Ok(command) => {
+                let close = matches!(command, NetworkCommand::CloseVisibility);
+                if !on_other(command) {
+                    return Err((String::from("disconnected"), None));
+                }
+                if close {
+                    return Err((String::from("cancelled"), None));
+                }
             }
-            Ok(_) => {}
-            Err(error) => {
-                return Err(io::Error::new(io::ErrorKind::BrokenPipe, error));
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err((String::from("disconnected"), None));
             }
         }
     }
 }
 
-/// Builds the Google-compatible DNS-SD record for the bound listener.
 fn advertisement(port: u16) -> io::Result<Advertisement> {
     let endpoint = EndpointInfo::new(
         0,
@@ -173,9 +318,70 @@ fn advertisement(port: u16) -> io::Result<Advertisement> {
     Ok(Advertisement {
         addresses: local_ipv4_addresses().map_err(io::Error::other)?,
         hostname: String::from(HOSTNAME),
-        instance: MdnsInstance::new(*b"OQSR").label(),
+        instance: MdnsInstance::new(ENDPOINT_ID_BYTES).label(),
         port,
         properties,
         service_type: MdnsInstance::service_type().to_owned(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Consent, NetworkCommand, wait_for_consent};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn stop_discovery_during_consent_is_dispatched_before_accept() {
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(NetworkCommand::StopDiscovery)
+            .expect("queue stop");
+        sender
+            .send(NetworkCommand::AcceptInbound { share_id: 4 })
+            .expect("queue accept");
+        let mut dispatched = 0_u8;
+        let consent = wait_for_consent(
+            &receiver,
+            Duration::from_secs(1),
+            &mut |command| {
+                assert!(matches!(command, NetworkCommand::StopDiscovery));
+                dispatched = dispatched.saturating_add(1);
+                true
+            },
+        )
+        .expect("accepted");
+        assert!(matches!(consent, Consent::Accepted(4)));
+        assert_eq!(dispatched, 1);
+    }
+
+    #[test]
+    fn close_visibility_during_consent_is_dispatched_and_cancels() {
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(NetworkCommand::CloseVisibility)
+            .expect("queue close");
+        let mut dispatched = false;
+        let result = wait_for_consent(
+            &receiver,
+            Duration::from_secs(1),
+            &mut |command| {
+                dispatched = matches!(command, NetworkCommand::CloseVisibility);
+                true
+            },
+        );
+        assert!(dispatched);
+        assert!(matches!(result, Err((reason, None)) if reason == "cancelled"));
+    }
+
+    #[test]
+    fn consent_timeout_is_terminal() {
+        let (_sender, receiver) = mpsc::channel::<NetworkCommand>();
+        let consent =
+            wait_for_consent(&receiver, Duration::from_millis(0), &mut |_| {
+                true
+            })
+            .expect("timed out");
+        assert!(matches!(consent, Consent::TimedOut));
+    }
 }

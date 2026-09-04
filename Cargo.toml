@@ -6,6 +6,7 @@ members = [
   "crates/core/crypto",
   "crates/core/sharing",
   "crates/core/wire",
+  "crates/platform/bluez",
   "crates/platform/network",
   "crates/platform/storage",
   "tests/suites/contracts",
@@ -19,6 +20,7 @@ default-members = [
   "crates/core/crypto",
   "crates/core/sharing",
   "crates/core/wire",
+  "crates/platform/bluez",
   "crates/platform/network",
   "crates/platform/storage",
   "tests/suites/contracts",
@@ -42,6 +44,11 @@ hmac = "=0.12.1"
 p256 = { version = "=0.13.2", features = ["ecdh"] }
 rand_core = "=0.6.4"
 sha2 = "=0.10.9"
+zbus = { version = "=5.19.0", default-features = false, features = [
+  "async-io",
+  "blocking-api",
+] }
+
 
 [workspace.package]
 edition = "2024"

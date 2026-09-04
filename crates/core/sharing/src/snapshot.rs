@@ -2,6 +2,8 @@ use crate::attachment::Attachment;
 use crate::peer::PeerSnapshot;
 use serde::{Deserialize, Serialize};
 
+mod share;
+
 /// A stable identifier assigned by the local endpoint.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -81,11 +83,25 @@ pub struct ShareSnapshot {
     direction: Direction,
     /// The stable local share identifier.
     id: ShareId,
+    /// Decimal form of `id` for JSON clients that cannot hold u64.
+    id_string: String,
+    /// Selected connection medium for the active share.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    medium: Option<String>,
     /// Peer selected for this share, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     peer: Option<PeerSnapshot>,
     /// The current user-visible lifecycle stage.
     phase: Phase,
+    /// User-facing next step after a terminal failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovery_guidance: Option<String>,
+    /// Daemon-owned seconds remaining at the current transfer rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    remaining_seconds: Option<u64>,
+    /// Stable `snake_case` reason for a terminal share.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal_reason: Option<String>,
     /// Total declared attachment bytes.
     total_bytes: u64,
     /// Bytes observed across the transfer seam.
@@ -115,13 +131,11 @@ pub struct EndpointSnapshot {
 impl EndpointSnapshot {
     /// Returns the currently active share, if one exists.
     #[must_use]
-    #[inline]
     pub const fn active_share(&self) -> Option<&ShareSnapshot> {
         self.active_share.as_ref()
     }
 
     /// Returns mutable access to the active share inside the coordinator.
-    #[inline]
     pub(crate) const fn active_share_mut(
         &mut self,
     ) -> Option<&mut ShareSnapshot> {
@@ -141,14 +155,12 @@ impl EndpointSnapshot {
     }
 
     /// Closes inbound discoverability.
-    #[inline]
     pub(crate) const fn close_visibility(&mut self) {
         self.visibility = VisibilityState::Closed;
     }
 
     /// Returns the current outbound peer-search state.
     #[must_use]
-    #[inline]
     pub const fn discovery(&self) -> DiscoveryState {
         self.discovery
     }
@@ -188,11 +200,6 @@ impl EndpointSnapshot {
 
     /// Returns an idle endpoint state.
     #[must_use]
-    #[inline]
-    #[expect(
-        clippy::single_call_fn,
-        reason = "Idle state construction belongs to the snapshot owner"
-    )]
     pub(crate) const fn idle() -> Self {
         Self {
             active_share: None,
@@ -214,26 +221,23 @@ impl EndpointSnapshot {
     }
 
     /// Opens inbound discoverability.
-    #[inline]
     pub(crate) const fn open_visibility(&mut self) {
         self.visibility = VisibilityState::Open;
     }
 
     /// Returns the peer with this stable identifier.
     #[must_use]
-    #[inline]
     pub(crate) fn peer(&self, peer_id: &str) -> Option<&PeerSnapshot> {
         self.peers.iter().find(|peer| peer.id() == peer_id)
     }
 
     /// Returns every peer currently visible to the endpoint.
     #[must_use]
-    #[inline]
     pub fn peers(&self) -> &[PeerSnapshot] {
         &self.peers
     }
 
-    /// Pins exactly one known peer.
+    /// Pins exactly one known peer, or clears every live pin.
     pub(crate) fn pin_peer(&mut self, peer_id: &str) -> bool {
         if self.peer(peer_id).is_none() {
             return false;
@@ -244,9 +248,14 @@ impl EndpointSnapshot {
         true
     }
 
+    pub(crate) fn unpin_peers(&mut self) {
+        for peer in &mut self.peers {
+            peer.set_pinned(false);
+        }
+    }
+
     /// Returns the preferred outbound peer, when one is visible.
     #[must_use]
-    #[inline]
     pub(crate) fn pinned_peer(&self) -> Option<&PeerSnapshot> {
         self.peers.iter().find(|peer| peer.is_pinned())
     }
@@ -263,34 +272,28 @@ impl EndpointSnapshot {
     }
 
     /// Replaces the active share without changing observed peers.
-    #[inline]
     pub(crate) fn set_active(&mut self, active_share: ShareSnapshot) {
         self.active_share = Some(active_share);
     }
 
     /// Starts or restarts outbound peer discovery.
-    #[inline]
     pub(crate) const fn start_discovery(&mut self) {
         self.discovery = DiscoveryState::Searching;
     }
 
     /// Stops outbound peer discovery.
-    #[inline]
     pub(crate) const fn stop_discovery(&mut self) {
         self.discovery = DiscoveryState::Idle;
     }
 
     /// Returns the current inbound discoverability state.
     #[must_use]
-    #[inline]
     pub const fn visibility(&self) -> VisibilityState {
         self.visibility
     }
 }
 
 impl DiscoveryState {
-    /// Returns whether no outbound discovery is running.
-    #[inline]
     #[expect(
         clippy::trivially_copy_pass_by_ref,
         reason = "Serde skip predicates receive fields by reference"
@@ -301,8 +304,6 @@ impl DiscoveryState {
 }
 
 impl Phase {
-    /// Returns whether a share has reached a user-visible final result.
-    #[inline]
     const fn is_terminal(self) -> bool {
         matches!(
             self,
@@ -314,158 +315,21 @@ impl Phase {
 impl ShareId {
     /// Returns the integer representation used by local control clients.
     #[must_use]
-    #[inline]
     pub const fn get(self) -> u64 {
         self.0
     }
 
-    /// Creates an identifier from the endpoint sequence.
-    #[must_use]
-    #[inline]
-    #[expect(
-        clippy::single_call_fn,
-        reason = "Share identifiers are constructed only by the coordinator"
-    )]
     pub(crate) const fn new(value: u64) -> Self {
         Self(value)
     }
 }
 
 impl VisibilityState {
-    /// Returns whether inbound discoverability is closed.
-    #[inline]
     #[expect(
         clippy::trivially_copy_pass_by_ref,
         reason = "Serde skip predicates receive fields by reference"
     )]
     const fn is_closed(&self) -> bool {
         matches!(self, Self::Closed)
-    }
-}
-
-impl ShareSnapshot {
-    /// Returns the attachment offered by this share.
-    #[must_use]
-    #[inline]
-    pub const fn attachment(&self) -> &Attachment {
-        &self.attachment
-    }
-
-    /// Returns the direction relative to the local endpoint.
-    #[must_use]
-    #[inline]
-    pub const fn direction(&self) -> Direction {
-        self.direction
-    }
-
-    /// Returns the stable local share identifier.
-    #[must_use]
-    #[inline]
-    pub const fn id(&self) -> ShareId {
-        self.id
-    }
-
-    /// Creates a visible active-share snapshot.
-    #[must_use]
-    #[inline]
-    pub(crate) const fn new(
-        attachment: Attachment,
-        direction: Direction,
-        id: ShareId,
-        phase: Phase,
-        total_bytes: u64,
-    ) -> Self {
-        Self {
-            attachment,
-            direction,
-            id,
-            peer: None,
-            phase,
-            total_bytes,
-            transferred_bytes: 0,
-            verification_code: None,
-        }
-    }
-
-    /// Returns the peer selected for this share.
-    #[must_use]
-    #[inline]
-    pub const fn peer(&self) -> Option<&PeerSnapshot> {
-        self.peer.as_ref()
-    }
-
-    /// Returns the current lifecycle phase.
-    #[must_use]
-    #[inline]
-    pub const fn phase(&self) -> Phase {
-        self.phase
-    }
-
-    /// Records monotonic transfer progress and completion.
-    pub(crate) fn record_progress(&mut self, transferred_bytes: u64) -> bool {
-        if self.phase != Phase::Transferring
-            || transferred_bytes < self.transferred_bytes
-            || transferred_bytes > self.total_bytes
-        {
-            return false;
-        }
-        self.transferred_bytes = transferred_bytes;
-        if transferred_bytes == self.total_bytes {
-            self.set_phase(Phase::Completed);
-        }
-        true
-    }
-
-    /// Stores one validated code while consent remains undecided.
-    pub(crate) fn record_verification_code(&mut self, code: &str) -> bool {
-        if !matches!(
-            self.phase,
-            Phase::AwaitingLocalConsent | Phase::AwaitingPeerConsent
-        ) || code.len() != 4
-            || !code.bytes().all(|byte| byte.is_ascii_digit())
-        {
-            return false;
-        }
-        self.verification_code = Some(String::from(code));
-        true
-    }
-
-    /// Sets the selected peer and lifecycle phase.
-    pub(crate) fn select_peer(&mut self, peer: PeerSnapshot, phase: Phase) {
-        self.peer = Some(peer);
-        self.phase = phase;
-    }
-
-    /// Changes the lifecycle phase.
-    #[inline]
-    pub(crate) fn set_phase(&mut self, phase: Phase) {
-        self.phase = phase;
-        if !matches!(
-            phase,
-            Phase::AwaitingLocalConsent | Phase::AwaitingPeerConsent
-        ) {
-            self.verification_code = None;
-        }
-    }
-
-    /// Returns total declared attachment bytes.
-    #[must_use]
-    #[inline]
-    pub const fn total_bytes(&self) -> u64 {
-        self.total_bytes
-    }
-
-    /// Returns bytes observed across the transfer seam.
-    #[must_use]
-    #[inline]
-    pub const fn transferred_bytes(&self) -> u64 {
-        self.transferred_bytes
-    }
-
-    /// Returns the UKEY2 code while this share awaits consent.
-    #[must_use]
-    #[inline]
-    pub fn verification_code(&self) -> Option<&str> {
-        self.verification_code.as_deref()
     }
 }

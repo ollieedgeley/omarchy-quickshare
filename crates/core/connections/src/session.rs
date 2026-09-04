@@ -1,12 +1,53 @@
 use quickshare_crypto::SecureChannel;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::{
     collections::{HashMap, VecDeque},
     fmt, io,
-    net::TcpStream,
+    io::{Read, Write},
+    net::{Shutdown, TcpStream},
 };
 
 mod frame;
 mod protocol;
+mod upgrade;
+
+pub use upgrade::{
+    Medium, UpgradeCredentials, UpgradeDecision, UpgradeEvent, UpgradeState,
+};
+
+/// A bounded byte stream that can carry an authenticated Nearby Connections
+/// session.
+///
+/// Platform adapters implement this trait. Core does not depend on an OS
+/// medium.
+pub trait ConnectionIo: Read + Write + Send {
+    /// Closes the local write half after a disconnection frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the write half cannot be shut down.
+    fn shutdown_write(&mut self) -> io::Result<()>;
+}
+
+impl ConnectionIo for TcpStream {
+    fn shutdown_write(&mut self) -> io::Result<()> {
+        Self::shutdown(self, Shutdown::Write)
+    }
+}
+
+#[cfg(unix)]
+impl ConnectionIo for UnixStream {
+    fn shutdown_write(&mut self) -> io::Result<()> {
+        Self::shutdown(self, Shutdown::Write)
+    }
+}
+
+impl ConnectionIo for Box<dyn ConnectionIo> {
+    fn shutdown_write(&mut self) -> io::Result<()> {
+        (**self).shutdown_write()
+    }
+}
 
 const MAX_FRAME_LENGTH: usize = 1024 * 1024;
 const MAX_PAYLOAD_LENGTH: i64 = 1024 * 1024 * 1024;
@@ -16,6 +57,7 @@ const MAX_PAYLOAD_LENGTH: i64 = 1024 * 1024 * 1024;
 pub struct ConnectionOptions {
     pub(super) id: String,
     pub(super) info: Vec<u8>,
+    pub(super) medium: Medium,
     pub(super) name: String,
 }
 impl ConnectionOptions {
@@ -32,6 +74,7 @@ impl ConnectionOptions {
         Self {
             id: endpoint_id.into(),
             info: Vec::new(),
+            medium: Medium::WifiLan,
             name: endpoint_name.into(),
         }
     }
@@ -40,6 +83,13 @@ impl ConnectionOptions {
     #[must_use]
     pub fn with_endpoint_info(mut self, endpoint_info: Vec<u8>) -> Self {
         self.info = endpoint_info;
+        self
+    }
+
+    /// Sets the medium that currently carries this connection.
+    #[must_use]
+    pub const fn with_medium(mut self, medium: Medium) -> Self {
+        self.medium = medium;
         self
     }
 }
@@ -69,7 +119,9 @@ pub enum Event {
     },
     /// A keepalive request or acknowledgement.
     KeepAlive { ack: bool, sequence: u32 },
-    /// The peer requested a clean disconnection or closed the TCP stream.
+    /// A bandwidth-upgrade negotiation frame.
+    Upgrade { event: UpgradeEvent },
+    /// The peer requested a clean disconnection or closed the stream.
     Disconnected,
 }
 
@@ -90,10 +142,10 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(error) => write!(f, "TCP I/O failed: {error}"),
+            Self::Io(error) => write!(f, "stream I/O failed: {error}"),
             Self::Wire(error) => write!(f, "invalid Nearby frame: {error}"),
             Self::FrameTooLarge => {
-                f.write_str("Nearby frame exceeds the TCP bound")
+                f.write_str("Nearby frame exceeds the stream bound")
             }
             Self::UnexpectedFrame => f.write_str("unexpected Nearby frame"),
             Self::Rejected => f.write_str("peer rejected the connection"),
@@ -136,15 +188,19 @@ struct IncomingBytes {
     size: i64,
 }
 
-/// An encrypted Nearby Connections relationship over TCP.
+/// An encrypted Nearby Connections relationship over a byte stream.
 pub struct Connection {
-    stream: TcpStream,
+    stream: Box<dyn ConnectionIo>,
     channel: SecureChannel,
     incoming_bytes: HashMap<i64, IncomingBytes>,
     payloads: HashMap<i64, PayloadKind>,
     incoming_file: Option<i64>,
     outgoing_file: Option<OutgoingFile>,
     pending_events: VecDeque<Event>,
+    medium: Medium,
+    upgrade: UpgradeState,
+    upgrade_host: bool,
+    endpoint_id: String,
     /// Four decimal digits derived from the UKEY2 authentication token.
     verification_code: String,
 }

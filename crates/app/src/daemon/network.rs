@@ -11,62 +11,56 @@
 
 mod inbound;
 mod transfer;
+mod worker;
+
+#[cfg(test)]
+mod tests;
 
 use alloc::sync::Arc;
 use core::{
-    net::SocketAddrV4,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 use std::io;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
-use std::time::Instant;
 
-use quickshare_network::{
-    Browser, DnsSd, ResolvedService, lan::PublishedLanListener,
-};
-use quickshare_sharing::{EndpointInfo, MdnsInstance};
-
-use self::inbound::{open_listener, receive_file};
-use self::transfer::outbound_event;
+use self::worker::run_worker;
+#[cfg(test)]
+use self::worker::{emit_peer_lost, remember_seen};
+use super::media::PeerRoute;
 use super::outbound::OutboundTransfer;
-
-/// Maximum wait before processing another worker command.
-const POLL_INTERVAL: Duration = Duration::from_millis(5);
-/// Time between mDNS browse restarts while discovery remains requested.
-const BROWSE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
-/// Connections endpoint identifier used by the first local daemon identity.
-const ENDPOINT_ID: &str = "OQSR";
-/// User-visible endpoint name used by the first local daemon identity.
-const ENDPOINT_NAME: &str = "Omarchy";
+use quickshare_network::DnsSd;
 
 /// Commands sent from the local-control owner to the network worker.
 #[derive(Debug)]
 pub(super) enum NetworkCommand {
-    /// Accepts the currently offered inbound file.
+    /// Accepts the currently offered inbound attachment.
     AcceptInbound {
         /// Stable local share identifier assigned after the offer appeared.
         share_id: u64,
     },
     /// Stops advertising this endpoint to nearby senders.
     CloseVisibility,
-    /// Starts Nearby Sharing LAN discovery.
+    /// Starts Nearby Sharing LAN, BLE, and Classic discovery.
     Discover,
-    /// Advertises this endpoint and listens for one incoming connection.
+    /// Advertises this endpoint and listens for incoming connections.
     OpenVisibility,
-    /// Rejects the currently offered inbound file.
+    /// Rejects the currently offered inbound attachment.
     RejectInbound {
         /// Stable local share identifier assigned after the offer appeared.
         share_id: u64,
     },
-    /// Sends one queued file to its selected LAN peer.
-    SendFile {
+    /// Sends one queued share to its selected peer.
+    SendShare {
         /// Stable local share identifier.
         share_id: u64,
-        /// Resolved file path and peer route.
+        /// Resolved payload and peer routes.
         transfer: OutboundTransfer,
     },
+    /// Stops LAN, BLE, and Classic discovery and releases leases.
+    StopDiscovery,
 }
 
 /// Observations sent from the network worker to the local-control owner.
@@ -77,12 +71,16 @@ pub(super) enum NetworkEvent {
         /// Stable local share identifier.
         share_id: u64,
     },
-    /// Every byte of an accepted inbound file was saved locally.
+    /// Every byte of an accepted inbound attachment was saved locally.
     InboundCompleted {
-        /// Number of file bytes saved.
+        /// Number of payload bytes saved.
         bytes: u64,
+        /// Attachment kind received.
+        kind: quickshare_sharing::OfferKind,
         /// Stable local share identifier.
         share_id: u64,
+        /// Exact text or URL bytes when the attachment is not a file.
+        value: Option<String>,
     },
     /// An inbound connection or transfer failed.
     InboundFailed {
@@ -91,11 +89,13 @@ pub(super) enum NetworkEvent {
         /// Share identifier when local consent had already been given.
         share_id: Option<u64>,
     },
-    /// A validated inbound file is waiting for local consent.
+    /// A validated inbound attachment is waiting for local consent.
     InboundOffered {
-        /// Safe file basename advertised by the peer.
+        /// Attachment kind advertised by the peer.
+        kind: quickshare_sharing::OfferKind,
+        /// Safe file basename or text title advertised by the peer.
         name: String,
-        /// Declared file byte length.
+        /// Declared payload byte length.
         size_bytes: u64,
         /// Four-digit code derived from the shared authentication token.
         verification_code: String,
@@ -105,7 +105,7 @@ pub(super) enum NetworkEvent {
         /// Stable local share identifier.
         share_id: u64,
     },
-    /// The remote peer accepted the offered file.
+    /// The remote peer accepted the offered attachment.
     OutboundAccepted {
         /// Stable local share identifier.
         share_id: u64,
@@ -115,9 +115,9 @@ pub(super) enum NetworkEvent {
         /// Stable local share identifier.
         share_id: u64,
     },
-    /// A selected peer accepted and received every file byte.
+    /// A selected peer accepted and received every payload byte.
     OutboundCompleted {
-        /// Number of file bytes sent.
+        /// Number of payload bytes sent.
         bytes: u64,
         /// Stable local share identifier.
         share_id: u64,
@@ -141,14 +141,28 @@ pub(super) enum NetworkEvent {
         /// Stable local share identifier.
         share_id: u64,
     },
-    /// A valid Nearby Sharing peer appeared on the LAN.
+    /// A previously visible peer is no longer advertised.
+    PeerLost {
+        /// Opaque Nearby endpoint identifier.
+        peer_id: String,
+    },
+    /// A valid Nearby Sharing peer appeared on a local medium.
     PeerSeen {
         /// User-visible name from the endpoint-info advertisement.
         name: String,
         /// Opaque Nearby endpoint identifier for later connection setup.
         peer_id: String,
-        /// Private TCP route advertised through DNS-SD.
-        route: SocketAddrV4,
+        /// Private candidate route for this sighting.
+        route: PeerRoute,
+    },
+    /// Payload bytes observed for the active share.
+    Progress {
+        /// Selected medium carrying these bytes.
+        medium: String,
+        /// Stable local share identifier.
+        share_id: u64,
+        /// Total bytes observed at the transfer seam.
+        transferred_bytes: u64,
     },
 }
 
@@ -218,6 +232,11 @@ impl NetworkWorker {
         self.send(NetworkCommand::Discover)
     }
 
+    /// Stops Nearby Sharing discovery and closes discovery leases.
+    pub(super) fn stop_discovery(&self) -> io::Result<()> {
+        self.send(NetworkCommand::StopDiscovery)
+    }
+
     /// Advertises this endpoint and listens for an incoming connection.
     pub(super) fn open_visibility(&self) -> io::Result<()> {
         self.send(NetworkCommand::OpenVisibility)
@@ -235,13 +254,13 @@ impl NetworkWorker {
         }
     }
 
-    /// Queues one selected file for an encrypted outbound transfer.
-    pub(super) fn send_file(
+    /// Queues one selected share for an encrypted outbound transfer.
+    pub(super) fn send_share(
         &self,
         share_id: u64,
         transfer: OutboundTransfer,
     ) -> io::Result<()> {
-        self.send(NetworkCommand::SendFile { share_id, transfer })
+        self.send(NetworkCommand::SendShare { share_id, transfer })
     }
 
     /// Rejects the inbound offer currently waiting in the worker.
@@ -268,7 +287,10 @@ impl NetworkWorker {
         reason = "Daemon startup owns the one production worker construction"
     )]
     /// Starts the production network worker after its DNS-SD adapter is ready.
-    pub(super) fn start() -> io::Result<Self> {
+    pub(super) fn start(
+        receive_directory: PathBuf,
+        consent_deadline: Duration,
+    ) -> io::Result<Self> {
         let (command_sender, command_receiver) = mpsc::channel();
         let (event_sender, event_receiver) = mpsc::channel();
         let (ready_sender, ready_receiver) =
@@ -291,6 +313,8 @@ impl NetworkWorker {
                 command_receiver,
                 event_sender,
                 worker_cancellation,
+                receive_directory,
+                consent_deadline,
             );
         });
         ready_receiver
@@ -317,130 +341,4 @@ impl Drop for NetworkWorker {
             drop(worker.join());
         }
     }
-}
-
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "The detached worker owns its DNS-SD adapter and channels"
-)]
-#[expect(
-    clippy::single_call_fn,
-    reason = "The worker loop is named for its long-running lifecycle"
-)]
-/// Owns DNS-SD browsing until the daemon drops its command channel.
-fn run_worker(
-    dns_sd: DnsSd,
-    commands: Receiver<NetworkCommand>,
-    events: Sender<NetworkEvent>,
-    cancellation: TransferCancellation,
-) {
-    let mut browser: Option<Browser> = None;
-    let mut discovering = false;
-    let mut inbound: Option<PublishedLanListener> = None;
-    let mut restart_at = Instant::now();
-    loop {
-        if discovering && (browser.is_none() || Instant::now() >= restart_at) {
-            if let Some(active_browser) = browser.take() {
-                let _result = active_browser.stop();
-            }
-            browser = dns_sd.browse(MdnsInstance::service_type()).ok();
-            let now = Instant::now();
-            restart_at = now.checked_add(BROWSE_RETRY_INTERVAL).unwrap_or(now);
-        }
-        if let Some(active_browser) = browser.as_ref()
-            && let Ok(Some(service)) = active_browser.resolve(POLL_INTERVAL)
-            && let Some(event) = discovered_peer(&service)
-            && events.send(event).is_err()
-        {
-            return;
-        }
-        if let Some(listener) = inbound.as_ref()
-            && let Ok(Some(stream)) = listener.accept()
-        {
-            let event = receive_file(stream, &commands, &events, &cancellation);
-            if events.send(event).is_err() {
-                return;
-            }
-        }
-        let command = match commands.recv_timeout(POLL_INTERVAL) {
-            Ok(command) => command,
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => return,
-        };
-        if !handle_command(
-            command,
-            &dns_sd,
-            &events,
-            &cancellation,
-            &mut discovering,
-            &mut restart_at,
-            &mut inbound,
-        ) {
-            return;
-        }
-    }
-}
-
-/// Applies one nonblocking worker command and reports channel availability.
-fn handle_command(
-    command: NetworkCommand,
-    dns_sd: &DnsSd,
-    events: &Sender<NetworkEvent>,
-    cancellation: &TransferCancellation,
-    discovering: &mut bool,
-    restart_at: &mut Instant,
-    inbound: &mut Option<PublishedLanListener>,
-) -> bool {
-    match command {
-        NetworkCommand::AcceptInbound { .. }
-        | NetworkCommand::RejectInbound { .. } => true,
-        NetworkCommand::CloseVisibility => {
-            if let Some(listener) = inbound.take() {
-                let _result = listener.stop();
-            }
-            true
-        }
-        NetworkCommand::Discover => {
-            *discovering = true;
-            *restart_at = Instant::now();
-            true
-        }
-        NetworkCommand::OpenVisibility => {
-            if inbound.is_none() {
-                match open_listener(dns_sd) {
-                    Ok(listener) => *inbound = Some(listener),
-                    Err(error) => {
-                        return events
-                            .send(NetworkEvent::InboundFailed {
-                                reason: error.to_string(),
-                                share_id: None,
-                            })
-                            .is_ok();
-                    }
-                }
-            }
-            true
-        }
-        NetworkCommand::SendFile { share_id, transfer } => events
-            .send(outbound_event(share_id, &transfer, events, cancellation))
-            .is_ok(),
-    }
-}
-
-#[expect(
-    clippy::single_call_fn,
-    reason = "The decoder separates wire validation from worker scheduling"
-)]
-/// Decodes the Nearby Sharing facts that the daemon exposes to local control.
-fn discovered_peer(service: &ResolvedService) -> Option<NetworkEvent> {
-    let instance = MdnsInstance::decode_label(service.instance()).ok()?;
-    let endpoint =
-        EndpointInfo::decode_property(service.property("n")?).ok()?;
-    let name = endpoint.device_name()?.to_owned();
-    let address = service.addresses().first().copied()?;
-    Some(NetworkEvent::PeerSeen {
-        name,
-        peer_id: instance.label(),
-        route: SocketAddrV4::new(address, service.port()),
-    })
 }

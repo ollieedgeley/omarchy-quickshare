@@ -1,21 +1,32 @@
 use crate::Error;
 use std::{
     ffi::{OsStr, OsString},
-    fs::File,
+    fs::{self, File, OpenOptions},
     io::{self, Read},
-    os::unix::fs::FileExt as _,
-    path::Path,
+    os::unix::fs::{FileExt as _, MetadataExt as _, OpenOptionsExt as _},
+    path::{Path, PathBuf},
 };
+
+/// Linux `O_NOFOLLOW`; reject a final-path symlink without following it.
+const O_NOFOLLOW: i32 = 0o400_000;
+/// Linux `ELOOP` from opening a symlink with `O_NOFOLLOW`.
+const ELOOP: i32 = 40;
 
 /// One validated regular file offered in an outbound share.
 #[derive(Debug)]
 pub struct OutboundSource {
+    /// Device id captured when the source was accepted.
+    device: u64,
     /// Open descriptor retained to prevent path replacement races.
     file: File,
+    /// Inode captured when the source was accepted.
+    inode: u64,
     /// Length captured when the source was accepted.
     length: u64,
     /// Basename captured when the source was accepted.
     name: OsString,
+    /// Path used to detect replacement of the accepted file.
+    path: PathBuf,
 }
 
 /// One independently positioned view of an accepted source descriptor.
@@ -69,44 +80,89 @@ impl OutboundSource {
         &self.name
     }
 
-    /// Opens one regular file and records its basename and initial length.
+    /// Opens one regular file and records its basename and initial identity.
     ///
     /// # Errors
     ///
     /// Returns an error when `source_path` is not a regular file or cannot be
-    /// opened.
+    /// opened without following a symlink.
     #[inline]
+    #[expect(
+        clippy::filetype_is_file,
+        reason = "the source policy rejects every non-regular inode"
+    )]
     pub fn open<PathLike>(source_path: PathLike) -> Result<Self, Error>
     where
         PathLike: AsRef<Path>,
     {
         let path = source_path.as_ref();
-        let file = File::open(path)?;
+        let listed = fs::symlink_metadata(path)?;
+        if !listed.file_type().is_file() {
+            return Err(Error::InvalidSource);
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NOFOLLOW)
+            .open(path)
+            .map_err(map_open_error)?;
         let metadata = file.metadata()?;
         let name = path.file_name().ok_or(Error::InvalidSource)?;
         if !metadata.is_file() {
             return Err(Error::InvalidSource);
         }
         Ok(Self {
+            device: metadata.dev(),
             file,
+            inode: metadata.ino(),
             length: metadata.len(),
             name: name.to_os_string(),
+            path: path.to_path_buf(),
         })
     }
 
-    /// Opens an independently positioned reader while the length is unchanged.
     ///
     /// # Errors
     ///
-    /// Returns an error when the source cannot be cloned or changed length.
+    /// Returns an error when the source cannot be cloned or was mutated.
     #[inline]
     pub fn reader(&self) -> Result<impl Read, Error> {
-        if self.file.metadata()?.len() != self.length {
-            return Err(Error::SourceChanged);
-        }
+        self.reject_mutation()?;
         Ok(SourceReader {
             file: self.file.try_clone()?,
             position: 0,
         })
+    }
+
+    /// Rejects length, inode, or path replacement after acceptance.
+    fn reject_mutation(&self) -> Result<(), Error> {
+        let fd_meta = self.file.metadata()?;
+        if fd_meta.len() != self.length
+            || fd_meta.dev() != self.device
+            || fd_meta.ino() != self.inode
+        {
+            return Err(Error::Mutation);
+        }
+        let path_meta = fs::symlink_metadata(&self.path)?;
+        if path_meta.file_type().is_symlink()
+            || path_meta.len() != self.length
+            || path_meta.dev() != self.device
+            || path_meta.ino() != self.inode
+        {
+            return Err(Error::Mutation);
+        }
+        Ok(())
+    }
+}
+
+/// Maps a symlink-loop open failure to [`Error::InvalidSource`].
+#[expect(
+    clippy::single_call_fn,
+    reason = "isolates ELOOP mapping for platform behavior and testability"
+)]
+fn map_open_error(error: io::Error) -> Error {
+    if error.raw_os_error() == Some(ELOOP) {
+        Error::InvalidSource
+    } else {
+        error.into()
     }
 }

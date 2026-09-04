@@ -1,6 +1,10 @@
 //! Local endpoint lifecycle and outbound queue ownership.
 
+mod lifecycle;
+mod media;
 mod network;
+mod notify;
+mod observations;
 mod outbound;
 mod production;
 
@@ -17,7 +21,6 @@ use quickshare_control::codec::{read_request, write_response};
 use quickshare_control::request::{Envelope as RequestEnvelope, Request};
 use quickshare_control::response::{Envelope as ResponseEnvelope, Response};
 use quickshare_sharing::{Attachment, Coordinator};
-use quickshare_storage::OutboundSource;
 
 use self::network::NetworkWorker;
 use self::outbound::OutboundState;
@@ -30,6 +33,10 @@ const PRIVATE_SOCKET_MODE: u32 = 0o600;
 /// The same-user local endpoint state.
 #[derive(Debug, Default)]
 pub struct Daemon {
+    /// Persisted user settings applied to this endpoint.
+    config: crate::config::Config,
+    /// When the current outbound search started.
+    discovery_started_at: Option<std::time::Instant>,
     /// Production network worker, omitted by in-process and simulated daemons.
     network: Option<NetworkWorker>,
     /// Production-only file paths and discovered LAN routes.
@@ -40,6 +47,10 @@ pub struct Daemon {
     sharing: Coordinator,
     /// Whether deterministic peer events are accepted.
     simulated: bool,
+    /// When the active share entered the transferring phase.
+    transfer_started_at: Option<std::time::Instant>,
+    /// When inbound discoverability was opened.
+    visibility_opened_at: Option<std::time::Instant>,
 }
 
 /// A bound control listener that removes its socket on a clean shutdown.
@@ -122,7 +133,12 @@ impl Daemon {
                     network.open_visibility()?;
                 }
             }
-            Request::StopDiscovery => self.sharing.stop_discovery(),
+            Request::StopDiscovery => {
+                self.sharing.stop_discovery();
+                if let Some(network) = &self.network {
+                    network.stop_discovery()?;
+                }
+            }
             _ => return Ok(None),
         }
         Ok(Some(ResponseEnvelope::applied()))
@@ -133,17 +149,26 @@ impl Daemon {
     #[inline]
     pub fn new() -> Self {
         Self {
+            config: crate::config::Config::default(),
+            discovery_started_at: None,
             network: None,
             outbound: OutboundState::default(),
             queued: Vec::new(),
             sharing: Coordinator::new(),
             simulated: false,
+            transfer_started_at: None,
+            visibility_opened_at: None,
         }
     }
 
     /// Queues one validated attachment and reports its stable identifier.
     fn queue_attachment(&mut self, attachment: Attachment) -> u64 {
-        self.sharing.queue_outbound(attachment).get()
+        let share_id = self.sharing.queue_outbound(attachment).get();
+        self.sharing.start_discovery();
+        if let Some(network) = &self.network {
+            let _result = network.discover();
+        }
+        share_id
     }
 
     /// Returns the number of outbound shares owned by the endpoint.
@@ -174,22 +199,18 @@ impl Daemon {
             }
             Request::Status => Ok(ResponseEnvelope::ready()),
             Request::SubmitFile { path } => {
-                let source =
-                    OutboundSource::open(path).map_err(io::Error::other)?;
-                let attachment = Attachment::file(
-                    &source.name().to_string_lossy(),
-                    source.len(),
-                );
-                let share_id = self.queue_attachment(attachment);
-                self.outbound.remember_file(share_id, source);
-                Ok(ResponseEnvelope::queued(share_id))
+                Ok(ResponseEnvelope::queued(self.queue_file(path)?))
             }
             Request::SubmitText { text } => {
                 let share_id = self.queue_attachment(Attachment::text(text));
+                self.outbound.remember_text(share_id, text.clone());
+                let _started = self.start_pinned_outbound(share_id);
                 Ok(ResponseEnvelope::queued(share_id))
             }
             Request::SubmitUrl { url } => {
                 let share_id = self.queue_attachment(Attachment::url(url));
+                self.outbound.remember_url(share_id, url.clone());
+                let _started = self.start_pinned_outbound(share_id);
                 Ok(ResponseEnvelope::queued(share_id))
             }
             Request::SimulateFail { .. }
@@ -245,6 +266,7 @@ impl Daemon {
     {
         listener.set_nonblocking(true)?;
         while !stopped() {
+            self.apply_timeouts()?;
             match self.serve_next(listener) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -269,8 +291,11 @@ impl Daemon {
         let response = match request {
             Request::Accept { share_id } => {
                 let accepted = self.sharing.accept_inbound(*share_id);
-                if accepted && let Some(network) = &self.network {
-                    network.accept_inbound(*share_id)?;
+                if accepted {
+                    self.transfer_started_at = Some(std::time::Instant::now());
+                    if let Some(network) = &self.network {
+                        network.accept_inbound(*share_id)?;
+                    }
                 }
                 action_response(accepted)
             }
@@ -286,11 +311,20 @@ impl Daemon {
                 }
             }
             Request::Dismiss { share_id } => {
-                action_response(self.sharing.dismiss(*share_id))
+                let dismissed = self.sharing.dismiss(*share_id);
+                if dismissed {
+                    self.outbound.finish(*share_id);
+                }
+                action_response(dismissed)
             }
             Request::PinPeer { peer_id } => {
-                action_response(self.sharing.pin_peer(peer_id))
+                let applied = self.sharing.pin_peer(peer_id);
+                if applied {
+                    self.persist_pin(peer_id)?;
+                }
+                action_response(applied)
             }
+            Request::UnpinPeer => action_response(self.unpin_peers()?),
             Request::Reject { share_id } => {
                 let rejected = self.sharing.reject_inbound(*share_id);
                 if rejected && let Some(network) = &self.network {
@@ -311,11 +345,15 @@ impl Daemon {
     #[inline]
     pub fn simulated() -> Self {
         let mut endpoint = Self {
+            config: crate::config::Config::default(),
+            discovery_started_at: None,
             network: None,
             outbound: OutboundState::default(),
             queued: Vec::new(),
             sharing: Coordinator::new(),
             simulated: true,
+            transfer_started_at: None,
+            visibility_opened_at: None,
         };
         endpoint.sharing.observe_peer("pixel-8", "Ollie's Pixel");
         endpoint.sharing.observe_peer("galaxy-tab", "Galaxy Tab");
@@ -427,13 +465,17 @@ fn remove_stale_socket(path: &Path) -> io::Result<()> {
 /// Runs the local endpoint until the process is terminated.
 ///
 /// # Errors
-///
-/// Returns an error when the private control socket cannot be served.
-#[inline]
 pub fn run(socket_path: &Path) -> io::Result<()> {
+    let config = crate::config::Config::load()?;
+    fs::create_dir_all(&config.receive_directory)?;
     let socket = ControlSocket::bind(socket_path)?;
-    let network = NetworkWorker::start()?;
-    Daemon::with_network_worker(network).serve_until(&socket.listener, || false)
+    let network = NetworkWorker::start(
+        config.receive_directory.clone(),
+        Duration::from_secs(config.visibility_timeout_secs),
+    )?;
+    let mut endpoint = Daemon::with_network_worker(network);
+    endpoint.install_config(config);
+    endpoint.serve_until(&socket.listener, || false)
 }
 
 /// Runs a deterministic local peer for complete application testing.
@@ -443,6 +485,9 @@ pub fn run(socket_path: &Path) -> io::Result<()> {
 /// Returns an error when the private control socket cannot be served.
 #[inline]
 pub fn run_simulated(socket_path: &Path) -> io::Result<()> {
+    let config = crate::config::Config::load()?;
     let socket = ControlSocket::bind(socket_path)?;
-    Daemon::simulated().serve_until(&socket.listener, || false)
+    let mut endpoint = Daemon::simulated();
+    endpoint.install_config(config);
+    endpoint.serve_until(&socket.listener, || false)
 }

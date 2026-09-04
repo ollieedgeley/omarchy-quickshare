@@ -105,15 +105,27 @@ impl Coordinator {
         attachment: Attachment,
         peer_id: &str,
     ) -> Option<ShareId> {
+        self.offer_inbound_sized(attachment, peer_id, None)
+    }
+
+    /// Creates an inbound offer with an explicit payload size.
+    #[must_use]
+    pub fn offer_inbound_sized(
+        &mut self,
+        attachment: Attachment,
+        peer_id: &str,
+        total_bytes: Option<u64>,
+    ) -> Option<ShareId> {
         let peer = self.snapshot.peer(peer_id)?.clone();
         let share_id = self.next_id();
-        let total_bytes = attachment.byte_len();
+        let declared_bytes =
+            total_bytes.unwrap_or_else(|| attachment.byte_len());
         let mut share = ShareSnapshot::new(
             attachment,
             Direction::Inbound,
             share_id,
             Phase::AwaitingLocalConsent,
-            total_bytes,
+            declared_bytes,
         );
         share.select_peer(peer, Phase::AwaitingLocalConsent);
         self.snapshot.set_active(share);
@@ -130,6 +142,12 @@ impl Coordinator {
     #[inline]
     pub fn pin_peer(&mut self, peer_id: &str) -> bool {
         self.snapshot.pin_peer(peer_id)
+    }
+
+    /// Clears every live pin without removing observed peers.
+    #[inline]
+    pub fn unpin_peers(&mut self) {
+        self.snapshot.unpin_peers();
     }
 
     /// Queues one outbound attachment and returns its stable identifier.
@@ -167,6 +185,48 @@ impl Coordinator {
         };
         active.id().get() == share_id
             && active.record_progress(transferred_bytes)
+    }
+
+    /// Records daemon-owned medium, ETA, and terminal observations.
+    #[inline]
+    pub fn record_observation(
+        &mut self,
+        share_id: u64,
+        medium: Option<&str>,
+        remaining_seconds: Option<u64>,
+        terminal_reason: Option<&str>,
+        recovery_guidance: Option<&str>,
+    ) -> bool {
+        let Some(active) = self.snapshot.active_share_mut() else {
+            return false;
+        };
+        if active.id().get() != share_id {
+            return false;
+        }
+        active.set_observation(
+            medium,
+            remaining_seconds,
+            terminal_reason,
+            recovery_guidance,
+        );
+        true
+    }
+
+    /// Replaces the active inbound attachment after exact bytes arrive.
+    #[inline]
+    pub fn replace_attachment(
+        &mut self,
+        share_id: u64,
+        attachment: Attachment,
+    ) -> bool {
+        let Some(active) = self.snapshot.active_share_mut() else {
+            return false;
+        };
+        if active.id().get() != share_id {
+            return false;
+        }
+        active.replace_attachment(attachment);
+        true
     }
 
     /// Records the four-digit peer-verification code for a consent prompt.

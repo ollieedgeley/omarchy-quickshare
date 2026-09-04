@@ -1,14 +1,22 @@
 //! Production network behavior for the local endpoint.
 
 use std::io;
+use std::time::Instant;
+
+use quickshare_sharing::{Attachment, Direction, OfferKind, Phase};
 
 use super::Daemon;
+use super::media::medium_name;
 use super::network::{NetworkEvent, NetworkWorker};
+use super::notify::{self, NotifyKind};
+use super::observations::{recovery_guidance, remaining_seconds};
 
-/// Stable placeholder identity until the inbound protocol exposes details.
 const INBOUND_PEER_ID: &str = "inbound-peer";
-/// User-facing name for the inbound sender until the protocol exposes one.
 const INBOUND_PEER_NAME: &str = "Nearby sender";
+
+fn completion_notice(recorded: bool, phase: Phase) -> bool {
+    recorded && phase == Phase::Completed
+}
 
 #[expect(
     clippy::arbitrary_source_item_ordering,
@@ -37,8 +45,22 @@ impl Daemon {
             NetworkEvent::InboundCancelled { share_id } => {
                 let _cancelled = self.sharing.cancel(share_id);
             }
-            NetworkEvent::InboundCompleted { bytes, share_id } => {
-                let _recorded = self.sharing.record_progress(share_id, bytes);
+            NetworkEvent::InboundCompleted {
+                bytes,
+                kind,
+                share_id,
+                value,
+            } => {
+                if let Some(value) = value {
+                    let attachment = match kind {
+                        OfferKind::Url => Attachment::url(&value),
+                        _ => Attachment::text(&value),
+                    };
+                    let _replaced =
+                        self.sharing.replace_attachment(share_id, attachment);
+                }
+                let recorded = self.sharing.record_progress(share_id, bytes);
+                self.notify_if_completed(recorded, NotifyKind::Received);
             }
             NetworkEvent::InboundFailed { reason, share_id } => {
                 self.apply_inbound_failure(share_id, &reason);
@@ -47,15 +69,24 @@ impl Daemon {
                 let _rejected = self.sharing.reject_inbound(share_id);
             }
             NetworkEvent::InboundOffered {
+                kind,
                 name,
                 size_bytes,
                 verification_code,
             } => {
                 self.sharing
                     .observe_peer(INBOUND_PEER_ID, INBOUND_PEER_NAME);
-                if let Some(share_id) = self.sharing.offer_inbound(
-                    quickshare_sharing::Attachment::file(&name, size_bytes),
+                let attachment = match kind {
+                    OfferKind::AndroidApp | OfferKind::File => {
+                        Attachment::file(&name, size_bytes)
+                    }
+                    OfferKind::Text => Attachment::text(""),
+                    OfferKind::Url => Attachment::url(""),
+                };
+                if let Some(share_id) = self.sharing.offer_inbound_sized(
+                    attachment,
                     INBOUND_PEER_ID,
+                    Some(size_bytes),
                 ) {
                     let _recorded = self.sharing.record_verification_code(
                         share_id.get(),
@@ -65,6 +96,7 @@ impl Daemon {
             }
             NetworkEvent::OutboundAccepted { share_id } => {
                 let _accepted = self.sharing.accept_by_peer(share_id);
+                self.transfer_started_at = Some(Instant::now());
             }
             NetworkEvent::OutboundPairing {
                 share_id,
@@ -79,17 +111,30 @@ impl Daemon {
                 self.outbound.finish(share_id);
             }
             NetworkEvent::OutboundCompleted { bytes, share_id } => {
-                let _recorded = self.sharing.record_progress(share_id, bytes);
+                let recorded = self.sharing.record_progress(share_id, bytes);
                 self.outbound.finish(share_id);
+                self.notify_if_completed(recorded, NotifyKind::Sent);
             }
             NetworkEvent::OutboundFailed { reason, share_id } => {
                 eprintln!("outbound share {share_id} failed: {reason}");
                 let _failed = self.sharing.fail(share_id);
+                let _observed = self.sharing.record_observation(
+                    share_id,
+                    None,
+                    None,
+                    Some(&reason),
+                    Some(recovery_guidance(&reason)),
+                );
                 self.outbound.finish(share_id);
+                notify::notify(NotifyKind::Error);
             }
             NetworkEvent::OutboundRejected { share_id } => {
                 let _rejected = self.sharing.reject_by_peer(share_id);
                 self.outbound.finish(share_id);
+            }
+            NetworkEvent::PeerLost { peer_id } => {
+                let _removed = self.sharing.remove_peer(&peer_id);
+                self.outbound.forget_peer(&peer_id);
             }
             NetworkEvent::PeerSeen {
                 name,
@@ -97,7 +142,38 @@ impl Daemon {
                 route,
             } => {
                 self.sharing.observe_peer(&peer_id, &name);
+                self.pin_if_configured(&peer_id);
                 self.outbound.remember_peer(&peer_id, route);
+                self.auto_start_pinned(&peer_id);
+            }
+            NetworkEvent::Progress {
+                medium,
+                share_id,
+                transferred_bytes,
+            } => {
+                let _recorded =
+                    self.sharing.record_progress(share_id, transferred_bytes);
+                if self.transfer_started_at.is_none() {
+                    self.transfer_started_at = Some(Instant::now());
+                }
+                let remaining = self.transfer_started_at.and_then(|started| {
+                    remaining_seconds(
+                        transferred_bytes,
+                        self.sharing
+                            .snapshot()
+                            .active_share()
+                            .map(|share| share.total_bytes())
+                            .unwrap_or(transferred_bytes),
+                        Instant::now().saturating_duration_since(started),
+                    )
+                });
+                let _observed = self.sharing.record_observation(
+                    share_id,
+                    Some(&medium),
+                    remaining,
+                    None,
+                    None,
+                );
             }
         }
     }
@@ -106,212 +182,127 @@ impl Daemon {
         clippy::print_stderr,
         reason = "Production transfer failures need actionable daemon logs"
     )]
-    /// Records a failed inbound share after writing diagnostic evidence.
     fn apply_inbound_failure(
         &mut self,
         candidate_share_id: Option<u64>,
         reason: &str,
     ) {
         eprintln!("inbound share failed: {reason}");
-        if let Some(share_id) = candidate_share_id {
+        if let Some(share_id) =
+            candidate_share_id.or_else(|| self.active_inbound_consent_id())
+        {
             let _failed = self.sharing.fail(share_id);
+            let _observed = self.sharing.record_observation(
+                share_id,
+                None,
+                None,
+                Some(reason),
+                Some(recovery_guidance(reason)),
+            );
+        }
+        notify::notify(NotifyKind::Error);
+    }
+
+    fn active_inbound_consent_id(&self) -> Option<u64> {
+        let share = self.sharing.snapshot().active_share()?;
+        (share.direction() == Direction::Inbound
+            && share.phase() == Phase::AwaitingLocalConsent)
+            .then(|| share.id().get())
+    }
+
+    fn notify_if_completed(&self, recorded: bool, kind: NotifyKind) {
+        if completion_notice(recorded, self.active_completed_phase()) {
+            notify::notify(kind);
         }
     }
 
-    /// Polls one production event without retaining a borrow of the worker.
+    fn active_completed_phase(&self) -> Phase {
+        self.sharing
+            .snapshot()
+            .active_share()
+            .map_or(Phase::Failed, |share| share.phase())
+    }
+
     fn next_network_event(&self) -> io::Result<Option<NetworkEvent>> {
         self.network
             .as_ref()
             .map_or(Ok(None), NetworkWorker::next_event)
     }
 
-    /// Starts a real transfer after validating local state and private routing.
     pub(super) fn select_peer(&mut self, share_id: u64, peer_id: &str) -> bool {
         let Some(network) = self.network.as_ref() else {
-            return self.sharing.select_peer(share_id, peer_id);
+            return self.sharing.select_peer(share_id, peer_id)
+                || self.awaiting_peer(share_id, peer_id);
         };
         let Some(transfer) = self.outbound.transfer(share_id, peer_id) else {
             return false;
         };
-        if !self.sharing.select_peer(share_id, peer_id) {
+        if !self.sharing.select_peer(share_id, peer_id)
+            && !self.awaiting_peer(share_id, peer_id)
+        {
             return false;
         }
-        if network.send_file(share_id, transfer).is_ok() {
+        let medium = transfer
+            .routes()
+            .first()
+            .map(|route| medium_name(route.medium()));
+        let _observed = self
+            .sharing
+            .record_observation(share_id, medium, None, None, None);
+        if network.send_share(share_id, transfer).is_ok() {
             return true;
         }
         let _failed = self.sharing.fail(share_id);
         false
+    }
+
+    pub(super) fn start_pinned_outbound(&mut self, share_id: u64) -> bool {
+        let Some(peer_id) = self
+            .sharing
+            .snapshot()
+            .peers()
+            .iter()
+            .find(|peer| peer.is_pinned())
+            .map(|peer| peer.id().to_owned())
+            .or_else(|| self.config.pinned_peer_id.clone())
+        else {
+            return false;
+        };
+        self.select_peer(share_id, &peer_id)
+    }
+
+    fn awaiting_peer(&self, share_id: u64, peer_id: &str) -> bool {
+        self.sharing.snapshot().active_share().is_some_and(|share| {
+            share.id().get() == share_id
+                && share.direction() == Direction::Outbound
+                && share.phase() == Phase::AwaitingPeerConsent
+                && share.peer().is_some_and(|peer| peer.id() == peer_id)
+        })
+    }
+
+    fn auto_start_pinned(&mut self, peer_id: &str) {
+        if self.config.pinned_peer_id.as_deref() != Some(peer_id) {
+            return;
+        }
+        let Some(share) = self.sharing.snapshot().active_share() else {
+            return;
+        };
+        if share.direction() != Direction::Outbound
+            || !matches!(
+                share.phase(),
+                Phase::WaitingForPeer | Phase::AwaitingPeerConsent
+            )
+        {
+            return;
+        }
+        let share_id = share.id().get();
+        let _started = self.select_peer(share_id, peer_id);
     }
 }
 
 #[cfg(test)]
 #[expect(
     clippy::expect_used,
-    clippy::inline_modules,
     reason = "Focused unit tests stay beside private event transitions"
 )]
-mod tests {
-    use quickshare_sharing::{Attachment, Phase};
-
-    use super::{Daemon, INBOUND_PEER_ID, INBOUND_PEER_NAME, NetworkEvent};
-
-    fn active_phase(daemon: &Daemon) -> Phase {
-        daemon
-            .sharing
-            .snapshot()
-            .active_share()
-            .expect("share remains visible")
-            .phase()
-    }
-
-    #[test]
-    fn inbound_offer_exposes_pin_until_local_consent() {
-        let mut daemon = Daemon::new();
-        daemon.apply_network_event(NetworkEvent::InboundOffered {
-            name: String::from("note.txt"),
-            size_bytes: 12,
-            verification_code: String::from("6251"),
-        });
-
-        let share = daemon
-            .sharing
-            .snapshot()
-            .active_share()
-            .expect("inbound offer is active");
-        assert_eq!(share.phase(), Phase::AwaitingLocalConsent);
-        assert_eq!(share.verification_code(), Some("6251"));
-        let share_id = share.id().get();
-
-        assert!(daemon.sharing.accept_inbound(share_id));
-        let accepted = daemon
-            .sharing
-            .snapshot()
-            .active_share()
-            .expect("accepted inbound share remains active");
-        assert_eq!(accepted.phase(), Phase::Transferring);
-        assert_eq!(accepted.verification_code(), None);
-    }
-
-    #[test]
-    fn inbound_terminal_events_preserve_rejection_and_cancellation() {
-        let mut inbound = Daemon::new();
-        inbound.apply_network_event(NetworkEvent::InboundOffered {
-            name: String::from("note.txt"),
-            size_bytes: 12,
-            verification_code: String::from("6251"),
-        });
-        let inbound_id = inbound
-            .sharing
-            .snapshot()
-            .active_share()
-            .expect("inbound offer")
-            .id()
-            .get();
-        inbound.apply_network_event(NetworkEvent::InboundRejected {
-            share_id: inbound_id,
-        });
-        assert_eq!(active_phase(&inbound), Phase::Rejected);
-
-        let mut cancelled = Daemon::new();
-        cancelled.apply_network_event(NetworkEvent::InboundOffered {
-            name: String::from("cancelled.txt"),
-            size_bytes: 12,
-            verification_code: String::from("9418"),
-        });
-        let cancelled_id = cancelled
-            .sharing
-            .snapshot()
-            .active_share()
-            .expect("inbound offer")
-            .id()
-            .get();
-        assert!(cancelled.sharing.accept_inbound(cancelled_id));
-        cancelled.apply_network_event(NetworkEvent::InboundCancelled {
-            share_id: cancelled_id,
-        });
-        assert_eq!(active_phase(&cancelled), Phase::Cancelled);
-    }
-
-    #[test]
-    fn outbound_terminal_events_preserve_rejection_and_cancellation() {
-        let mut daemon = Daemon::new();
-        daemon
-            .sharing
-            .observe_peer(INBOUND_PEER_ID, INBOUND_PEER_NAME);
-        let rejected_id = daemon
-            .sharing
-            .queue_outbound(Attachment::file("note.txt", 12));
-        assert!(
-            daemon
-                .sharing
-                .select_peer(rejected_id.get(), INBOUND_PEER_ID)
-        );
-        daemon.apply_network_event(NetworkEvent::OutboundRejected {
-            share_id: rejected_id.get(),
-        });
-        assert_eq!(active_phase(&daemon), Phase::Rejected);
-
-        assert!(daemon.sharing.dismiss(rejected_id.get()));
-        let cancelled_id = daemon
-            .sharing
-            .queue_outbound(Attachment::file("cancelled.txt", 12));
-        assert!(
-            daemon
-                .sharing
-                .select_peer(cancelled_id.get(), INBOUND_PEER_ID)
-        );
-        daemon.apply_network_event(NetworkEvent::OutboundAccepted {
-            share_id: cancelled_id.get(),
-        });
-        daemon.apply_network_event(NetworkEvent::OutboundCancelled {
-            share_id: cancelled_id.get(),
-        });
-        assert_eq!(active_phase(&daemon), Phase::Cancelled);
-    }
-
-    #[test]
-    fn outbound_events_expose_pin_and_start_transfer_on_peer_acceptance() {
-        let mut daemon = Daemon::new();
-        daemon
-            .sharing
-            .observe_peer(INBOUND_PEER_ID, INBOUND_PEER_NAME);
-        let share_id = daemon
-            .sharing
-            .queue_outbound(Attachment::file("note.txt", 12));
-        assert!(daemon.sharing.select_peer(share_id.get(), INBOUND_PEER_ID));
-
-        daemon.apply_network_event(NetworkEvent::OutboundPairing {
-            share_id: share_id.get(),
-            verification_code: String::from("9418"),
-        });
-        let pairing = daemon
-            .sharing
-            .snapshot()
-            .active_share()
-            .expect("outbound share awaits peer");
-        assert_eq!(pairing.phase(), Phase::AwaitingPeerConsent);
-        assert_eq!(pairing.verification_code(), Some("9418"));
-
-        daemon.apply_network_event(NetworkEvent::OutboundAccepted {
-            share_id: share_id.get(),
-        });
-        let transferring = daemon
-            .sharing
-            .snapshot()
-            .active_share()
-            .expect("accepted outbound share remains active");
-        assert_eq!(transferring.phase(), Phase::Transferring);
-        assert_eq!(transferring.verification_code(), None);
-
-        daemon.apply_network_event(NetworkEvent::OutboundCompleted {
-            bytes: 12,
-            share_id: share_id.get(),
-        });
-        let completed = daemon
-            .sharing
-            .snapshot()
-            .active_share()
-            .expect("completed outbound share remains visible");
-        assert_eq!(completed.phase(), Phase::Completed);
-    }
-}
+mod tests;

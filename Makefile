@@ -30,7 +30,9 @@ DOCUMENT_FILES = $(REPOSITORY_FILES) -- '*.md'
 .PHONY: lint-bluetooth-radio lint-network lint-android
 .PHONY: test test-rust test-contracts test-tooling test-ast-rules
 .PHONY: test-source-cache test-plugin-release test-local-install plugin-export
-.PHONY: install-local
+.PHONY: test-source-build test-native-release
+.PHONY: install-local install-local-simulation uninstall-local
+.PHONY: release release-native release-source release-sparse release-arch
 .PHONY: test-oracle-toolchain test-oracle-reference
 .PHONY: test-nearshare-reference test-nearby-linux-tooling rust-lan-provision
 .PHONY: test-rust-lan test-rust-lan-outbound test-rust-lan-inbound
@@ -210,8 +212,32 @@ install-local: ## Build, install, and start the local user service.
 install-local-simulation: ## Install the local service with simulated peers.
 	@node tools/release/local-install.mjs --simulate
 
+uninstall-local: ## Stop and remove the local user service without root.
+	@node tools/release/local-install.mjs --uninstall
+
 plugin-export: ## Create the validated local plugin Git repository.
 	@node tools/release/plugin-export.mjs
+
+release-native: ## Build the stripped native release artifact.
+	@node tools/release/native-release.mjs
+
+release-source: ## Build the allowlisted source-build bundle.
+	@node tools/release/source-build.mjs bundle
+
+release-sparse: ## Materialize the allowlisted Git sparse-checkout tree.
+	@node tools/release/source-build.mjs sparse
+
+release-arch: release-native ## Package the native Arch artifact and PKGBUILD.
+	@node tools/release/arch-package.mjs
+
+release: release-native release-source release-sparse release-arch plugin-export
+release: ## Produce native, source, sparse, Arch, and plugin artifacts.
+
+test-source-build: ## Check source-build path sets and clean-build closure.
+	@$(TIMEOUT) node --test tools/release/tests/source-build-contract.test.mjs
+
+test-native-release: ## Check native checksums, version, and Arch paths.
+	@$(TIMEOUT) node --test tools/release/tests/native-release-contract.test.mjs
 
 test-ast-rules: ## Run ast-grep rule fixtures and committed snapshots.
 	@$(TIMEOUT) $(AST_GREP) test --config sgconfig.yml

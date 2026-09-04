@@ -1,14 +1,19 @@
-//! Outbound LAN session and transfer event mapping.
+//! Outbound session and transfer event mapping.
 
-use core::net::SocketAddrV4;
 use std::{io, sync::mpsc::Sender};
 
-use quickshare_network::lan::connect;
+use quickshare_bluez::Adapter;
+use quickshare_network::NetworkManager;
 use quickshare_sharing::{ProtocolError, SharingSession};
 use quickshare_storage::OutboundSource;
 
-use super::{ENDPOINT_ID, ENDPOINT_NAME, NetworkEvent, TransferCancellation};
-use crate::daemon::outbound::OutboundTransfer;
+use super::{NetworkEvent, TransferCancellation};
+use crate::daemon::media::{
+    PeerRoute, attempt_order, connect_route, initiate_bandwidth_upgrade,
+    medium_name, sharing_session,
+};
+use crate::daemon::observations::protocol_reason;
+use crate::daemon::outbound::{OutboundPayload, OutboundTransfer};
 
 /// Converts one worker transfer attempt into a terminal daemon event.
 pub(super) fn outbound_event(
@@ -16,13 +21,17 @@ pub(super) fn outbound_event(
     transfer: &OutboundTransfer,
     events: &Sender<NetworkEvent>,
     cancellation: &TransferCancellation,
+    adapter: Option<&Adapter>,
+    manager: Option<&NetworkManager>,
 ) -> NetworkEvent {
-    let event = match send_file(
-        transfer.source(),
-        transfer.route(),
+    let event = match send_payload(
+        transfer.payload(),
+        transfer.routes(),
         share_id,
         events,
         cancellation,
+        adapter,
+        manager,
     ) {
         Ok(bytes) => NetworkEvent::OutboundCompleted { bytes, share_id },
         Err(ProtocolError::Cancelled) => {
@@ -32,7 +41,7 @@ pub(super) fn outbound_event(
             NetworkEvent::OutboundRejected { share_id }
         }
         Err(error) => NetworkEvent::OutboundFailed {
-            reason: error.to_string(),
+            reason: String::from(protocol_reason(&error)),
             share_id,
         },
     };
@@ -40,17 +49,119 @@ pub(super) fn outbound_event(
     event
 }
 
-/// Streams one complete file over an encrypted account-free session.
-fn send_file(
-    source: &OutboundSource,
-    route: SocketAddrV4,
+fn send_payload(
+    payload: &OutboundPayload,
+    routes: &[PeerRoute],
     share_id: u64,
     events: &Sender<NetworkEvent>,
     cancellation: &TransferCancellation,
+    adapter: Option<&Adapter>,
+    manager: Option<&NetworkManager>,
+) -> Result<u64, ProtocolError> {
+    let mut last_error = None;
+    for medium in attempt_order() {
+        for route in routes {
+            if route.medium() != medium {
+                continue;
+            }
+            if cancellation.is_cancelled(share_id) {
+                return Err(ProtocolError::Cancelled);
+            }
+            let connection = match connect_route(adapter, route) {
+                Ok(connection) => connection,
+                Err(error) => {
+                    last_error = Some(error);
+                    continue;
+                }
+            };
+            return send_on_connection(
+                payload,
+                connection,
+                share_id,
+                events,
+                cancellation,
+                manager,
+            );
+        }
+    }
+    Err(last_error.unwrap_or(ProtocolError::Disconnected))
+}
+
+fn send_on_connection(
+    payload: &OutboundPayload,
+    mut connection: quickshare_connections::Connection,
+    share_id: u64,
+    events: &Sender<NetworkEvent>,
+    cancellation: &TransferCancellation,
+    manager: Option<&NetworkManager>,
 ) -> Result<u64, ProtocolError> {
     if cancellation.is_cancelled(share_id) {
         return Err(ProtocolError::Cancelled);
     }
+    let _wifi = initiate_bandwidth_upgrade(&mut connection, manager)?;
+    let medium = medium_name(connection.medium());
+    let mut session = sharing_session(connection);
+    events
+        .send(NetworkEvent::OutboundPairing {
+            share_id,
+            verification_code: String::from(session.verification_code()),
+        })
+        .map_err(|error| {
+            ProtocolError::Io(io::Error::new(io::ErrorKind::BrokenPipe, error))
+        })?;
+    let _pairing = session.exchange_account_free_pairing()?;
+    let on_accepted = || {
+        let _result = events.send(NetworkEvent::OutboundAccepted { share_id });
+    };
+    let on_progress = |transferred_bytes| {
+        let _result = events.send(NetworkEvent::Progress {
+            medium: String::from(medium),
+            share_id,
+            transferred_bytes,
+        });
+    };
+    let is_cancelled = || cancellation.is_cancelled(share_id);
+    match payload {
+        OutboundPayload::File(source) => send_file(
+            &mut session,
+            source,
+            on_accepted,
+            on_progress,
+            is_cancelled,
+        ),
+        OutboundPayload::Text(value) => {
+            session.send_outgoing_text(
+                value,
+                on_accepted,
+                on_progress,
+                is_cancelled,
+            )?;
+            Ok(u64::try_from(value.len()).unwrap_or(0))
+        }
+        OutboundPayload::Url(value) => {
+            session.send_outgoing_url(
+                value,
+                on_accepted,
+                on_progress,
+                is_cancelled,
+            )?;
+            Ok(u64::try_from(value.len()).unwrap_or(0))
+        }
+    }
+}
+
+fn send_file<Accepted, Progress, Cancelled>(
+    session: &mut SharingSession,
+    source: &OutboundSource,
+    on_accepted: Accepted,
+    on_progress: Progress,
+    is_cancelled: Cancelled,
+) -> Result<u64, ProtocolError>
+where
+    Accepted: FnOnce(),
+    Progress: FnMut(u64),
+    Cancelled: FnMut() -> bool,
+{
     let name = source.name().to_str().ok_or_else(|| {
         ProtocolError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -61,27 +172,13 @@ fn send_file(
         .reader()
         .map_err(|error| ProtocolError::Io(io::Error::other(error)))?;
     let size = source.len();
-    let stream = connect(route)?;
-    let mut session =
-        SharingSession::connect(stream, ENDPOINT_ID, ENDPOINT_NAME)?;
-    events
-        .send(NetworkEvent::OutboundPairing {
-            share_id,
-            verification_code: String::from(session.verification_code()),
-        })
-        .map_err(|error| {
-            ProtocolError::Io(io::Error::new(io::ErrorKind::BrokenPipe, error))
-        })?;
-    let _pairing = session.exchange_account_free_pairing()?;
     session.send_outgoing_file(
         name,
         size,
         &mut reader,
-        || {
-            let _result =
-                events.send(NetworkEvent::OutboundAccepted { share_id });
-        },
-        || cancellation.is_cancelled(share_id),
+        on_accepted,
+        on_progress,
+        is_cancelled,
     )?;
     Ok(size)
 }

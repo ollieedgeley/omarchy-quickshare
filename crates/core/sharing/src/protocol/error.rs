@@ -18,12 +18,19 @@ pub enum ProtocolError {
     InvalidMdnsInstance,
     /// A Sharing frame has the wrong kind or required field.
     InvalidFrame,
-    /// The introduction is not one safe regular file.
+    /// The introduction is not one supported file, text, URL, or app
+    /// attachment.
     InvalidOffer(&'static str),
     /// The peer rejected the file introduction.
     Rejected,
     /// The declared payload does not match its introduction.
     InvalidPayload,
+    /// The encrypted connection closed before a terminal Sharing result.
+    Disconnected,
+    /// The peer reported that the offer timed out.
+    TimedOut,
+    /// The peer cannot accept this attachment kind.
+    Unsupported,
 }
 
 impl fmt::Display for ProtocolError {
@@ -34,6 +41,9 @@ impl fmt::Display for ProtocolError {
             }
             Self::Cancelled => {
                 formatter.write_str("file transfer was cancelled")
+            }
+            Self::Disconnected => {
+                formatter.write_str("peer disconnected during the share")
             }
             Self::Decode(error) => {
                 write!(formatter, "Sharing protobuf failed: {error}")
@@ -55,6 +65,10 @@ impl fmt::Display for ProtocolError {
             }
             Self::Rejected => {
                 formatter.write_str("peer did not accept the file offer")
+            }
+            Self::TimedOut => formatter.write_str("share offer timed out"),
+            Self::Unsupported => {
+                formatter.write_str("peer does not support this attachment")
             }
             Self::InvalidPayload => formatter.write_str("invalid file payload"),
         }

@@ -301,6 +301,16 @@ impl Envelope {
         }
     }
 
+    /// Creates a request to clear the single pinned peer.
+    #[must_use]
+    #[inline]
+    pub const fn unpin_peer() -> Self {
+        Self {
+            request: Request::UnpinPeer,
+            version: PROTOCOL_VERSION,
+        }
+    }
+
     /// Returns the protocol version used by this command.
     #[must_use]
     #[inline]
@@ -426,4 +436,6 @@ pub enum Request {
         /// The exact URL supplied by the user.
         url: String,
     },
+    /// Clear the single preferred outbound peer.
+    UnpinPeer,
 }

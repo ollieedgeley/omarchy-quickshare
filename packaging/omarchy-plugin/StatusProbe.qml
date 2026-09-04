@@ -8,27 +8,19 @@ QtObject {
   property var activeShare: ({})
   property var actionCommand: []
   property string actionError: ""
+  property bool actionBusy: false
   property var endpointSnapshot: ({})
   property int minimumProtocol: -1
   property int maximumProtocol: -1
   property string statusOutput: ""
   property string versionOutput: ""
   property bool releaseReady: false
-  property var versionCommand: [
-    "env",
-    "omarchy-quickshare",
-    "--protocol-version",
-  ]
-  property var runtimeCommand: [
-    "env",
-    "omarchy-quickshare",
-    "--runtime-status",
-  ]
-  property var statusCommand: [
-    "env",
-    "omarchy-quickshare",
-    "--status-json",
-  ]
+  property bool probeOnStartup: true
+  property var executableCommand: ["env", "omarchy-quickshare"]
+  property var versionCommand: command(["--protocol-version"])
+  property var runtimeCommand: command(["--runtime-status"])
+  property var statusCommand: command(["--status-json"])
+  signal actionFinished(bool succeeded)
   readonly property string releasePath:
     Qt.resolvedUrl("release.json").toString()
   readonly property string installRoutes:
@@ -67,6 +59,10 @@ QtObject {
     runAction(["--cancel", String(shareId)])
   }
 
+
+  function command(arguments) {
+    return executableCommand.concat(arguments)
+  }
   function dismiss(shareId) {
     runAction(["--dismiss", String(shareId)])
   }
@@ -157,6 +153,10 @@ QtObject {
     runAction(["--pin", String(peerId)])
   }
 
+  function unpin() {
+    runAction(["--unpin"])
+  }
+
   function refresh() {
     protocolState = "checking"
     versionOutput = ""
@@ -172,14 +172,20 @@ QtObject {
   }
 
   function runAction(arguments) {
-    if (root.actionProbe.running) return
+    if (root.actionBusy) return false
+    root.actionBusy = true
     actionError = ""
-    actionCommand = ["env", "omarchy-quickshare"].concat(arguments)
+    actionCommand = command(arguments)
     root.actionProbe.running = true
+    return true
   }
 
   function sendTo(shareId, peerId) {
     runAction(["--send-to", String(shareId), String(peerId)])
+  }
+
+  function submit(value) {
+    return runAction([String(value)])
   }
 
   function setVisibility(shouldOpen) {
@@ -188,19 +194,29 @@ QtObject {
     ])
   }
 
+  function stopDiscovery() {
+    runAction(["--stop-discovery"])
+  }
+
   property Process actionProbe: Process {
     command: root.actionCommand
     onExited: function(exitCode) {
-      if (exitCode !== 0) root.actionError = "Quick Share action failed."
+      var succeeded = exitCode === 0
+      root.actionBusy = false
+      if (!succeeded) {
+        root.actionError = "Quick Share action failed (exit code "
+          + exitCode + ")."
+      }
+      root.actionFinished(succeeded)
       root.refresh()
     }
   }
 
   property FileView releaseFile: FileView {
-    path: root.releasePath
+    path: root.probeOnStartup ? root.releasePath : ""
     printErrors: false
     onLoaded: root.acceptRelease(text())
-    onLoadFailed: root.protocolState = "incompatible"
+    onLoadFailed: if (root.probeOnStartup) root.protocolState = "incompatible"
   }
 
   property Process versionProbe: Process {

@@ -1,0 +1,26 @@
+pkgname=omarchy-quickshare
+pkgver=0.0.0
+pkgrel=1
+pkgdesc='Account-free Quick Share endpoint for Omarchy'
+arch=('x86_64')
+license=('Apache-2.0')
+depends=()
+options=('!debug')
+source=(
+  'omarchy-quickshare'
+  'omarchy-quickshare.service'
+  'omarchy-quickshare.toml'
+  'LICENSE'
+)
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+package() {
+  install -Dm755 omarchy-quickshare \
+    "$pkgdir/usr/bin/omarchy-quickshare"
+  install -Dm644 omarchy-quickshare.service \
+    "$pkgdir/usr/lib/systemd/user/omarchy-quickshare.service"
+  install -Dm644 omarchy-quickshare.toml \
+    "$pkgdir/usr/share/omarchy-quickshare/config.toml"
+  install -Dm644 LICENSE \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

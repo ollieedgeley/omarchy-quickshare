@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { getRepositoryDomain, isRustInput } from "../../hooks/affected.mjs";
+import {
+  getRepositoryDomain,
+  isRustInput,
+  isTestPath,
+} from "../../hooks/affected.mjs";
 import { run } from "./process.mjs";
 
 const JAVASCRIPT_EXT = /\.[cm]?[jt]sx?$/u;
@@ -43,6 +47,16 @@ const REQUIRED_PROTO_PATHS = [
 
 function unique(paths) {
   return [...new Set(paths)].sort();
+}
+
+export function duplicationScanPaths(paths, scope = "files") {
+  if (scope === "full") {
+    return ["."];
+  }
+  if (paths.length > 0 && paths.every((path) => isTestPath(path))) {
+    return [];
+  }
+  return paths;
 }
 
 export function analyzersForPaths(paths) {
@@ -305,6 +319,14 @@ function runPython(tools, paths, cwd) {
     run(tools.vulture, ["--min-confidence", "100", ...pythonPaths], { cwd });
   }
 }
+function runDuplication(tools, paths, options) {
+  const duplicationPaths = duplicationScanPaths(paths, options.scope);
+  if (duplicationPaths.length) {
+    run(tools.jscpd, ["--config", ".jscpd.json", ...duplicationPaths], {
+      cwd: options.cwd,
+    });
+  }
+}
 
 export function runAnalysis(options) {
   const {
@@ -326,11 +348,7 @@ export function runAnalysis(options) {
   const tools = Object.fromEntries(
     analyzers.map((name) => [name, executable(name, { nodeBin, toolRoot })]),
   );
-  let duplicationPaths = existingPaths;
-  if (scope === "full") {
-    duplicationPaths = ["."];
-  }
-  run(tools.jscpd, ["--config", ".jscpd.json", ...duplicationPaths], { cwd });
+  runDuplication(tools, existingPaths, { cwd, scope });
   if (analyzers.includes("cargo-machete")) {
     runCargoMachete(tools, cargoPackages, cwd);
   }
