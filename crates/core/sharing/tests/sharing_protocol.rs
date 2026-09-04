@@ -2,6 +2,7 @@
 
 #![expect(
     clippy::expect_used,
+    clippy::missing_assert_message,
     reason = "Contract assertions label unexpected fixture or loopback failures"
 )]
 #![expect(
@@ -9,12 +10,16 @@
     reason = "Cargo compiles this as an integration-test crate"
 )]
 
+mod common;
+
 use core::cell::Cell;
 
 use base64 as _;
+use common::{
+    accept_stream, bind_loopback, connect_session, connect_stream,
+    decode_google_offer, google_v1, paired_loopback, spawn_peer,
+};
 use prost::Message as _;
-use quickshare_connections::{Connection, ConnectionOptions};
-use quickshare_crypto::Handshake;
 use quickshare_sharing::{
     EndpointInfo, MdnsInstance, OfferKind, PairingStatus, ProtocolError,
     SharingSession,
@@ -27,14 +32,9 @@ use rand_core as _;
 use serde as _;
 use std::{
     io::{self, Cursor, Read},
-    net::{TcpListener, TcpStream},
     thread,
 };
 
-const INITIATOR_RANDOM: [u8; 32] = [1; 32];
-const RESPONDER_RANDOM: [u8; 32] = [2; 32];
-const INITIATOR_SECRET: [u8; 32] = [3; 32];
-const RESPONDER_SECRET: [u8; 32] = [4; 32];
 const MULTI_FRAME_FILE_SIZE: usize = 0x0010_0001;
 
 struct AcceptedReader<'accepted> {
@@ -55,6 +55,24 @@ impl Read for AcceptedReader<'_> {
         }
         self.cursor.read(buf)
     }
+}
+
+fn introduction_frame(introduction: IntroductionFrame) -> Frame {
+    Frame {
+        version: Some(1_i32),
+        v1: Some(V1Frame {
+            r#type: Some(i32::from(v1_frame::FrameType::Introduction)),
+            introduction: Some(introduction),
+            ..Default::default()
+        }),
+    }
+}
+
+fn pair_unable(session: &mut SharingSession) {
+    assert_eq!(
+        session.exchange_account_free_pairing().expect("pair"),
+        PairingStatus::Unable
+    );
 }
 
 #[test]
@@ -100,20 +118,18 @@ fn endpoint_info_and_lan_instance_round_trip_google_layout() {
 
 #[test]
 fn decodes_google_file_introduction_and_accept_response() {
-    let offer = SharingSession::decode_offer(include_bytes!(concat!(
-        "../../../../tests/fixtures/sharing/google-v1/",
-        "incoming/introductions/file.bin"
-    )))
-    .expect("Google file introduction");
+    let offer = decode_google_offer(
+        google_v1!("incoming/introductions/file.bin"),
+        "Google file introduction",
+    );
     assert_eq!(offer.name(), "fixture-file.bin");
     assert_eq!(offer.size_bytes(), 12);
     assert_eq!(offer.payload_id(), 201);
 
     assert_eq!(
-        SharingSession::decode_response(include_bytes!(concat!(
-            "../../../../tests/fixtures/sharing/google-v1/",
+        SharingSession::decode_response(google_v1!(
             "incoming/responses/accept.bin"
-        )))
+        ))
         .expect("Google accept response"),
         connection_response_frame::Status::Accept
     );
@@ -121,34 +137,26 @@ fn decodes_google_file_introduction_and_accept_response() {
 
 #[test]
 fn decodes_google_outgoing_file_introduction() {
-    let offer = SharingSession::decode_offer(include_bytes!(concat!(
-        "../../../../tests/fixtures/sharing/google-v1/",
-        "outgoing/introductions/file.bin"
-    )))
-    .expect("Google outgoing file introduction");
+    let offer = decode_google_offer(
+        google_v1!("outgoing/introductions/file.bin"),
+        "Google outgoing file introduction",
+    );
     assert_eq!(offer.name(), "quickshare-fixture.bin");
     assert_eq!(offer.size_bytes(), 12);
 }
 
 #[test]
 fn decodes_google_file_introduction_with_negative_payload_identifier() {
-    let frame = Frame {
-        version: Some(1_i32),
-        v1: Some(V1Frame {
-            r#type: Some(i32::from(v1_frame::FrameType::Introduction)),
-            introduction: Some(IntroductionFrame {
-                file_metadata: vec![FileMetadata {
-                    name: Some(String::from("signed-id.bin")),
-                    r#type: Some(i32::from(file_metadata::Type::Document)),
-                    payload_id: Some(-7),
-                    size: Some(3),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }),
+    let frame = introduction_frame(IntroductionFrame {
+        file_metadata: vec![FileMetadata {
+            name: Some(String::from("signed-id.bin")),
+            r#type: Some(i32::from(file_metadata::Type::Document)),
+            payload_id: Some(-7),
+            size: Some(3),
             ..Default::default()
-        }),
-    };
+        }],
+        ..Default::default()
+    });
     let offer = SharingSession::decode_offer(&frame.encode_to_vec())
         .expect("signed payload identifiers are opaque");
     assert_eq!(offer.payload_id(), -7);
@@ -156,30 +164,25 @@ fn decodes_google_file_introduction_with_negative_payload_identifier() {
 
 #[test]
 fn decodes_aligned_split_apk_introduction() {
-    let frame = Frame {
-        version: Some(1_i32),
-        v1: Some(V1Frame {
-            r#type: Some(i32::from(v1_frame::FrameType::Introduction)),
-            introduction: Some(IntroductionFrame {
-                app_metadata: vec![AppMetadata {
-                    app_name: Some(String::from("Chat")),
-                    size: Some(24),
-                    payload_id: vec![11, 12],
-                    file_name: vec![
-                        String::from("base.apk"),
-                        String::from("config.apk"),
-                    ],
-                    file_size: vec![16, 8],
-                    package_name: Some(String::from("dev.chat")),
-                    ..Default::default()
-                }],
+    let offer = SharingSession::decode_offer(
+        &introduction_frame(IntroductionFrame {
+            app_metadata: vec![AppMetadata {
+                app_name: Some(String::from("Chat")),
+                size: Some(24),
+                payload_id: vec![11, 12],
+                file_name: vec![
+                    String::from("base.apk"),
+                    String::from("config.apk"),
+                ],
+                file_size: vec![16, 8],
+                package_name: Some(String::from("dev.chat")),
                 ..Default::default()
-            }),
+            }],
             ..Default::default()
-        }),
-    };
-    let offer = SharingSession::decode_offer(&frame.encode_to_vec())
-        .expect("split apk introduction");
+        })
+        .encode_to_vec(),
+    )
+    .expect("split apk introduction");
     assert_eq!(offer.kind(), OfferKind::AndroidApp);
     assert_eq!(offer.file_count(), 2);
     assert_eq!(offer.name(), "base.apk");
@@ -194,23 +197,16 @@ fn decodes_aligned_split_apk_introduction() {
 
 #[test]
 fn rejects_misaligned_split_apk_introduction() {
-    let frame = Frame {
-        version: Some(1_i32),
-        v1: Some(V1Frame {
-            r#type: Some(i32::from(v1_frame::FrameType::Introduction)),
-            introduction: Some(IntroductionFrame {
-                app_metadata: vec![AppMetadata {
-                    size: Some(16),
-                    payload_id: vec![11, 12],
-                    file_name: vec![String::from("base.apk")],
-                    file_size: vec![16],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }),
+    let frame = introduction_frame(IntroductionFrame {
+        app_metadata: vec![AppMetadata {
+            size: Some(16),
+            payload_id: vec![11, 12],
+            file_name: vec![String::from("base.apk")],
+            file_size: vec![16],
             ..Default::default()
-        }),
-    };
+        }],
+        ..Default::default()
+    });
     assert!(matches!(
         SharingSession::decode_offer(&frame.encode_to_vec()),
         Err(ProtocolError::InvalidOffer(_))
@@ -219,52 +215,29 @@ fn rejects_misaligned_split_apk_introduction() {
 
 #[test]
 fn outbound_tcp_connect_establishes_encryption_with_a_loopback_peer() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
-    let address = listener.local_addr().expect("listener address");
+    let (listener, address) = bind_loopback();
     let responder = thread::spawn(move || {
-        let (stream, _) = listener.accept().expect("accept peer");
-        let mut session = SharingSession::accept(stream, "remote", "Remote")
-            .expect("establish peer session");
-        assert_eq!(
-            session.exchange_account_free_pairing().expect("pair"),
-            PairingStatus::Unable
-        );
+        let mut session =
+            SharingSession::accept(accept_stream(listener), "remote", "Remote")
+                .expect("establish peer session");
+        pair_unable(&mut session);
     });
 
-    let stream = TcpStream::connect(address).expect("connect peer");
-    let mut session = SharingSession::connect(stream, "local", "Omarchy")
-        .expect("establish local session");
-    assert_eq!(
-        session.exchange_account_free_pairing().expect("pair"),
-        PairingStatus::Unable
-    );
+    let mut session =
+        SharingSession::connect(connect_stream(address), "local", "Omarchy")
+            .expect("establish local session");
+    pair_unable(&mut session);
     responder.join().expect("responder completes");
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "One loopback flow keeps consent and payload order observable"
-)]
 fn account_free_pairing_chunks_one_file_across_connection_events() {
     let bytes = vec![0xA5; MULTI_FRAME_FILE_SIZE];
     let expected = bytes.clone();
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
-    let address = listener.local_addr().expect("listener address");
-    let receiver = thread::spawn(move || {
-        let (stream, _) = listener.accept().expect("accept peer");
-        let connection = Connection::accept(
-            stream,
-            Handshake::responder(RESPONDER_RANDOM, RESPONDER_SECRET),
-            ConnectionOptions::new("remote", "Remote"),
-        )
-        .expect("establish peer session");
-        let mut session = SharingSession::new(connection);
+    let (listener, address) = bind_loopback();
+    let receiver = spawn_peer(listener, move |mut session| {
         assert_eq!(session.verification_code(), "9418");
-        assert_eq!(
-            session.exchange_account_free_pairing().expect("pair"),
-            PairingStatus::Unable
-        );
+        pair_unable(&mut session);
         let offer = session.receive_incoming_offer().expect("receive offer");
         assert_eq!(offer.name(), "note.txt");
         session.accept_incoming_offer().expect("accept offer");
@@ -288,19 +261,9 @@ fn account_free_pairing_chunks_one_file_across_connection_events() {
         );
     });
 
-    let stream = TcpStream::connect(address).expect("connect peer");
-    let connection = Connection::connect(
-        stream,
-        Handshake::initiator(INITIATOR_RANDOM, INITIATOR_SECRET),
-        ConnectionOptions::new("local", "Omarchy"),
-    )
-    .expect("establish local session");
-    let mut session = SharingSession::new(connection);
+    let mut session = connect_session(address);
     assert_eq!(session.verification_code(), "9418");
-    assert_eq!(
-        session.exchange_account_free_pairing().expect("pair"),
-        PairingStatus::Unable
-    );
+    pair_unable(&mut session);
     let accepted = Cell::new(false);
     let mut reader = AcceptedReader {
         accepted: &accepted,
@@ -322,31 +285,10 @@ fn account_free_pairing_chunks_one_file_across_connection_events() {
 
 #[test]
 fn receiver_rejection_reaches_the_outbound_sender() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
-    let address = listener.local_addr().expect("listener address");
-    let receiver = thread::spawn(move || {
-        let (stream, _) = listener.accept().expect("accept peer");
-        let connection = Connection::accept(
-            stream,
-            Handshake::responder(RESPONDER_RANDOM, RESPONDER_SECRET),
-            ConnectionOptions::new("remote", "Remote"),
-        )
-        .expect("establish peer session");
-        let mut session = SharingSession::new(connection);
-        let _pairing = session.exchange_account_free_pairing().expect("pair");
+    let (mut session, receiver) = paired_loopback(|mut session| {
         let _offer = session.receive_incoming_offer().expect("receive offer");
         session.reject_incoming_offer().expect("reject offer");
     });
-
-    let stream = TcpStream::connect(address).expect("connect peer");
-    let connection = Connection::connect(
-        stream,
-        Handshake::initiator(INITIATOR_RANDOM, INITIATOR_SECRET),
-        ConnectionOptions::new("local", "Omarchy"),
-    )
-    .expect("establish local session");
-    let mut session = SharingSession::new(connection);
-    let _pairing = session.exchange_account_free_pairing().expect("pair");
     let error = session
         .send_outgoing_file(
             "rejected.txt",
@@ -364,18 +306,7 @@ fn receiver_rejection_reaches_the_outbound_sender() {
 #[test]
 fn outbound_cancellation_reaches_the_receiver_between_file_chunks() {
     let bytes = vec![0xA5; MULTI_FRAME_FILE_SIZE];
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
-    let address = listener.local_addr().expect("listener address");
-    let receiver = thread::spawn(move || {
-        let (stream, _) = listener.accept().expect("accept peer");
-        let connection = Connection::accept(
-            stream,
-            Handshake::responder(RESPONDER_RANDOM, RESPONDER_SECRET),
-            ConnectionOptions::new("remote", "Remote"),
-        )
-        .expect("establish peer session");
-        let mut session = SharingSession::new(connection);
-        let _pairing = session.exchange_account_free_pairing().expect("pair");
+    let (mut session, receiver) = paired_loopback(|mut session| {
         let offer = session.receive_incoming_offer().expect("receive offer");
         session.accept_incoming_offer().expect("accept offer");
         let mut received = Vec::new();
@@ -385,16 +316,6 @@ fn outbound_cancellation_reaches_the_receiver_between_file_chunks() {
         assert!(matches!(error, ProtocolError::Cancelled));
         assert_eq!(received.len(), 0x0001_0000);
     });
-
-    let stream = TcpStream::connect(address).expect("connect peer");
-    let connection = Connection::connect(
-        stream,
-        Handshake::initiator(INITIATOR_RANDOM, INITIATOR_SECRET),
-        ConnectionOptions::new("local", "Omarchy"),
-    )
-    .expect("establish local session");
-    let mut session = SharingSession::new(connection);
-    let _pairing = session.exchange_account_free_pairing().expect("pair");
     let cancellation_checks = Cell::new(0_u8);
     let error = session
         .send_outgoing_file(
