@@ -31,10 +31,12 @@ Simulation starts `daemon --simulate` with fake peers.
 `make install-local` restores the normal service. Uninstall stops and
 removes the user unit and binary. It leaves the config file in place.
 
-Inbound phone transfers use TCP port `53318`. If a host firewall is active,
-allow that port only from the trusted LAN. For UFW:
+Quick Share discovers and advertises peers over mDNS on UDP port `5353`, then
+accepts inbound phone transfers on TCP port `53318`. If a host firewall is
+active, allow both ports only from the trusted LAN. For UFW:
 
 ```sh
+sudo ufw allow from <lan-subnet> to any port 5353 proto udp
 sudo ufw allow from <lan-subnet> to any port 53318 proto tcp
 ```
 
