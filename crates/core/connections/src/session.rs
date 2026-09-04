@@ -121,6 +121,10 @@ pub enum Event {
     KeepAlive { ack: bool, sequence: u32 },
     /// A bandwidth-upgrade negotiation frame.
     Upgrade { event: UpgradeEvent },
+    /// A CONTROL `PAYLOAD_ERROR` for the identified payload.
+    PayloadError { id: i64, offset: i64 },
+    /// A CONTROL `PAYLOAD_CANCELED` for the identified payload.
+    PayloadCancelled { id: i64, offset: i64 },
     /// The peer requested a clean disconnection or closed the stream.
     Disconnected,
 }

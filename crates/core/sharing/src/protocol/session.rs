@@ -2,6 +2,7 @@ use crate::protocol::{
     EndpointInfo, IncomingOffer, PairingError, PairingStatus, PairingStep,
     ProtocolError, frames, offer,
 };
+use core::sync::atomic::{AtomicI64, Ordering};
 use quickshare_connections::{Connection, ConnectionIo, ConnectionOptions};
 use quickshare_crypto::Handshake;
 use quickshare_wire::sharing::{Frame, connection_response_frame};
@@ -10,11 +11,33 @@ use std::net::TcpStream;
 
 mod transfer;
 
-const PAIRING_PAYLOAD_ID: i64 = 1;
-const INTRODUCTION_PAYLOAD_ID: i64 = 2;
 const FILE_PAYLOAD_ID: i64 = 3;
-pub(in crate::protocol) const CANCEL_PAYLOAD_ID: i64 = 4;
 const FILE_CHUNK_SIZE: usize = 0x0001_0000;
+
+static NEXT_CONTROL_PAYLOAD_ID: AtomicI64 = AtomicI64::new(1);
+
+#[must_use]
+fn next_control_payload_id() -> i64 {
+    loop {
+        let id = NEXT_CONTROL_PAYLOAD_ID.load(Ordering::Relaxed);
+        let next = match id {
+            2 => 4,
+            i64::MAX => 1,
+            _ => id + 1,
+        };
+        if NEXT_CONTROL_PAYLOAD_ID
+            .compare_exchange_weak(
+                id,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            return id;
+        }
+    }
+}
 
 /// Drives account-free Sharing over an encrypted Connections relationship.
 #[derive(Debug)]
@@ -115,16 +138,9 @@ impl SharingSession {
     pub fn exchange_account_free_pairing(
         &mut self,
     ) -> Result<PairingStatus, PairingError> {
-        self.connection
-            .send_sharing_frame(
-                PAIRING_PAYLOAD_ID,
-                &frames::account_free_encryption(),
-            )
+        self.send_control_frame(&frames::account_free_encryption())
             .map_err(|source| {
-                PairingError::new(
-                    PairingStep::SendEncryption,
-                    ProtocolError::from(source),
-                )
+                PairingError::new(PairingStep::SendEncryption, source)
             })?;
         let encryption = self.receive_bytes().map_err(|source| {
             PairingError::new(PairingStep::ReceiveEncryption, source)
@@ -132,16 +148,9 @@ impl SharingSession {
         let _ = frames::decode_pairing(&encryption).map_err(|source| {
             PairingError::new(PairingStep::ReceiveEncryption, source)
         })?;
-        self.connection
-            .send_sharing_frame(
-                PAIRING_PAYLOAD_ID + 1,
-                &frames::account_free_result(),
-            )
+        self.send_control_frame(&frames::account_free_result())
             .map_err(|source| {
-                PairingError::new(
-                    PairingStep::SendResult,
-                    ProtocolError::from(source),
-                )
+                PairingError::new(PairingStep::SendResult, source)
             })?;
         let result = self.receive_bytes().map_err(|source| {
             PairingError::new(PairingStep::ReceiveResult, source)
@@ -174,11 +183,7 @@ impl SharingSession {
     ///
     /// Returns an error when the response cannot be sent.
     pub fn accept_incoming_offer(&mut self) -> Result<(), ProtocolError> {
-        self.connection.send_sharing_frame(
-            INTRODUCTION_PAYLOAD_ID,
-            &frames::accept_response(),
-        )?;
-        Ok(())
+        self.send_control_frame(&frames::accept_response())
     }
 
     /// Writes the standard rejection response for the current inbound offer.
@@ -187,11 +192,7 @@ impl SharingSession {
     ///
     /// Returns an error when the response cannot be sent.
     pub fn reject_incoming_offer(&mut self) -> Result<(), ProtocolError> {
-        self.connection.send_sharing_frame(
-            INTRODUCTION_PAYLOAD_ID,
-            &frames::reject_response(),
-        )?;
-        Ok(())
+        self.send_control_frame(&frames::reject_response())
     }
 
     /// Writes the timed-out response for the current inbound offer.
@@ -200,11 +201,7 @@ impl SharingSession {
     ///
     /// Returns an error when the response cannot be sent.
     pub fn timeout_incoming_offer(&mut self) -> Result<(), ProtocolError> {
-        self.connection.send_sharing_frame(
-            INTRODUCTION_PAYLOAD_ID,
-            &frames::timeout_response(),
-        )?;
-        Ok(())
+        self.send_control_frame(&frames::timeout_response())
     }
 
     /// Writes the unsupported-attachment response for the current inbound
@@ -214,10 +211,15 @@ impl SharingSession {
     ///
     /// Returns an error when the response cannot be sent.
     pub fn unsupported_incoming_offer(&mut self) -> Result<(), ProtocolError> {
-        self.connection.send_sharing_frame(
-            INTRODUCTION_PAYLOAD_ID,
-            &frames::unsupported_response(),
-        )?;
+        self.send_control_frame(&frames::unsupported_response())
+    }
+
+    pub(in crate::protocol) fn send_control_frame(
+        &mut self,
+        frame: &Frame,
+    ) -> Result<(), ProtocolError> {
+        self.connection
+            .send_sharing_frame(next_control_payload_id(), frame)?;
         Ok(())
     }
 

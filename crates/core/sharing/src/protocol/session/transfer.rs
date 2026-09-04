@@ -1,7 +1,4 @@
-use super::{
-    CANCEL_PAYLOAD_ID, FILE_CHUNK_SIZE, FILE_PAYLOAD_ID,
-    INTRODUCTION_PAYLOAD_ID, SharingSession,
-};
+use super::{FILE_CHUNK_SIZE, FILE_PAYLOAD_ID, SharingSession};
 use crate::protocol::{IncomingOffer, ProtocolError, frames, offer};
 use quickshare_connections::Event;
 use std::io::{Read, Write};
@@ -65,10 +62,7 @@ impl SharingSession {
         if is_cancelled() {
             return Err(ProtocolError::Cancelled);
         }
-        self.connection.send_sharing_frame(
-            INTRODUCTION_PAYLOAD_ID,
-            &frames::introduction(name, wire_size),
-        )?;
+        self.send_control_frame(&frames::introduction(name, wire_size))?;
         frames::consent_result(Self::decode_response(&self.receive_bytes()?)?)?;
         on_accepted();
         self.stop_if_cancelled(&mut is_cancelled)?;
@@ -243,6 +237,12 @@ impl SharingSession {
                 Event::Disconnected => {
                     return Err(ProtocolError::Disconnected);
                 }
+                Event::PayloadCancelled { .. } => {
+                    return Err(ProtocolError::Cancelled);
+                }
+                Event::PayloadError { .. } => {
+                    return Err(ProtocolError::InvalidPayload);
+                }
                 event => return Ok(event),
             }
         }
@@ -270,8 +270,7 @@ impl SharingSession {
         if !is_cancelled() {
             return Ok(());
         }
-        self.connection
-            .send_sharing_frame(CANCEL_PAYLOAD_ID, &frames::cancel())?;
+        self.send_control_frame(&frames::cancel())?;
         Err(ProtocolError::Cancelled)
     }
 }

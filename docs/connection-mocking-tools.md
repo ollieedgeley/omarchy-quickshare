@@ -96,19 +96,11 @@ Use this preference order when replacing a dependency:
 
 ### Fast feedback and simulator fidelity
 
-Routine TDD starts with in-process behavior tests and deterministic doubles at
-external seams: discovery, connection outcomes, time, randomness, payloads,
-decisions, storage, and upgrades. Rare failures should remain millisecond-fast.
+Routine TDD starts with in-process behavior tests and deterministic doubles at external seams: discovery, connection outcomes, time, randomness, payloads, decisions, storage, and upgrades. Rare failures should remain millisecond-fast.
 
-Fast and simulator layers consume the same semantic scenarios where they
-overlap. Scenarios describe peer actions, observations, faults, payload facts,
-and outcomes, never project-module calls. Contract cases run against each double
-and its real, virtualized, or oracle-backed adapter before the double is trusted.
+Fast and simulator layers consume the same semantic scenarios where they overlap. Scenarios describe peer actions, observations, faults, payload facts, and outcomes, never project-module calls. Contract cases run against each double and its real, virtualized, or oracle-backed adapter before the double is trusted.
 
-Simulator and oracle suites cover fewer combinations but cross real framing,
-process, operating-system, virtual-radio, and reference-peer boundaries in both
-roles. They keep the larger fast matrix honest. Mock only external boundaries;
-assert public events, results, payload bytes, cleanup, and terminal outcomes.
+Simulator and oracle suites cover fewer combinations but cross real framing, process, operating-system, virtual-radio, and reference-peer boundaries in both roles. They keep the larger fast matrix honest. Mock only external boundaries; assert public events, results, payload bytes, cleanup, and terminal outcomes.
 
 ### Helpers
 
@@ -311,6 +303,14 @@ Live Sharing interoperability uses a pinned, test-only control wrapper around th
 
 The test-only Google-derived reference lab uses Docker Compose only for its fixed two-peer topology, health, isolated bridge, case mounts, and teardown; a project runner owns its sealed multi-stage build, scenarios, assertions, evidence, and cleanup.
 Each peer uses a private bus, real NetworkManager and Avahi, and an adapter-shaped BlueZ fake that carries no traffic. The lab proves Wi-Fi LAN only; Bluetooth still requires virtual radios.
+
+### Connections BYTES lifecycle
+
+Non-empty BYTES payloads emit `DATA` with the body and flags `0`, then empty `DATA` at `offset = size` with `LAST_CHUNK`. A valid `PAYLOAD_ACK` is accepted and ignored when the endpoint does not track acknowledgements. `CONTROL` `PAYLOAD_ERROR` and `PAYLOAD_CANCELED` discard matching partial receive state before becoming typed events or outcomes, never `UnexpectedFrame`. Sharing control frames use a fresh sender-generated payload ID. Attachment IDs stay the IDs named in introduction metadata.
+
+Asymmetric tests drive an independent peer with that lifecycle. Loopback is self-consistency. Diverse LAN is independent pinned Linux-peer compatibility, not current Android. UKEY2 is crypto-only. The Android probe is Connections API-only. Physical Android remains compatibility evidence.
+
+Do not treat the inbound phone failure as a known `CONTROL` or `PAYLOAD_ACK` packet. Those types stay candidates until logs record the rejected V1 frame type, payload packet type, and control event. Admit an Android-shaped regression fixture only after those discriminants are logged, and only as synthetic field-presence metadata, never decrypted phone bytes.
 
 ### UKEY2 interoperability tests
 

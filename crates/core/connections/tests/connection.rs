@@ -85,7 +85,23 @@ fn initiating_connection_exchanges_plain_accepts_before_encrypted_data() {
             7,
             payload_transfer_frame::payload_header::PayloadType::Bytes,
             b"outbound bytes",
-            true,
+            false,
+        );
+        let terminator = channel
+            .decrypt(&read_frame(&mut stream))
+            .expect("decrypt empty LAST_CHUNK");
+        assert_eq!(
+            OfflineFrame::decode(terminator.as_slice())
+                .expect("decode empty LAST_CHUNK"),
+            data_frame(
+                7,
+                payload_transfer_frame::payload_header::PayloadType::Bytes,
+                14,
+                None,
+                14,
+                b"",
+                true,
+            )
         );
     });
 
@@ -232,6 +248,278 @@ fn accepting_connection_receives_header_and_chunk_from_one_data_frame() {
     peer.join().expect("manual peer completes");
 }
 
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    deprecated,
+    reason = "The manual peer keeps ACK and CONTROL in one receive trace"
+)]
+fn payload_ack_is_ignored_and_control_payload_events_are_typed() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind peer");
+    let address = listener.local_addr().expect("peer address");
+    let peer = thread::spawn(move || {
+        let mut stream = TcpStream::connect(address).expect("connect acceptor");
+        write_frame(&mut stream, &request_frame().encode_to_vec());
+
+        let mut handshake =
+            Handshake::initiator(INITIATOR_RANDOM, INITIATOR_SECRET);
+        write_frame(
+            &mut stream,
+            &handshake.next_message().expect("create raw UKEY2 M1"),
+        );
+        handshake
+            .receive(&read_frame(&mut stream))
+            .expect("receive raw UKEY2 M2");
+        write_frame(
+            &mut stream,
+            &handshake.next_message().expect("create raw UKEY2 M3"),
+        );
+        write_frame(&mut stream, &accept_frame().encode_to_vec());
+        assert_eq!(
+            OfflineFrame::decode(read_frame(&mut stream).as_slice())
+                .expect("decode plaintext Connections ACCEPT"),
+            accept_frame()
+        );
+        let mut channel =
+            handshake.complete().expect("complete UKEY2").into_channel();
+        let bytes_kind =
+            payload_transfer_frame::payload_header::PayloadType::Bytes;
+        let file_kind =
+            payload_transfer_frame::payload_header::PayloadType::File;
+        write_frame(
+            &mut stream,
+            &channel
+                .encrypt(
+                    &data_frame(8, bytes_kind, 3, None, 0, b"abc", true)
+                        .encode_to_vec(),
+                    [7; 16],
+                )
+                .expect("encrypt first BYTES payload"),
+        );
+        write_frame(
+            &mut stream,
+            &channel
+                .encrypt(&payload_ack_frame(8).encode_to_vec(), [8; 16])
+                .expect("encrypt PAYLOAD_ACK"),
+        );
+        write_frame(
+            &mut stream,
+            &channel
+                .encrypt(
+                    &data_frame(11, bytes_kind, 4, None, 0, b"ab", false)
+                        .encode_to_vec(),
+                    [10; 16],
+                )
+                .expect("encrypt partial BYTES payload"),
+        );
+        write_frame(
+            &mut stream,
+            &channel
+                .encrypt(
+                    &data_frame(
+                        10,
+                        bytes_kind,
+                        22,
+                        None,
+                        0,
+                        b"peer paired-key result",
+                        true,
+                    )
+                    .encode_to_vec(),
+                    [9; 16],
+                )
+                .expect("encrypt peer paired-key result"),
+        );
+        write_frame(
+            &mut stream,
+            &channel
+                .encrypt(
+                    &control_frame(
+                        11,
+                        payload_transfer_frame::control_message::EventType::
+                            PayloadError,
+                        2,
+                    )
+                    .encode_to_vec(),
+                    [11; 16],
+                )
+                .expect("encrypt PAYLOAD_ERROR"),
+        );
+        write_frame(
+            &mut stream,
+            &channel
+                .encrypt(
+                    &data_frame(11, bytes_kind, 2, None, 0, b"ok", true)
+                        .encode_to_vec(),
+                    [12; 16],
+                )
+                .expect("encrypt BYTES after PAYLOAD_ERROR"),
+        );
+        write_frame(
+            &mut stream,
+            &channel
+                .encrypt(
+                    &data_frame(
+                        12,
+                        file_kind,
+                        4,
+                        Some("cancelled.txt".into()),
+                        0,
+                        b"ab",
+                        false,
+                    )
+                    .encode_to_vec(),
+                    [13; 16],
+                )
+                .expect("encrypt partial FILE payload"),
+        );
+        write_frame(
+            &mut stream,
+            &channel
+                .encrypt(
+                    &control_frame(
+                        12,
+                        payload_transfer_frame::control_message::EventType::
+                            PayloadCanceled,
+                        2,
+                    )
+                    .encode_to_vec(),
+                    [14; 16],
+                )
+                .expect("encrypt PAYLOAD_CANCELED"),
+        );
+        write_frame(
+            &mut stream,
+            &channel
+                .encrypt(
+                    &data_frame(
+                        15,
+                        file_kind,
+                        1,
+                        Some("next.txt".into()),
+                        0,
+                        b"z",
+                        true,
+                    )
+                    .encode_to_vec(),
+                    [15; 16],
+                )
+                .expect("encrypt FILE after PAYLOAD_CANCELED"),
+        );
+        write_frame(
+            &mut stream,
+            &channel
+                .encrypt(
+                    &control_frame(
+                        13,
+                        payload_transfer_frame::control_message::EventType::
+                            PayloadReceivedAck,
+                        0,
+                    )
+                    .encode_to_vec(),
+                    [16; 16],
+                )
+                .expect("encrypt deprecated PayloadReceivedAck"),
+        );
+        write_frame(
+            &mut stream,
+            &channel
+                .encrypt(
+                    &data_frame(14, bytes_kind, 1, None, 0, b"z", true)
+                        .encode_to_vec(),
+                    [17; 16],
+                )
+                .expect("encrypt BYTES after deprecated ack"),
+        );
+    });
+
+    let (stream, _) = listener.accept().expect("accept manual peer");
+    let mut connection = Connection::accept(
+        stream,
+        Handshake::responder(RESPONDER_RANDOM, RESPONDER_SECRET),
+        ConnectionOptions::new("acceptor", "acceptor"),
+    )
+    .expect("establish encryption with manual peer");
+    assert_eq!(
+        connection.receive().expect("receive first BYTES payload"),
+        Event::Bytes {
+            id: 8,
+            bytes: b"abc".to_vec(),
+        }
+    );
+    assert_eq!(
+        connection
+            .receive()
+            .expect("PAYLOAD_ACK is ignored before the peer paired-key result"),
+        Event::Bytes {
+            id: 10,
+            bytes: b"peer paired-key result".to_vec(),
+        }
+    );
+    assert_eq!(
+        connection.receive().expect("CONTROL PAYLOAD_ERROR"),
+        Event::PayloadError { id: 11, offset: 2 }
+    );
+    assert_eq!(
+        connection
+            .receive()
+            .expect("receive BYTES after PAYLOAD_ERROR"),
+        Event::Bytes {
+            id: 11,
+            bytes: b"ok".to_vec(),
+        }
+    );
+    assert_eq!(
+        connection.receive().expect("receive partial file header"),
+        Event::FileHeader {
+            id: 12,
+            total_size: 4,
+            name: Some("cancelled.txt".into()),
+        }
+    );
+    assert_eq!(
+        connection.receive().expect("receive partial file chunk"),
+        Event::FileChunk {
+            id: 12,
+            offset: 0,
+            bytes: b"ab".to_vec(),
+            is_last: false,
+        }
+    );
+    assert_eq!(
+        connection.receive().expect("CONTROL PAYLOAD_CANCELED"),
+        Event::PayloadCancelled { id: 12, offset: 2 }
+    );
+    assert_eq!(
+        connection.receive().expect("receive next file header"),
+        Event::FileHeader {
+            id: 15,
+            total_size: 1,
+            name: Some("next.txt".into()),
+        }
+    );
+    assert_eq!(
+        connection.receive().expect("receive next file chunk"),
+        Event::FileChunk {
+            id: 15,
+            offset: 0,
+            bytes: b"z".to_vec(),
+            is_last: true,
+        }
+    );
+    assert_eq!(
+        connection
+            .receive()
+            .expect("deprecated PayloadReceivedAck is ignored"),
+        Event::Bytes {
+            id: 14,
+            bytes: b"z".to_vec(),
+        }
+    );
+
+    peer.join().expect("manual peer completes");
+}
+
 fn request_frame() -> OfflineFrame {
     offline(V1Frame {
         r#type: Some(v1_frame::FrameType::ConnectionRequest as i32),
@@ -285,8 +573,60 @@ fn data_frame(
                     0_i32
                 }),
                 offset: Some(offset),
-                body: (!bytes.is_empty()).then(|| bytes.to_vec()),
+                body: Some(bytes.to_vec()),
                 ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+fn payload_ack_frame(id: i64) -> OfflineFrame {
+    offline(V1Frame {
+        r#type: Some(v1_frame::FrameType::PayloadTransfer as i32),
+        payload_transfer: Some(PayloadTransferFrame {
+            packet_type: Some(
+                payload_transfer_frame::PacketType::PayloadAck as i32,
+            ),
+            payload_header: Some(payload_transfer_frame::PayloadHeader {
+                id: Some(id),
+                r#type: Some(
+                    payload_transfer_frame::payload_header::PayloadType::Bytes
+                        as i32,
+                ),
+                total_size: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+fn control_frame(
+    id: i64,
+    event: payload_transfer_frame::control_message::EventType,
+    offset: i64,
+) -> OfflineFrame {
+    offline(V1Frame {
+        r#type: Some(v1_frame::FrameType::PayloadTransfer as i32),
+        payload_transfer: Some(PayloadTransferFrame {
+            packet_type: Some(
+                payload_transfer_frame::PacketType::Control as i32,
+            ),
+            payload_header: Some(payload_transfer_frame::PayloadHeader {
+                id: Some(id),
+                r#type: Some(
+                    payload_transfer_frame::payload_header::PayloadType::Bytes
+                        as i32,
+                ),
+                total_size: Some(0),
+                ..Default::default()
+            }),
+            control_message: Some(payload_transfer_frame::ControlMessage {
+                event: Some(event as i32),
+                offset: Some(offset),
             }),
             ..Default::default()
         }),

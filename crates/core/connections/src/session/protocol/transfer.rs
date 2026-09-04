@@ -37,12 +37,12 @@ impl Connection {
     pub fn send_bytes(&mut self, id: i64, bytes: &[u8]) -> Result<(), Error> {
         let size =
             i64::try_from(bytes.len()).map_err(|_| Error::InvalidPayload)?;
-        self.data(
-            payload_header(id, PayloadKind::Bytes, size, None)?,
-            0,
-            bytes,
-            true,
-        )
+        let header = payload_header(id, PayloadKind::Bytes, size, None)?;
+        if bytes.is_empty() {
+            return self.data(header, 0, bytes, true);
+        }
+        self.data(header.clone(), 0, bytes, false)?;
+        self.data(header, size, &[], true)
     }
     /// Records a FILE payload declaration for its subsequent DATA chunks.
     ///
@@ -144,6 +144,19 @@ impl Connection {
         transfer: PayloadTransferFrame,
     ) -> Result<Option<Event>, Error> {
         if transfer.packet_type
+            == Some(payload_transfer_frame::PacketType::PayloadAck as i32)
+        {
+            let header =
+                transfer.payload_header.ok_or(Error::InvalidPayload)?;
+            let _id = header.id.ok_or(Error::InvalidPayload)?;
+            return Ok(None);
+        }
+        if transfer.packet_type
+            == Some(payload_transfer_frame::PacketType::Control as i32)
+        {
+            return self.control_payload(transfer);
+        }
+        if transfer.packet_type
             != Some(payload_transfer_frame::PacketType::Data as i32)
         {
             return Err(Error::UnexpectedFrame);
@@ -157,6 +170,45 @@ impl Connection {
         }
         self.file_payload(id, size, header.file_name, offset, bytes, last)
             .map(Some)
+    }
+    fn control_payload(
+        &mut self,
+        transfer: PayloadTransferFrame,
+    ) -> Result<Option<Event>, Error> {
+        let header = transfer.payload_header.ok_or(Error::InvalidPayload)?;
+        let id = header.id.ok_or(Error::InvalidPayload)?;
+        let control = transfer.control_message.ok_or(Error::InvalidPayload)?;
+        let offset = control.offset.ok_or(Error::InvalidPayload)?;
+        let wire_event = control.event.ok_or(Error::UnexpectedFrame)?;
+        let event = if wire_event
+            == payload_transfer_frame::control_message::EventType::PayloadError
+                as i32
+        {
+            Event::PayloadError { id, offset }
+        } else if wire_event
+            == payload_transfer_frame::control_message::EventType::
+                PayloadCanceled as i32
+        {
+            Event::PayloadCancelled { id, offset }
+        } else {
+            #[expect(
+                deprecated,
+                reason = "Generated wire still defines PayloadReceivedAck"
+            )]
+            if wire_event
+                == payload_transfer_frame::control_message::EventType::
+                    PayloadReceivedAck as i32
+            {
+                return Ok(None);
+            }
+            return Err(Error::UnexpectedFrame);
+        };
+        drop(self.incoming_bytes.remove(&id));
+        let _ = self.payloads.remove(&id);
+        if self.incoming_file == Some(id) {
+            self.incoming_file = None;
+        }
+        Ok(Some(event))
     }
 
     fn bytes_payload(

@@ -2,12 +2,16 @@
 
 #![expect(
     clippy::absolute_paths,
+    clippy::as_conversions,
+    clippy::default_numeric_fallback,
     clippy::expect_used,
     clippy::missing_assert_message,
     clippy::missing_trait_methods,
+    clippy::panic,
     clippy::panic_in_result_fn,
     clippy::tests_outside_test_module,
     clippy::too_many_lines,
+    clippy::wildcard_enum_match_arm,
     reason = "Integration tests name std I/O types at the crate boundary"
 )]
 
@@ -19,7 +23,9 @@ use quickshare_crypto::Handshake;
 use quickshare_sharing::{
     OfferKind, PairingStatus, PairingStep, ProtocolError, SharingSession,
 };
-use quickshare_wire as _;
+use quickshare_wire::sharing::{
+    Frame, PairedKeyEncryptionFrame, V1Frame, v1_frame,
+};
 use rand_core as _;
 use serde as _;
 use std::{
@@ -101,6 +107,78 @@ fn pairing_reports_receive_encryption_when_peer_closes_after_local_encryption()
     assert_eq!(error.step(), PairingStep::ReceiveEncryption);
     assert!(matches!(error.source_error(), ProtocolError::Disconnected));
     responder.join().expect("responder completes");
+}
+
+#[test]
+fn paired_key_payload_ids_are_not_reused_by_introduction() {
+    let (initiator_stream, responder_stream) =
+        UnixStream::pair().expect("unix pair");
+    let responder = thread::spawn(move || {
+        let mut connection = Connection::accept_io(
+            responder_stream,
+            Handshake::responder(RESPONDER_RANDOM, RESPONDER_SECRET),
+            ConnectionOptions::new("remote", "Remote"),
+        )
+        .expect("establish peer session");
+        let encryption_id =
+            match connection.receive().expect("receive local encryption") {
+                Event::Bytes { id, .. } => id,
+                other => panic!("expected encryption bytes, got {other:?}"),
+            };
+        connection
+            .send_sharing_frame(
+                1,
+                &Frame {
+                    version: Some(1),
+                    v1: Some(V1Frame {
+                        r#type: Some(
+                            v1_frame::FrameType::PairedKeyEncryption as i32,
+                        ),
+                        paired_key_encryption: Some(PairedKeyEncryptionFrame {
+                            signed_data: Some(vec![0; 72]),
+                            secret_id_hash: Some(vec![0; 6]),
+                            optional_signed_data: None,
+                            qr_code_handshake_data: None,
+                        }),
+                        ..Default::default()
+                    }),
+                },
+            )
+            .expect("send account-free encryption");
+        let result_id = match connection
+            .receive()
+            .expect("receive local paired-key result")
+        {
+            Event::Bytes { id, .. } => id,
+            other => panic!("expected result bytes, got {other:?}"),
+        };
+        connection
+            .send_sharing_frame(2, &SharingSession::account_free_result())
+            .expect("send unable");
+        let introduction_id =
+            match connection.receive().expect("receive local introduction") {
+                Event::Bytes { id, .. } => id,
+                other => panic!("expected introduction bytes, got {other:?}"),
+            };
+        (encryption_id, result_id, introduction_id)
+    });
+
+    let connection = Connection::connect_io(
+        initiator_stream,
+        Handshake::initiator(INITIATOR_RANDOM, INITIATOR_SECRET),
+        ConnectionOptions::new("local", "Omarchy"),
+    )
+    .expect("establish local session");
+    let mut session = SharingSession::new(connection);
+    let _pairing = session.exchange_account_free_pairing().expect("pair");
+    let _closed = session
+        .send_outgoing_text("hello from omarchy", || {}, |_| {}, || false)
+        .expect_err("peer closed after introduction");
+    let (encryption_id, result_id, introduction_id) =
+        responder.join().expect("responder completes");
+    assert_ne!(encryption_id, result_id);
+    assert_ne!(encryption_id, introduction_id);
+    assert_ne!(result_id, introduction_id);
 }
 
 #[test]

@@ -1,11 +1,9 @@
 use super::{
     IncomingOffer, OfferKind, ProtocolError, SharingSession, frames, offer,
-    session::CANCEL_PAYLOAD_ID,
 };
 use quickshare_connections::Event;
 use quickshare_wire::sharing::text_metadata;
 
-const INTRODUCTION_PAYLOAD_ID: i64 = 2;
 const TEXT_PAYLOAD_ID: i64 = 3;
 
 impl SharingSession {
@@ -135,10 +133,9 @@ impl SharingSession {
         if is_cancelled() {
             return Err(ProtocolError::Cancelled);
         }
-        self.connection.send_sharing_frame(
-            INTRODUCTION_PAYLOAD_ID,
-            &frames::text_introduction(value, wire_size, kind),
-        )?;
+        self.send_control_frame(&frames::text_introduction(
+            value, wire_size, kind,
+        ))?;
         frames::consent_result(Self::decode_response(&self.receive_bytes()?)?)?;
         on_accepted();
         self.stop_if_cancelled(&mut is_cancelled)?;
@@ -165,7 +162,7 @@ impl SharingSession {
         self.stop_if_cancelled(&mut is_cancelled)?;
         match self.next_transfer_event()? {
             Event::Bytes { id, bytes }
-                if id == CANCEL_PAYLOAD_ID && frames::is_cancel(&bytes)? =>
+                if id != offer.payload_id() && frames::is_cancel(&bytes)? =>
             {
                 Err(ProtocolError::Cancelled)
             }
