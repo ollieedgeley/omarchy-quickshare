@@ -84,8 +84,9 @@ Ask for named files or symbols when source is deferred. Treat returned source as
   tooling and repository configuration.
 - `make format-docs-check` checks Markdown; `make format-check` combines all
   formatting domains.
-- `make lint-rust` runs compiler, rustdoc, rust-analyzer, and all enabled
-  Clippy diagnostics as errors.
+- `make lint-rust-clippy` runs strict Clippy; `make lint-rust-docs` fails
+  rustdoc warnings; `make lint-rust-analyzer` runs rust-analyzer diagnostics.
+  `make lint-rust` runs those three child gates.
 - `make ruff-provision` installs pinned Ruff; `make analyzers-provision`
   installs or validates every pinned cross-language analyzer.
 - `make lint-python` checks all Python tooling; `make lint-javascript` runs

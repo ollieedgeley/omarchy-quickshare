@@ -130,9 +130,6 @@ format-docs-check: ## Check repository documentation formatting.
 check: ## Compiler-check the complete Cargo workspace.
 	@$(TIMEOUT) cargo check --workspace --all-targets --all-features --locked
 
-lint-rust: ## Run compiler, rustdoc, rust-analyzer, and strict Clippy checks.
-	@$(TIMEOUT) node tools/gates/rust-lints.mjs
-
 lint-javascript: ## Run every current ESLint core rule as an error.
 	@$(TIMEOUT) $(ESLINT) . --max-warnings 0 --no-warn-ignored
 
@@ -497,4 +494,5 @@ pre-commit: ## Check the staged snapshot and its conservatively affected tests.
 pre-push: ## Verify, then build, every exact local commit tip being pushed.
 	@node tools/hooks/pre-push.mjs
 
+include tools/gates/rust-lints.mk
 include tools/gates/environments.mk

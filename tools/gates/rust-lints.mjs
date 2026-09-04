@@ -109,51 +109,57 @@ if (isDirectExecution) {
     );
   }
 
-  if (useWorkspace) {
-    run("rust-analyzer", ["diagnostics", ".", "--severity", "warning"], {
-      cwd: ROOT,
-    });
+  const step = process.env.RUST_LINT_STEP ?? "clippy";
+  if (step !== "clippy" && step !== "docs" && step !== "analyzer") {
+    throw new Error(`unknown RUST_LINT_STEP: ${step}`);
   }
-
-  const clippyGroups = [
-    "all",
-    "cargo",
-    "complexity",
-    "correctness",
-    "nursery",
-    "pedantic",
-    "perf",
-    "restriction",
-    "style",
-    "suspicious",
-  ];
-  const clippyArgs = [
-    "clippy",
-    ...packageFlags,
-    "--all-targets",
-    "--all-features",
-    "--locked",
-    "--",
-    "-Dwarnings",
-    ...clippyGroups.flatMap((group) => ["-D", `clippy::${group}`]),
-    ...Object.keys(exceptions).flatMap((lint) => ["-A", `clippy::${lint}`]),
-  ];
-  run("cargo", clippyArgs, {
-    cwd: ROOT,
-    env: {
-      ...process.env,
-      RUSTFLAGS: "--cfg quickshare_oracle_reference",
-    },
-  });
-
-  if (useWorkspace) {
-    run(
-      "cargo",
-      ["doc", ...packageFlags, "--all-features", "--no-deps", "--locked"],
-      {
+  if (step === "analyzer") {
+    if (useWorkspace) {
+      run("rust-analyzer", ["diagnostics", ".", "--severity", "warning"], {
         cwd: ROOT,
-        env: { ...process.env, RUSTDOCFLAGS: "-D warnings" },
+      });
+    }
+  } else if (step === "docs") {
+    if (useWorkspace) {
+      run(
+        "cargo",
+        ["doc", ...packageFlags, "--all-features", "--no-deps", "--locked"],
+        {
+          cwd: ROOT,
+          env: { ...process.env, RUSTDOCFLAGS: "-D warnings" },
+        },
+      );
+    }
+  } else {
+    const clippyGroups = [
+      "all",
+      "cargo",
+      "complexity",
+      "correctness",
+      "nursery",
+      "pedantic",
+      "perf",
+      "restriction",
+      "style",
+      "suspicious",
+    ];
+    const clippyArgs = [
+      "clippy",
+      ...packageFlags,
+      "--all-targets",
+      "--all-features",
+      "--locked",
+      "--",
+      "-Dwarnings",
+      ...clippyGroups.flatMap((group) => ["-D", `clippy::${group}`]),
+      ...Object.keys(exceptions).flatMap((lint) => ["-A", `clippy::${lint}`]),
+    ];
+    run("cargo", clippyArgs, {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        RUSTFLAGS: "--cfg quickshare_oracle_reference",
       },
-    );
+    });
   }
 }
