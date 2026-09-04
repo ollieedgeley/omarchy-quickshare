@@ -164,9 +164,12 @@ fn positive(value: &[u8]) -> Result<Vec<u8>, HandshakeError> {
     Ok(result)
 }
 fn coordinate(value: &[u8]) -> Result<[u8; KEY_LENGTH], HandshakeError> {
+    if value.len() == KEY_LENGTH {
+        return value.try_into().map_err(|_| HandshakeError::PublicKey);
+    }
     value
         .strip_prefix(&[0])
-        .unwrap_or(value)
+        .ok_or(HandshakeError::PublicKey)?
         .try_into()
         .map_err(|_| HandshakeError::PublicKey)
 }

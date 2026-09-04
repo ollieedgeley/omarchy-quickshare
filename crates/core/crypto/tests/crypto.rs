@@ -131,6 +131,25 @@ fn channel_rejects_replayed_and_out_of_order_messages() {
 }
 
 #[test]
+fn handshake_accepts_a_significant_leading_zero_coordinate() {
+    let mut responder_secret = [0; 32];
+    responder_secret[31] = 43;
+    let mut initiator =
+        Handshake::initiator(INITIATOR_RANDOM, INITIATOR_SECRET);
+    let mut responder =
+        Handshake::responder(RESPONDER_RANDOM, responder_secret);
+    let first = initiator.next_message().expect("initiator starts");
+    responder
+        .receive(&first)
+        .expect("responder accepts client init");
+    let second = responder.next_message().expect("responder replies");
+
+    initiator
+        .receive(&second)
+        .expect("initiator accepts a 32-byte coordinate beginning with zero");
+}
+
+#[test]
 fn roles_are_explicit_at_the_public_handshake_seam() {
     assert_eq!(
         Handshake::initiator(INITIATOR_RANDOM, INITIATOR_SECRET).role(),
