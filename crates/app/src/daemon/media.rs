@@ -7,8 +7,8 @@ mod upgrade;
 mod tests;
 
 pub(super) use self::connection::{
-    DiscoveryLeases, ENDPOINT_ID_BYTES, ENDPOINT_NAME, PeerRoute,
-    VisibilityLeases, accept_connection, attempt_order, connect_route,
+    DiscoveryLeases, ENDPOINT_ID_BYTES, PeerRoute, VisibilityLeases,
+    accept_connection, attempt_order, connect_route, endpoint_name,
     medium_name, open_visibility, sharing_session, start_discovery,
 };
 pub(super) use self::upgrade::{

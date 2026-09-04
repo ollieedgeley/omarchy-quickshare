@@ -1,11 +1,11 @@
 //! Incoming LAN advertisement, consent, and attachment persistence.
 
 use alloc::collections::BTreeMap;
-use core::time::Duration;
-use std::io;
+use core::{net::Ipv4Addr, time::Duration};
 use std::path::Path;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::Instant;
+use std::{env, io};
 
 use quickshare_connections::Medium;
 use quickshare_network::{
@@ -21,12 +21,13 @@ use quickshare_storage::{ReceiveTarget, StagedFile};
 
 use super::{NetworkCommand, NetworkEvent, TransferCancellation};
 use crate::daemon::media::{
-    ENDPOINT_ID_BYTES, ENDPOINT_NAME, accept_connection,
-    accept_negotiated_upgrade, medium_name, sharing_session,
+    ENDPOINT_ID_BYTES, accept_connection, accept_negotiated_upgrade,
+    endpoint_name, medium_name, sharing_session,
 };
 use crate::daemon::observations::{protocol_reason, storage_reason};
 
-const HOSTNAME: &str = "omarchy-quickshare.local.";
+const LAN_PORT: u16 = 53_318;
+const TEST_LAN_PORT: &str = "OMARCHY_QUICKSHARE_TEST_LAN_PORT";
 const CONSENT_POLL: Duration = Duration::from_millis(50);
 
 enum Consent {
@@ -39,7 +40,11 @@ pub(super) fn open_listener(
     dns_sd: &DnsSd,
 ) -> io::Result<PublishedLanListener> {
     let result = (|| {
-        let listener = Listener::bind_any()?;
+        let port = env::var(TEST_LAN_PORT)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(LAN_PORT);
+        let listener = Listener::bind(port)?;
         let advertisement = advertisement(listener.port())?;
         listener.publish(dns_sd, &advertisement)
     })();
@@ -383,20 +388,25 @@ fn wait_for_consent(
 }
 
 fn advertisement(port: u16) -> io::Result<Advertisement> {
-    let endpoint = EndpointInfo::new(
-        0,
-        5,
-        [0; 2],
-        [0; 14],
-        Some(ENDPOINT_NAME),
-        None,
-        Vec::new(),
+    advertisement_for(
+        port,
+        endpoint_name(),
+        local_ipv4_addresses().map_err(io::Error::other)?,
     )
-    .map_err(io::Error::other)?;
+}
+
+fn advertisement_for(
+    port: u16,
+    name: &str,
+    addresses: Vec<Ipv4Addr>,
+) -> io::Result<Advertisement> {
+    let endpoint =
+        EndpointInfo::new(0, 3, [0; 2], [0; 14], Some(name), None, Vec::new())
+            .map_err(io::Error::other)?;
     let properties = BTreeMap::from([(String::from("n"), endpoint.property())]);
     Ok(Advertisement {
-        addresses: local_ipv4_addresses().map_err(io::Error::other)?,
-        hostname: String::from(HOSTNAME),
+        addresses,
+        hostname: format!("{name}.local."),
         instance: MdnsInstance::new(ENDPOINT_ID_BYTES).label(),
         port,
         properties,
@@ -406,7 +416,11 @@ fn advertisement(port: u16) -> io::Result<Advertisement> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Consent, NetworkCommand, wait_for_consent};
+    use super::{
+        Consent, LAN_PORT, NetworkCommand, advertisement_for, wait_for_consent,
+    };
+    use core::net::Ipv4Addr;
+    use quickshare_sharing::EndpointInfo;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -462,5 +476,23 @@ mod tests {
             })
             .expect("timed out");
         assert!(matches!(consent, Consent::TimedOut));
+    }
+
+    #[test]
+    fn advertisement_uses_laptop_hostname_and_fixed_port() {
+        let record = advertisement_for(
+            LAN_PORT,
+            "omarchy-macbook",
+            vec![Ipv4Addr::LOCALHOST],
+        )
+        .expect("advertisement");
+        let endpoint = EndpointInfo::decode_property(
+            record.properties.get("n").expect("endpoint property"),
+        )
+        .expect("endpoint info");
+        assert_eq!((endpoint.encode()[0] >> 1) & 7, 3);
+        assert_eq!(endpoint.device_name(), Some("omarchy-macbook"));
+        assert_eq!(record.hostname, "omarchy-macbook.local.");
+        assert_eq!(record.port, LAN_PORT);
     }
 }

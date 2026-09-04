@@ -17,6 +17,6 @@ pub use dispatch::{run, run_from_environment};
 #[cfg(test)]
 use args::{Command, LogLevel, parse};
 #[cfg(test)]
-use classify::request;
+use classify::{request, request_for_peer};
 #[cfg(test)]
 use log::env_filter_from;

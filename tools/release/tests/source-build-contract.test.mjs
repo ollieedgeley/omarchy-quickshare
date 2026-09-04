@@ -31,6 +31,7 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const temporaryDirectories = new Set();
 const COMMIT_LENGTH = 40;
+const CONTROL_PROTOCOL = 3;
 const SOURCE_COMMIT = "a".repeat(COMMIT_LENGTH);
 const APP_MEMBER_PATTERN = /crates\/app/u;
 const BLUEZ_MEMBER_PATTERN = /crates\/platform\/bluez/u;
@@ -281,7 +282,7 @@ test("extracting the bundle builds the locked stripped binary", () => {
   assert.equal(bundle.version, readAppVersion(root));
   assert.equal(built.version, bundle.version);
   assert.deepEqual(meta, {
-    controlProtocol: 2,
+    controlProtocol: CONTROL_PROTOCOL,
     sha256: bundle.sha256,
     sourceCommit: SOURCE_COMMIT,
     version: bundle.version,

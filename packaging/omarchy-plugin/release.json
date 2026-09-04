@@ -4,8 +4,8 @@
   "sourceCommit": "generated-by-plugin-export",
   "pluginVersion": "0.1.0",
   "controlProtocol": {
-    "minimum": 2,
-    "maximum": 2
+    "minimum": 3,
+    "maximum": 3
   },
   "nativeArtifact": {
     "version": "0.0.0",

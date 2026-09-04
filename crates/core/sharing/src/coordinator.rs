@@ -154,9 +154,29 @@ impl Coordinator {
     #[must_use]
     #[inline]
     pub fn queue_outbound(&mut self, attachment: Attachment) -> ShareId {
+        self.queue_outbound_with_preference(attachment, true)
+    }
+
+    /// Queues one outbound attachment without applying the preferred peer.
+    #[must_use]
+    #[inline]
+    pub fn queue_outbound_unpinned(
+        &mut self,
+        attachment: Attachment,
+    ) -> ShareId {
+        self.queue_outbound_with_preference(attachment, false)
+    }
+
+    fn queue_outbound_with_preference(
+        &mut self,
+        attachment: Attachment,
+        use_preference: bool,
+    ) -> ShareId {
         let share_id = self.next_id();
         let total_bytes = attachment.byte_len();
-        let pinned_peer = self.snapshot.pinned_peer().cloned();
+        let pinned_peer = use_preference
+            .then(|| self.snapshot.pinned_peer().cloned())
+            .flatten();
         let mut share = ShareSnapshot::new(
             attachment,
             Direction::Outbound,

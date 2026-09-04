@@ -9,7 +9,7 @@ const AFTER_HELP: &str = "\
 Examples:
   omarchy-quickshare \"hello from Omarchy\"
   omarchy-quickshare ./note.txt
-  omarchy-quickshare send https://example.test/share
+  omarchy-quickshare \"https://example.test/share\"
   omarchy-quickshare status --json
   omarchy-quickshare discover start
   omarchy-quickshare peer pin galaxy-tab
@@ -49,6 +49,9 @@ impl Cli {
 pub(super) enum Command {
     /// Queue text, a URL, or a local file or folder for sharing.
     Send {
+        /// Send to this observed peer instead of the preferred peer.
+        #[arg(long, value_name = "PEER_ID")]
+        peer: Option<String>,
         /// Text, URL, filesystem path, or local file URI.
         #[arg(value_name = "CONTENT")]
         content: String,

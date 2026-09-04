@@ -10,22 +10,25 @@ ShellRoot {
   property bool secondPasteRunning: false
   property string secondPasteResult: ""
   property bool startedBusyPasteCheck: false
+  property bool barPasteCaptured: false
   readonly property string exactShareId: "18446744073709551615"
   property string snapshotJson: '{"response":{"type":"snapshot",'
     + '"snapshot":{"active_share":{"id":7,'
     + '"id_string":"18446744073709551615","medium":"wifi_lan",'
     + '"phase":"transferring","remaining_seconds":12}}},'
-    + '"version":2}'
+    + '"version":3}'
 
   function statesSettled() {
     return ready.protocolState !== "checking"
       && unavailable.protocolState !== "checking"
       && incompatible.protocolState !== "checking"
+      && staleV2.protocolState !== "checking"
       && unsupported.protocolState !== "checking"
       && missing.protocolState !== "checking"
       && silent.protocolState !== "checking"
       && actionFailure.actionError !== ""
       && root.startedBusyPasteCheck
+      && root.barPasteCaptured
       && root.firstPasteResult === "ok"
       && root.secondPasteResult === "busy"
   }
@@ -43,6 +46,7 @@ ShellRoot {
       && ready.activeShare.remaining_seconds === 12
       && unavailable.protocolState === "unavailable"
       && incompatible.protocolState === "incompatible"
+      && staleV2.protocolState === "incompatible"
       && unsupported.protocolState === "incompatible"
       && missing.protocolState === "missing"
       && silent.protocolState === "incompatible"
@@ -87,6 +91,10 @@ ShellRoot {
         === '["env","omarchy-quickshare","visibility","close"]'
       && JSON.stringify(commands.command(["discover", "stop"]))
         === '["env","omarchy-quickshare","discover","stop"]'
+      && JSON.stringify(commands.command([
+        "send", "--peer", "pixel-8", "clipboard value",
+      ])) === '["env","omarchy-quickshare","send","--peer","pixel-8",'
+        + '"clipboard value"]'
     var methodsMatch = actionMatches(
       acceptAction, ["share", "accept", root.exactShareId],
     ) && actionMatches(
@@ -100,6 +108,10 @@ ShellRoot {
       && actionMatches(unpinAction, ["peer", "unpin"])
       && actionMatches(
         sendToAction, ["share", "select", root.exactShareId, "pixel-8"],
+      )
+      && actionMatches(
+        targetedSendAction,
+        ["send", "--peer", "pixel-8", "clipboard value"],
       )
       && actionMatches(openAction, ["visibility", "open"])
       && actionMatches(closeAction, ["visibility", "close"])
@@ -142,14 +154,14 @@ ShellRoot {
 
   StatusProbe {
     id: ready
-    versionCommand: ["printf", "2"]
+    versionCommand: ["printf", "3"]
     runtimeCommand: ["true"]
     statusCommand: ["printf", root.snapshotJson]
   }
 
   StatusProbe {
     id: unavailable
-    versionCommand: ["printf", "2"]
+    versionCommand: ["printf", "3"]
     runtimeCommand: ["false"]
   }
 
@@ -160,8 +172,14 @@ ShellRoot {
   }
 
   StatusProbe {
+    id: staleV2
+    versionCommand: ["printf", "2"]
+    runtimeCommand: ["true"]
+  }
+
+  StatusProbe {
     id: unsupported
-    versionCommand: ["printf", "3"]
+    versionCommand: ["printf", "4"]
     runtimeCommand: ["true"]
   }
 
@@ -224,6 +242,10 @@ ShellRoot {
     Component.onCompleted: sendTo(root.exactShareId, "pixel-8")
   }
   ActionProbe {
+    id: targetedSendAction
+    Component.onCompleted: submitTo("pixel-8", "clipboard value")
+  }
+  ActionProbe {
     id: stopAction
     Component.onCompleted: stopDiscovery()
   }
@@ -272,6 +294,17 @@ ShellRoot {
       root.secondPasteResult = submit("second-paste") ? "ok" : "busy"
       root.secondPasteRunning = actionBusy
       root.startedBusyPasteCheck = true
+    }
+  }
+
+  BarWidget {
+    id: barWidget
+    visible: false
+    Component.onCompleted: {
+      popupOpen = true
+      root.barPasteCaptured = paste("preview only") === "ok"
+        && clipboardPreview === "preview only"
+        && pasteLatch
     }
   }
 

@@ -21,6 +21,7 @@ const DESTINATION = join(ROOT, "dist", "native");
 const BINARY_NAME = "omarchy-quickshare";
 const EXECUTABLE_MODE = 0o755;
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
+const CONTROL_PROTOCOL = 3;
 
 export function createNativeRelease({
   destination,
@@ -50,7 +51,12 @@ export function createNativeRelease({
     throw new Error("native release version does not match the app package");
   }
   const sha256 = hashFile(binary);
-  const meta = { controlProtocol: 2, sha256, sourceCommit, version };
+  const meta = {
+    controlProtocol: CONTROL_PROTOCOL,
+    sha256,
+    sourceCommit,
+    version,
+  };
   writeFileSync(
     join(destination, "version.json"),
     `${JSON.stringify(meta, null, 2)}\n`,

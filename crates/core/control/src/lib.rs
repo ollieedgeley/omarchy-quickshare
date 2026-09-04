@@ -21,4 +21,4 @@ pub mod request;
 pub mod response;
 
 /// The local control protocol version implemented by this crate.
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;

@@ -269,36 +269,75 @@ impl Envelope {
     #[must_use]
     #[inline]
     pub fn submit_file(path: &Path) -> Self {
+        Self::submit_file_for(path, None)
+    }
+
+    /// Builds one file submission with an optional selected peer.
+    fn submit_file_for(path: &Path, peer_id: Option<&str>) -> Self {
         Self {
             request: Request::SubmitFile {
                 path: path.to_path_buf(),
+                peer_id: peer_id.map(String::from),
             },
             version: PROTOCOL_VERSION,
         }
+    }
+
+    /// Creates a request to submit one file to a selected peer.
+    #[must_use]
+    #[inline]
+    pub fn submit_file_to_peer(path: &Path, peer_id: &str) -> Self {
+        Self::submit_file_for(path, Some(peer_id))
     }
 
     /// Creates a request to submit plain text for sharing.
     #[must_use]
     #[inline]
     pub fn submit_text(text: &str) -> Self {
+        Self::submit_text_for(text, None)
+    }
+
+    /// Builds one text submission with an optional selected peer.
+    fn submit_text_for(text: &str, peer_id: Option<&str>) -> Self {
         Self {
             request: Request::SubmitText {
+                peer_id: peer_id.map(String::from),
                 text: String::from(text),
             },
             version: PROTOCOL_VERSION,
         }
     }
 
+    /// Creates a request to submit plain text to a selected peer.
+    #[must_use]
+    #[inline]
+    pub fn submit_text_to_peer(text: &str, peer_id: &str) -> Self {
+        Self::submit_text_for(text, Some(peer_id))
+    }
+
     /// Creates a request to submit a URL for sharing.
     #[must_use]
     #[inline]
     pub fn submit_url(url: &str) -> Self {
+        Self::submit_url_for(url, None)
+    }
+
+    /// Builds one URL submission with an optional selected peer.
+    fn submit_url_for(url: &str, peer_id: Option<&str>) -> Self {
         Self {
             request: Request::SubmitUrl {
+                peer_id: peer_id.map(String::from),
                 url: String::from(url),
             },
             version: PROTOCOL_VERSION,
         }
+    }
+
+    /// Creates a request to submit a URL to a selected peer.
+    #[must_use]
+    #[inline]
+    pub fn submit_url_to_peer(url: &str, peer_id: &str) -> Self {
+        Self::submit_url_for(url, Some(peer_id))
     }
 
     /// Creates a request to clear the single pinned peer.
@@ -425,14 +464,23 @@ pub enum Request {
     SubmitFile {
         /// The path to the file on the local machine.
         path: PathBuf,
+        /// Peer selected atomically with this submission.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer_id: Option<String>,
     },
     /// Submit plain text for an outbound share.
     SubmitText {
+        /// Peer selected atomically with this submission.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer_id: Option<String>,
         /// The exact text supplied by the user.
         text: String,
     },
     /// Submit a URL for an outbound share.
     SubmitUrl {
+        /// Peer selected atomically with this submission.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer_id: Option<String>,
         /// The exact URL supplied by the user.
         url: String,
     },

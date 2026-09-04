@@ -1,0 +1,1 @@
+{"response":{"type":"snapshot","snapshot":{"active_share":{"attachment":{"type":"text","value":"hello from Omarchy"},"direction":"outbound","id":1,"id_string":"1","phase":"waiting_for_peer","total_bytes":18,"transferred_bytes":0},"discovery":"searching"}},"version":3}

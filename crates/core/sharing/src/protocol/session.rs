@@ -241,7 +241,7 @@ fn connection_options(
     rng.fill_bytes(&mut metadata_key);
     let endpoint_info = EndpointInfo::new(
         0,
-        5,
+        3,
         salt,
         metadata_key,
         Some(endpoint_name),

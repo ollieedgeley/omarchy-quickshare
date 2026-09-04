@@ -130,9 +130,26 @@ pub(super) fn request(
     content: &str,
     current_directory: &Path,
 ) -> io::Result<RequestEnvelope> {
+    classified_request(content, current_directory, None)
+}
+
+/// Classifies one `send` argument and targets one observed peer.
+pub(super) fn request_for_peer(
+    content: &str,
+    current_directory: &Path,
+    peer_id: &str,
+) -> io::Result<RequestEnvelope> {
+    classified_request(content, current_directory, Some(peer_id))
+}
+
+fn classified_request(
+    content: &str,
+    current_directory: &Path,
+    peer_id: Option<&str>,
+) -> io::Result<RequestEnvelope> {
     if let Some(path) = file_uri_path(content)? {
         if path.is_dir() || path.is_file() {
-            return Ok(RequestEnvelope::submit_file(&path));
+            return Ok(file_request(&path, peer_id));
         }
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -141,10 +158,31 @@ pub(super) fn request(
     }
     let path = current_directory.join(content);
     if path.is_dir() || path.is_file() {
-        return Ok(RequestEnvelope::submit_file(&path));
+        return Ok(file_request(&path, peer_id));
     }
     if content.starts_with("http://") || content.starts_with("https://") {
-        return Ok(RequestEnvelope::submit_url(content));
+        return Ok(url_request(content, peer_id));
     }
-    Ok(RequestEnvelope::submit_text(content))
+    Ok(text_request(content, peer_id))
+}
+
+fn file_request(path: &Path, peer_id: Option<&str>) -> RequestEnvelope {
+    peer_id.map_or_else(
+        || RequestEnvelope::submit_file(path),
+        |peer_id| RequestEnvelope::submit_file_to_peer(path, peer_id),
+    )
+}
+
+fn text_request(text: &str, peer_id: Option<&str>) -> RequestEnvelope {
+    peer_id.map_or_else(
+        || RequestEnvelope::submit_text(text),
+        |peer_id| RequestEnvelope::submit_text_to_peer(text, peer_id),
+    )
+}
+
+fn url_request(url: &str, peer_id: Option<&str>) -> RequestEnvelope {
+    peer_id.map_or_else(
+        || RequestEnvelope::submit_url(url),
+        |peer_id| RequestEnvelope::submit_url_to_peer(url, peer_id),
+    )
 }

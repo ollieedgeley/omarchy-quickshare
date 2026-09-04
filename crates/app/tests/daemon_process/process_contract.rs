@@ -19,16 +19,16 @@ use quickshare_sharing::{
 
 const BINARY: &str = env!("CARGO_BIN_EXE_omarchy-quickshare");
 const ACTIVE_TEXT_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v2/active-text-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v3/active-text-snapshot-response.jsonl"
 );
 const ACTIVE_FILE_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v2/active-file-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v3/active-file-snapshot-response.jsonl"
 );
 const ACTIVE_URL_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v2/active-url-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v3/active-url-snapshot-response.jsonl"
 );
 const CANCELLED_TEXT_SNAPSHOT: &str = include_str!(concat!(
-    "../../../../tests/fixtures/control/v2/",
+    "../../../../tests/fixtures/control/v3/",
     "cancelled-text-snapshot-response.jsonl"
 ));
 const RETRY_DELAY: Duration = Duration::from_millis(5);
@@ -143,7 +143,8 @@ fn isolated_command(runtime_directory: &Path, arguments: &[&str]) -> Command {
         .env("XDG_CONFIG_HOME", runtime_directory.join("config"))
         .env("XDG_DOWNLOAD_DIR", runtime_directory.join("received"))
         .env("XDG_RUNTIME_DIR", runtime_directory)
-        .env("OMARCHY_QUICKSHARE_DISABLE_NOTIFICATIONS", "1");
+        .env("OMARCHY_QUICKSHARE_DISABLE_NOTIFICATIONS", "1")
+        .env("OMARCHY_QUICKSHARE_TEST_LAN_PORT", "0");
     if arguments.contains(&"simulate") {
         let _ = command.env("OMARCHY_QUICKSHARE_ALLOW_SIMULATION", "1");
     }
@@ -255,7 +256,7 @@ fn daemon_reports_submitted_url_in_its_public_snapshot() {
 
     let submission_result = run_command(
         fixture.runtime_directory(),
-        &["send", "https://example.test/share"],
+        &["https://example.test/share"],
     );
     assert!(submission_result.is_ok(), "failed to submit URL");
     let snapshot_result =
@@ -376,6 +377,27 @@ fn simulated_daemon_runs_an_outbound_transfer_with_a_pinned_peer() {
     );
     let stop_result = fixture.stop();
     assert!(stop_result.is_ok(), "failed to stop simulated daemon");
+}
+
+#[test]
+fn targeted_submission_uses_clicked_peer_instead_of_the_pin() {
+    let root = runtime_fixture_path();
+    let fixture_result = DaemonProcessFixture::start_simulated(root);
+    assert!(fixture_result.is_ok(), "failed to start simulated daemon");
+    let Ok(fixture) = fixture_result else {
+        return;
+    };
+    assert_command(fixture.runtime_directory(), &["peer", "pin", "galaxy-tab"]);
+    assert_command(
+        fixture.runtime_directory(),
+        &["send", "--peer", "pixel-8", "current clipboard"],
+    );
+    assert_active_peer(
+        fixture.runtime_directory(),
+        "pixel-8",
+        Phase::AwaitingPeerConsent,
+    );
+    assert!(fixture.stop().is_ok(), "failed to stop simulated daemon");
 }
 
 #[test]
@@ -568,7 +590,11 @@ fn assert_command(runtime_directory: &Path, arguments: &[&str]) {
     let Ok(output) = result else {
         return;
     };
-    assert!(output.status.success(), "command rejected: {arguments:?}");
+    assert!(
+        output.status.success(),
+        "command rejected: {arguments:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn assert_endpoint_modes(

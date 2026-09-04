@@ -188,6 +188,15 @@ QtObject {
     return runAction(["send", String(value)])
   }
 
+  function submitTo(peerId, value) {
+    return runAction([
+      "send",
+      "--peer",
+      String(peerId),
+      String(value),
+    ])
+  }
+
   function setVisibility(shouldOpen) {
     runAction([
       "visibility",

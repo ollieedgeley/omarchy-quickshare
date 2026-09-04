@@ -8,8 +8,8 @@ use quickshare_wire::sharing::{
 use rand_core::{OsRng, RngCore as _};
 
 pub(in crate::protocol) fn account_free_encryption() -> Frame {
-    let mut signed_data = vec![0; 32];
-    let mut secret_id_hash = vec![0; 32];
+    let mut signed_data = vec![0; 72];
+    let mut secret_id_hash = vec![0; 6];
     OsRng.fill_bytes(&mut signed_data);
     OsRng.fill_bytes(&mut secret_id_hash);
     frame(
@@ -32,7 +32,7 @@ pub(in crate::protocol) fn account_free_result() -> Frame {
         V1Frame {
             paired_key_result: Some(PairedKeyResultFrame {
                 status: Some(paired_key_result_frame::Status::Unable as i32),
-                os_type: None,
+                os_type: Some(0),
             }),
             ..Default::default()
         },
@@ -193,5 +193,37 @@ fn frame(kind: v1_frame::FrameType, v1: V1Frame) -> Frame {
             r#type: Some(kind as i32),
             ..v1
         }),
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    clippy::inline_modules,
+    reason = "Focused wire-shape assertions stay beside private frame builders"
+)]
+mod tests {
+    use super::{account_free_encryption, account_free_result};
+
+    #[test]
+    fn account_free_frames_match_google_field_shape() {
+        let encryption = account_free_encryption()
+            .v1
+            .and_then(|frame| frame.paired_key_encryption)
+            .expect("paired-key encryption");
+        assert_eq!(
+            encryption.signed_data.as_deref().map(<[u8]>::len),
+            Some(72)
+        );
+        assert_eq!(
+            encryption.secret_id_hash.as_deref().map(<[u8]>::len),
+            Some(6)
+        );
+
+        let result = account_free_result()
+            .v1
+            .and_then(|frame| frame.paired_key_result)
+            .expect("paired-key result");
+        assert_eq!(result.os_type, Some(0));
     }
 }

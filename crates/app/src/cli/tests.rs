@@ -6,7 +6,9 @@ use std::process;
 use quickshare_control::request::Envelope as RequestEnvelope;
 use tracing_subscriber::EnvFilter;
 
-use super::{Command, LogLevel, env_filter_from, parse, request, run};
+use super::{
+    Command, LogLevel, env_filter_from, parse, request, request_for_peer, run,
+};
 
 fn fixture(name: &str) -> PathBuf {
     let root = std::env::temp_dir()
@@ -117,6 +119,15 @@ fn plain_text_and_urls_keep_existing_classification() {
 }
 
 #[test]
+fn peer_targeted_text_keeps_content_and_recipient_together() {
+    let cwd = PathBuf::from("/tmp");
+    assert_eq!(
+        request_for_peer("hello", &cwd, "pixel-8").expect("targeted text"),
+        RequestEnvelope::submit_text_to_peer("hello", "pixel-8")
+    );
+}
+
+#[test]
 fn help_does_not_become_submit_text() {
     let mut output = Vec::new();
     let result = run(
@@ -175,6 +186,15 @@ fn send_and_control_commands_map_to_the_command_tree() {
     assert!(matches!(direct.into_command(), Command::Send { .. }));
     let send = parse(["send", "hello"]).expect("send");
     assert!(matches!(send.into_command(), Command::Send { .. }));
+    let targeted =
+        parse(["send", "--peer", "pixel-8", "hello"]).expect("targeted send");
+    assert!(matches!(
+        targeted.into_command(),
+        Command::Send {
+            content,
+            peer: Some(peer),
+        } if content == "hello" && peer == "pixel-8"
+    ));
     let health = parse(["health"]).expect("health");
     assert!(matches!(health.into_command(), Command::Health));
     let status = parse(["status", "--json"]).expect("status");

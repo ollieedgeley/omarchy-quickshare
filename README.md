@@ -31,6 +31,13 @@ Simulation starts `daemon --simulate` with fake peers.
 `make install-local` restores the normal service. Uninstall stops and
 removes the user unit and binary. It leaves the config file in place.
 
+Inbound phone transfers use TCP port `53318`. If a host firewall is active,
+allow that port only from the trusted LAN. For UFW:
+
+```sh
+sudo ufw allow from <lan-subnet> to any port 53318 proto tcp
+```
+
 Put `~/.local/bin` on `PATH` if it is not already.
 
 Local release artifacts, still unpublished:
@@ -126,17 +133,19 @@ omarchy-quickshare send ./photos
 ```
 
 Successful submits print `Share N queued.` If a peer is pinned, the share
-selects that peer. If not, discovery starts and you pick one.
+selects that peer. If not, discovery starts and you pick one. `--peer` keeps
+clipboard content and the clicked recipient in one request.
 
 ```sh
 omarchy-quickshare discover start
+omarchy-quickshare send --peer pixel-8 "current clipboard"
 omarchy-quickshare peer pin galaxy-tab
 omarchy-quickshare share select 1 pixel-8
 omarchy-quickshare discover stop
 ```
 
-Live LAN file transfer starts with `share select` once the peer has a LAN
-route. Simulated mode can drive consent without that step.
+Live LAN file transfer starts after a peer is selected and has a LAN route.
+Simulated mode can drive consent without that step.
 
 Receive:
 
@@ -162,7 +171,7 @@ omarchy-quickshare health
 omarchy-quickshare status --json
 ```
 
-`protocol-version` prints `2`. That is the only control protocol this tree
+`protocol-version` prints `3`. That is the only control protocol this tree
 speaks. `status --json` writes one versioned envelope. A transferring file
 looks like:
 
@@ -186,7 +195,7 @@ looks like:
       "visibility": "closed"
     }
   },
-  "version": 2
+  "version": 3
 }
 ```
 

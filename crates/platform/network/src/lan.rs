@@ -8,7 +8,7 @@ use crate::{Advertisement, DnsSd, Registration};
 pub struct Listener {
     /// Bound operating-system listener.
     listener: TcpListener,
-    /// Cached ephemeral port assigned during construction.
+    /// Cached bound port assigned during construction.
     port: u16,
 }
 
@@ -34,10 +34,23 @@ impl Listener {
     /// Returns an error when the socket cannot bind or become nonblocking.
     #[inline]
     pub fn bind_any() -> io::Result<Self> {
-        let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+        Self::bind(0)
+    }
+
+    /// Binds the requested port on every local IPv4 interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the socket cannot bind or become nonblocking.
+    #[inline]
+    pub fn bind(port: u16) -> io::Result<Self> {
+        let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))?;
         listener.set_nonblocking(true)?;
-        let port = listener.local_addr()?.port();
-        Ok(Self { listener, port })
+        let bound_port = listener.local_addr()?.port();
+        Ok(Self {
+            listener,
+            port: bound_port,
+        })
     }
 
     /// Returns the bound local TCP port.

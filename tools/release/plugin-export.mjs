@@ -16,6 +16,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const SOURCE = join(ROOT, "packaging", "omarchy-plugin");
 const DESTINATION = join(ROOT, "dist", "omarchy-plugin");
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
+const CONTROL_PROTOCOL = 3;
 const PLUGIN_FILES = [
   "AttachmentBadge.qml",
   "BarWidget.qml",
@@ -44,7 +45,10 @@ function writeRelease(destination, sourceCommit, artifacts) {
   const path = join(destination, "release.json");
   const release = JSON.parse(readFileSync(path, "utf8"));
   release.sourceCommit = sourceCommit;
-  release.controlProtocol = { maximum: 2, minimum: 2 };
+  release.controlProtocol = {
+    maximum: CONTROL_PROTOCOL,
+    minimum: CONTROL_PROTOCOL,
+  };
   const nativeArtifact = {
     version: artifacts.nativeVersion ?? release.nativeArtifact.version,
     published: Boolean(artifacts.nativeSha256),

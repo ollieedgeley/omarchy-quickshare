@@ -113,9 +113,23 @@ impl Daemon {
         }
     }
 
+    #[cfg(test)]
     /// Queues one validated attachment and reports its stable identifier.
     fn queue_attachment(&mut self, attachment: Attachment) -> u64 {
-        let share_id = self.sharing.queue_outbound(attachment).get();
+        self.queue_attachment_for(attachment, false)
+    }
+
+    fn queue_attachment_for(
+        &mut self,
+        attachment: Attachment,
+        ignore_pin: bool,
+    ) -> u64 {
+        let share_id = if ignore_pin {
+            self.sharing.queue_outbound_unpinned(attachment)
+        } else {
+            self.sharing.queue_outbound(attachment)
+        }
+        .get();
         tracing::info!(
             share_id,
             direction = "outbound",
@@ -130,6 +144,24 @@ impl Daemon {
             tracing::error!(stage = "discover", "daemon cannot continue");
         }
         share_id
+    }
+    fn queued_response(
+        &mut self,
+        share_id: u64,
+        peer_id: Option<&str>,
+    ) -> ResponseEnvelope {
+        let selected = if let Some(peer_id) = peer_id {
+            self.select_peer(share_id, peer_id)
+        } else {
+            let _started = self.start_pinned_outbound(share_id);
+            true
+        };
+        if selected {
+            return ResponseEnvelope::queued(share_id);
+        }
+        let _cancelled = self.sharing.cancel(share_id);
+        self.outbound.finish(share_id);
+        ResponseEnvelope::not_found()
     }
 
     /// Returns the number of outbound shares owned by the endpoint.
@@ -159,20 +191,25 @@ impl Daemon {
                 Ok(ResponseEnvelope::snapshot(self.sharing.snapshot()))
             }
             Request::Status => Ok(ResponseEnvelope::ready()),
-            Request::SubmitFile { path } => {
-                Ok(ResponseEnvelope::queued(self.queue_file(path)?))
+            Request::SubmitFile { path, peer_id } => {
+                let share_id = self.queue_file(path, peer_id.as_deref())?;
+                Ok(self.queued_response(share_id, peer_id.as_deref()))
             }
-            Request::SubmitText { text } => {
-                let share_id = self.queue_attachment(Attachment::text(text));
+            Request::SubmitText { peer_id, text } => {
+                let share_id = self.queue_attachment_for(
+                    Attachment::text(text),
+                    peer_id.is_some(),
+                );
                 self.outbound.remember_text(share_id, text.clone());
-                let _started = self.start_pinned_outbound(share_id);
-                Ok(ResponseEnvelope::queued(share_id))
+                Ok(self.queued_response(share_id, peer_id.as_deref()))
             }
-            Request::SubmitUrl { url } => {
-                let share_id = self.queue_attachment(Attachment::url(url));
+            Request::SubmitUrl { peer_id, url } => {
+                let share_id = self.queue_attachment_for(
+                    Attachment::url(url),
+                    peer_id.is_some(),
+                );
                 self.outbound.remember_url(share_id, url.clone());
-                let _started = self.start_pinned_outbound(share_id);
-                Ok(ResponseEnvelope::queued(share_id))
+                Ok(self.queued_response(share_id, peer_id.as_deref()))
             }
             Request::SimulateFail { .. }
             | Request::SimulateIncomingFile { .. }

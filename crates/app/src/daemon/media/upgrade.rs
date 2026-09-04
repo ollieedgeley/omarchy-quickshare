@@ -19,7 +19,7 @@ use quickshare_sharing::ProtocolError;
 
 use crate::daemon::observations::protocol_reason;
 
-use super::{ENDPOINT_NAME, attempt_order, medium_name};
+use super::{attempt_order, endpoint_name, medium_name};
 
 /// Deadline used to join or own an upgraded Wi-Fi medium.
 const UPGRADE_DEADLINE: Duration = Duration::from_secs(8);
@@ -267,7 +267,7 @@ fn offer_hosted_path(
         password: Some(String::from("quickshare")),
         port: Some(port),
         ssid: Some(String::from("DIRECT-OQSR")),
-        device_name: Some(String::from(ENDPOINT_NAME)),
+        device_name: Some(String::from(endpoint_name())),
         pin: None,
     };
     let medium = match candidate.medium() {

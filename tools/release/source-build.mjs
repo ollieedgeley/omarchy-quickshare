@@ -23,6 +23,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const DESTINATION = join(ROOT, "dist", "source");
 const SPARSE_DESTINATION = join(ROOT, "dist", "sparse");
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
+const CONTROL_PROTOCOL = 3;
 
 export function hashFile(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -85,7 +86,12 @@ export function createSourceBundle({
   runCommand("tar", ["-czf", archive, "-C", tree, "."]);
   const version = readAppVersion(root);
   const sha256 = hashFile(archive);
-  const meta = { controlProtocol: 2, sha256, sourceCommit, version };
+  const meta = {
+    controlProtocol: CONTROL_PROTOCOL,
+    sha256,
+    sourceCommit,
+    version,
+  };
   writeFileSync(
     join(destination, "version.json"),
     `${JSON.stringify(meta, null, 2)}\n`,

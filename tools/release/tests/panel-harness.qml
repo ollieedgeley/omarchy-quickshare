@@ -253,14 +253,32 @@ ShellRoot {
     panel.snapshot = {"visibility": "closed"}
     panel.actionError = "<b>Native command failed</b>"
     var nativeError = rendersPlainText(panel, "<b>Native command failed</b>")
-    var idleInstruction = rendersPlainText(
+    var staleInstructionAbsent = !rendersPlainText(
       panel,
       "Paste while this panel is open to choose a nearby device.",
     )
     panel.toggleVisibility()
-    return complete && failed && nativeError && idleInstruction
+    return complete && failed && nativeError && staleInstructionAbsent
       && root.dismissedShare === root.exactShareId
       && panel.viewState === "idle" && root.visibilityRequested
+  }
+
+  function verifyClipboardBrowsing() {
+    root.selectedPeer = ""
+    root.selectedShare = "stale"
+    panel.clipboardPreview = "copied text"
+    panel.showPasteBadge = true
+    panel.snapshot = {
+      "discovery": "searching",
+      "peers": [{"id": "pixel-8", "name": "Pixel 8", "pinned": false}],
+    }
+    var browsing = panel.viewState === "peer_choice"
+      && rendersPlainText(panel, "copied text")
+    panel.choosePeer("pixel-8")
+    panel.cancel()
+    return browsing && root.selectedPeer === "pixel-8"
+      && root.selectedShare === ""
+      && root.stopDiscoveryRequests === 2
   }
 
   function verifyPanel() {
@@ -269,7 +287,10 @@ ShellRoot {
     var consent = verifyConsentAndWaiting()
     var transfer = verifyTransfer()
     var terminal = verifyTerminalAndIdle()
-    if (attachments && discovery && consent && transfer && terminal) {
+    var browsing = verifyClipboardBrowsing()
+    var valid = attachments && discovery && consent
+      && transfer && terminal && browsing
+    if (valid) {
       console.log("HARNESS_OK")
       Qt.quit()
       return

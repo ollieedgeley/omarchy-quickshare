@@ -10,19 +10,20 @@ BarWidget {
 
   property bool popupOpen: false
   property bool popoutSwitchClosing: false
-  property bool pastePending: false
-  property bool pasteActionComplete: false
   property bool pasteLatch: false
-  property string pasteShareId: ""
+  property bool pasteActionComplete: false
+  property bool pastePending: false
+  property string clipboardAction: ""
+  property string clipboardOutput: ""
+  property string clipboardPeerId: ""
+  property string clipboardPreview: ""
   property real iconOpacity: 1.0
   readonly property bool opened: popupOpen
   readonly property bool transferring:
     status.activeShare.phase === "transferring"
-  readonly property bool showPasteBadge:
-    pasteLatch
-    && pasteShareId.length > 0
-    && String((status.endpointSnapshot.active_share || {}).id_string || "")
-      === pasteShareId
+  readonly property bool showPasteBadge: pasteLatch
+  readonly property bool clipboardBusy:
+    clipboardUriProbe.running || clipboardTextProbe.running
   readonly property bool protocolReady: status.protocolState === "ready"
   readonly property color foreground:
     bar ? bar.foreground : Color.foreground
@@ -33,7 +34,7 @@ BarWidget {
 
   function open() {
     popupOpen = true
-    status.refresh()
+    if (!status.discover()) status.refresh()
   }
 
   function close() {
@@ -59,20 +60,51 @@ BarWidget {
 
   function clearPasteBadge() {
     pasteLatch = false
-    pasteShareId = ""
+    clipboardPreview = ""
   }
 
-  function submit(value) {
-    if (!status.submit(value)) return false
-    clearPasteBadge()
-    pastePending = true
-    pasteActionComplete = false
-    pasteLatch = opened
+  function captureClipboard(value) {
+    if (String(value).length === 0) {
+      status.actionError = "Clipboard is empty or unavailable."
+      return false
+    }
+    clipboardPreview = String(value)
+    pasteLatch = true
+    status.actionError = ""
+    return true
+  }
+
+  function finishClipboard(value) {
+    var action = clipboardAction
+    var peerId = clipboardPeerId
+    clipboardAction = ""
+    clipboardPeerId = ""
+    clipboardOutput = ""
+    if (!captureClipboard(value)) return
+    if (action === "send") {
+      if (!status.submitTo(peerId, value)) {
+        status.actionError = "Quick Share is busy. Try again."
+        return
+      }
+      clearPasteBadge()
+    }
+  }
+
+  function readClipboard(action, peerId) {
+    if (clipboardBusy) return false
+    clipboardAction = action
+    clipboardPeerId = String(peerId || "")
+    clipboardOutput = ""
+    clipboardUriProbe.running = true
     return true
   }
 
   function paste(value) {
-    return submit(value) ? "ok" : "busy"
+    if (opened) return captureClipboard(value) ? "ok" : "empty"
+    if (!status.submit(value)) return "busy"
+    pasteActionComplete = false
+    pastePending = true
+    return "ok"
   }
 
   implicitWidth: button.implicitWidth
@@ -80,43 +112,60 @@ BarWidget {
 
   StatusProbe { id: status }
 
+  Shortcut {
+    enabled: root.opened
+    sequence: StandardKey.Paste
+    onActivated: root.readClipboard("preview", "")
+  }
+
+  property Process clipboardUriProbe: Process {
+    command: ["wl-paste", "--type", "text/uri-list", "--no-newline"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.clipboardOutput = String(text || "")
+    }
+    onExited: function(exitCode) {
+      if (exitCode === 0 && root.clipboardOutput.length > 0) {
+        root.finishClipboard(root.clipboardOutput)
+        return
+      }
+      root.clipboardOutput = ""
+      root.clipboardTextProbe.running = true
+    }
+  }
+
+  property Process clipboardTextProbe: Process {
+    command: ["wl-paste", "--no-newline"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.clipboardOutput = String(text || "")
+    }
+    onExited: function(exitCode) {
+      root.finishClipboard(exitCode === 0 ? root.clipboardOutput : "")
+    }
+  }
+
   Connections {
     target: status
 
     function onActionFinished(succeeded) {
-      if (!root.pastePending) {
-        root.pasteActionComplete = false
-        return
-      }
+      if (!root.pastePending) return
       if (succeeded) {
         root.pasteActionComplete = true
         return
       }
       root.pastePending = false
       root.pasteActionComplete = false
-      root.clearPasteBadge()
       root.open()
     }
 
     function onEndpointSnapshotChanged() {
+      if (!root.pastePending || !root.pasteActionComplete) return
       var share = status.endpointSnapshot.active_share || ({})
-      var shareId = String(share.id_string || "")
       var phase = String(share.phase || "")
-      if (root.pastePending && root.pasteActionComplete) {
-        root.pastePending = false
-        root.pasteActionComplete = false
-        if (root.pasteLatch) root.pasteShareId = shareId
-        if (phase === "waiting_for_peer") root.open()
-      }
-      if (root.pastePending) return
-      if (shareId.length === 0
-          || phase === "completed"
-          || phase === "cancelled"
-          || phase === "rejected"
-          || phase === "failed"
-          || (root.pasteShareId.length > 0 && shareId !== root.pasteShareId)) {
-        root.clearPasteBadge()
-      }
+      root.pastePending = false
+      root.pasteActionComplete = false
+      if (phase === "waiting_for_peer") root.open()
     }
   }
 
@@ -249,6 +298,7 @@ BarWidget {
           snapshot: status.endpointSnapshot
           actionError: status.actionError
           actionBusy: status.actionBusy
+          clipboardPreview: root.clipboardPreview
           showPasteBadge: root.showPasteBadge
           onAcceptRequested: function(shareId) {
             status.accept(shareId)
@@ -257,7 +307,7 @@ BarWidget {
             status.cancel(shareId)
           }
           onDismissRequested: function(shareId) {
-            if (root.pasteShareId === shareId) root.clearPasteBadge()
+            root.clearPasteBadge()
             status.dismiss(shareId)
           }
           onDiscoverRequested: function() {
@@ -267,7 +317,8 @@ BarWidget {
             status.stopDiscovery()
           }
           onPeerSelected: function(shareId, peerId) {
-            status.sendTo(shareId, peerId)
+            if (shareId.length > 0) status.sendTo(shareId, peerId)
+            else root.readClipboard("send", peerId)
           }
           onPinRequested: function(peerId, shouldPin) {
             if (shouldPin) status.pin(peerId)

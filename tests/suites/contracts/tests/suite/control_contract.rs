@@ -16,18 +16,18 @@ mod tests {
     use omarchy_quickshare::daemon::Daemon;
 
     const REQUEST_FIXTURE: &str = include_str!(
-        "../../../../fixtures/control/v2/submit-text-request.jsonl"
+        "../../../../fixtures/control/v3/submit-text-request.jsonl"
     );
     const RESPONSE_FIXTURE: &str = include_str!(
-        "../../../../fixtures/control/v2/submit-text-queued-response.jsonl"
+        "../../../../fixtures/control/v3/submit-text-queued-response.jsonl"
     );
     const URL_REQUEST_FIXTURE: &str = include_str!(
-        "../../../../fixtures/control/v2/submit-url-request.jsonl"
+        "../../../../fixtures/control/v3/submit-url-request.jsonl"
     );
     const STATUS_REQUEST_FIXTURE: &str =
-        include_str!("../../../../fixtures/control/v2/status-request.jsonl");
+        include_str!("../../../../fixtures/control/v3/status-request.jsonl");
     const STATUS_RESPONSE_FIXTURE: &str = include_str!(
-        "../../../../fixtures/control/v2/status-ready-response.jsonl"
+        "../../../../fixtures/control/v3/status-ready-response.jsonl"
     );
     const EXPECTED_OUTPUT: &[u8] = b"Share 1 queued.\n";
     static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
@@ -205,7 +205,7 @@ mod tests {
         let path = fixture.root.join(".").to_string_lossy().into_owned();
         let expected = format!(
             "{{\"request\":{{\"type\":\"submit_file\",\"path\":\"{path}\"}},\
-             \"version\":2}}\n"
+             \"version\":3}}\n"
         );
         assert_submission_from(".", &fixture.root, &expected);
         let cleanup_result = fixture.cleanup();
@@ -227,7 +227,7 @@ mod tests {
         let path = fixture.path.to_string_lossy();
         let expected = format!(
             "{{\"request\":{{\"type\":\"submit_file\",\"path\":\"{path}\"}},\
-             \"version\":2}}\n"
+             \"version\":3}}\n"
         );
         assert_submission_from("photo.jpg", &fixture.root, &expected);
         let cleanup_result = fixture.cleanup();
@@ -247,7 +247,7 @@ mod tests {
         );
 
         assert!(result.is_ok(), "version query failed: {result:?}");
-        assert_eq!(output, b"2\n");
+        assert_eq!(output, b"3\n");
     }
 
     #[test]

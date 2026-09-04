@@ -48,7 +48,11 @@ impl Daemon {
     }
 
     /// Queues a file or a ZIP of a folder and remembers temporary archives.
-    pub(super) fn queue_file(&mut self, path: &Path) -> io::Result<u64> {
+    pub(super) fn queue_file(
+        &mut self,
+        path: &Path,
+        peer_id: Option<&str>,
+    ) -> io::Result<u64> {
         if path.is_dir() {
             let archive_path = archive::zip_directory(path)?;
             let source = OutboundSource::open(&archive_path)
@@ -57,10 +61,10 @@ impl Daemon {
                 &source.name().to_string_lossy(),
                 source.len(),
             );
-            let share_id = self.queue_attachment(attachment);
+            let share_id =
+                self.queue_attachment_for(attachment, peer_id.is_some());
             self.outbound.remember_file(share_id, source);
             self.outbound.remember_archive(share_id, archive_path);
-            let _started = self.start_pinned_outbound(share_id);
             return Ok(share_id);
         }
         let source = OutboundSource::open(path).map_err(io::Error::other)?;
@@ -68,9 +72,8 @@ impl Daemon {
             &source.name().to_string_lossy(),
             source.len(),
         );
-        let share_id = self.queue_attachment(attachment);
+        let share_id = self.queue_attachment_for(attachment, peer_id.is_some());
         self.outbound.remember_file(share_id, source);
-        let _started = self.start_pinned_outbound(share_id);
         Ok(share_id)
     }
 

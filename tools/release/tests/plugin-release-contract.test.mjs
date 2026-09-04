@@ -45,7 +45,8 @@ const QUICKSHELL_VERSION_PATTERN = /^Quickshell 0\.3\.1\b/u;
 const SUCCESS_PATTERN = /HARNESS_OK/u;
 const SOURCE_COMMIT = "a".repeat(COMMIT_LENGTH);
 const SHA256_LENGTH = 64;
-const REJECTED_PROTOCOL = 3;
+const CONTROL_PROTOCOL = 3;
+const REJECTED_PROTOCOL = 4;
 const EXPECTED_FILES = [
   "AttachmentBadge.qml",
   "BarWidget.qml",
@@ -74,12 +75,17 @@ const FORBIDDEN_QML_COMMAND_PATTERN =
   /\b(?:bluetoothctl|cargo|curl|nmcli|pacman|paru|rsync|scp|wget|yay)\b/u;
 const IPC_PASTE_FUNCTION_PATTERN =
   /function paste\(value: string\): string \{/u;
-const ONE_VALUE_ACTION_PATTERN = /runAction\(\["send", String\(value\)\]\)/u;
+const TARGETED_SEND_ACTION_PATTERN =
+  /runAction\(\[\s*"send",\s*"--peer",[\s\S]*String\(value\)/u;
 const PASTE_FORWARD_PATTERN = /return root\.paste\(value\)/u;
-const PEER_CHOICE_OPEN_PATTERN =
-  /if \(phase === "waiting_for_peer"\) root\.open\(\)/u;
-const PINNED_AUTO_START_OPEN_PATTERN =
-  /phase === "awaiting_peer_consent"\) root\.open\(\)/u;
+const OPEN_DISCOVERY_PATTERN =
+  /function open\(\) \{[\s\S]{0,200}status\.discover\(\)/u;
+const CLIPBOARD_READ_PATTERN =
+  /command: \["wl-paste", "--type", "text\/uri-list", "--no-newline"\]/u;
+const CLOSED_PASTE_SUBMIT_PATTERN =
+  /if \(opened\)[\s\S]{0,120}status\.submit\(value\)/u;
+const STALE_PASTE_INSTRUCTION =
+  /Paste while this panel is open to choose a nearby device\./u;
 const SUBMIT_FUNCTION_PATTERN = /function submit\(value\) \{/u;
 const KEYBOARD_PANEL_PATTERN = /\bKeyboardPanel\s*\{/u;
 const POPUP_CARD_PATTERN = /\bPopupCard\s*\{/u;
@@ -123,10 +129,10 @@ function prepareHarness(root) {
     `#!/usr/bin/env bash
 set -Eeuo pipefail
 case "\${1-}" in
-  protocol-version) printf '2' ;;
+  protocol-version) printf '3' ;;
   health) ;;
   status)
-    printf '%s' '{"response":{"type":"snapshot","snapshot":{}},"version":2}'
+    printf '%s' '{"response":{"type":"snapshot","snapshot":{}},"version":3}'
     ;;
   *)
     printf '%s\\n' "$*" >> "\${QUICKSHARE_TEST_LOG:?}"
@@ -178,13 +184,16 @@ test("plugin export contains only its allowlisted release files", () => {
     readFileSync(join(destination, "release.json"), "utf8"),
   );
   assert.equal(release.sourceCommit, SOURCE_COMMIT);
-  assert.deepEqual(release.controlProtocol, { minimum: 2, maximum: 2 });
+  assert.deepEqual(release.controlProtocol, {
+    minimum: CONTROL_PROTOCOL,
+    maximum: CONTROL_PROTOCOL,
+  });
   assert.equal(release.nativeArtifact.published, false);
   assert.equal("sha256" in release.nativeArtifact, false);
   assert.equal("sourceBuild" in release, false);
 });
 
-test("plugin QML delegates one-value paste and native transfer work", () => {
+test("plugin QML captures clipboard data and targets a selected peer", () => {
   for (const file of QML_FILES) {
     const source = readFileSync(join(PLUGIN_SOURCE, file), "utf8");
     assert.ok(
@@ -197,17 +206,21 @@ test("plugin QML delegates one-value paste and native transfer work", () => {
   const bar = readFileSync(join(PLUGIN_SOURCE, "BarWidget.qml"), "utf8");
   assert.match(bar, IPC_PASTE_FUNCTION_PATTERN);
   assert.match(bar, PASTE_FORWARD_PATTERN);
-  assert.match(bar, PEER_CHOICE_OPEN_PATTERN);
-  assert.doesNotMatch(bar, PINNED_AUTO_START_OPEN_PATTERN);
+  assert.match(bar, OPEN_DISCOVERY_PATTERN);
+  assert.match(bar, CLIPBOARD_READ_PATTERN);
+  assert.match(bar, CLOSED_PASTE_SUBMIT_PATTERN);
   assert.equal((bar.match(FADE_DURATION_PATTERN) ?? []).length, 2);
   assert.match(bar, KEYBOARD_PANEL_PATTERN);
   assert.doesNotMatch(bar, POPUP_CARD_PATTERN);
   assert.match(bar, SHOW_PASTE_BADGE_PATTERN);
   assert.match(bar, ACTION_BUSY_PATTERN);
 
+  const panel = readFileSync(join(PLUGIN_SOURCE, "SharePanel.qml"), "utf8");
+  assert.doesNotMatch(panel, STALE_PASTE_INSTRUCTION);
+
   const status = readFileSync(join(PLUGIN_SOURCE, "StatusProbe.qml"), "utf8");
   assert.match(status, SUBMIT_FUNCTION_PATTERN);
-  assert.match(status, ONE_VALUE_ACTION_PATTERN);
+  assert.match(status, TARGETED_SEND_ACTION_PATTERN);
 });
 
 test("plugin export omits checksums when native artifacts are absent", () => {
@@ -241,7 +254,10 @@ test("plugin export omits checksums when native artifacts are absent", () => {
   assert.equal(release.sourceCommit, SOURCE_COMMIT);
   assert.equal(release.nativeArtifact.published, false);
   assert.equal("sha256" in release.nativeArtifact, false);
-  assert.deepEqual(release.controlProtocol, { minimum: 2, maximum: 2 });
+  assert.deepEqual(release.controlProtocol, {
+    minimum: CONTROL_PROTOCOL,
+    maximum: CONTROL_PROTOCOL,
+  });
   assert.equal("sourceBuild" in release, false);
 });
 
@@ -267,7 +283,10 @@ test("plugin export records native and source-build checksums", () => {
   assert.equal(release.nativeArtifact.version, "0.0.0");
   assert.equal(release.nativeArtifact.sha256, nativeSha256);
   assert.equal(release.nativeArtifact.published, true);
-  assert.deepEqual(release.controlProtocol, { minimum: 2, maximum: 2 });
+  assert.deepEqual(release.controlProtocol, {
+    minimum: CONTROL_PROTOCOL,
+    maximum: CONTROL_PROTOCOL,
+  });
   assert.equal(release.sourceBuild.sha256, sourceSha256);
 });
 

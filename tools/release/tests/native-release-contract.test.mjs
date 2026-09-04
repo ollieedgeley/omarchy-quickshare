@@ -19,6 +19,7 @@ import { hashFile } from "../source-build.mjs";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const temporaryDirectories = new Set();
 const COMMIT_LENGTH = 40;
+const CONTROL_PROTOCOL = 3;
 const SOURCE_COMMIT = "b".repeat(COMMIT_LENGTH);
 const PKGVER_PATTERN = /^pkgver=0\.0\.0$/mu;
 const ARCH_BINARY_PATTERN = /usr\/bin\/omarchy-quickshare/u;
@@ -107,7 +108,7 @@ test("native release strips the locked binary and records its checksum", () => {
   );
   assert.equal(checksums, `${result.sha256}  omarchy-quickshare\n`);
   assert.deepEqual(meta, {
-    controlProtocol: 2,
+    controlProtocol: CONTROL_PROTOCOL,
     sha256: result.sha256,
     sourceCommit: SOURCE_COMMIT,
     version: result.version,

@@ -45,22 +45,23 @@ explicit `send` form is equivalent.
 ```sh
 omarchy-quickshare "hello from Omarchy"
 omarchy-quickshare ./photo.jpg
-omarchy-quickshare send https://example.test/share
+omarchy-quickshare "https://example.test/share"
 ```
 
 ## Shell actions and keybindings
 
-The plugin uses Omarchy shell IPC, so a keybinding can open the panel without
-starting a share:
+Opening the panel starts discovery immediately. Nearby devices appear as they
+are found. Clicking a device reads the current clipboard and submits its text,
+URL, or single copied file/folder to that exact peer.
 
 ```sh
 omarchy shell io.github.ollieedgeley.omarchy-quickshare open
 ```
 
-To share the current text, URL, or single copied file/folder, pass the
-clipboard value to the plugin's `paste` action. A visible pinned peer is chosen
-by the daemon; otherwise the panel opens and keeps adding peers as they are
-discovered.
+The plugin also accepts Omarchy's universal-paste IPC action. If the panel is
+open, this only shows an attachment badge; clicking a device reads the current
+clipboard. If the panel is closed, the action submits immediately to a visible
+pinned peer or opens the chooser while discovery continues.
 
 ```sh
 sh -c 'value=$(wl-paste --type text/uri-list --no-newline 2>/dev/null || wl-paste --no-newline); omarchy shell io.github.ollieedgeley.omarchy-quickshare paste "$value"'

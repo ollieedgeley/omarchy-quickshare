@@ -2,7 +2,7 @@
 
 use core::net::SocketAddrV4;
 use core::time::Duration;
-use std::io;
+use std::{fs, io, sync::LazyLock};
 
 use quickshare_bluez::{
     Adapter, BleCandidate, ClassicCandidate, QUICK_SHARE_BLE_UUID,
@@ -24,8 +24,15 @@ use crate::daemon::observations::{
 pub(crate) const ENDPOINT_ID: &str = "OQSR";
 /// Four-byte form of [`ENDPOINT_ID`] used by LAN instance labels.
 pub(crate) const ENDPOINT_ID_BYTES: [u8; 4] = *b"OQSR";
-/// User-visible endpoint name used by every SharingSession identity.
-pub(crate) const ENDPOINT_NAME: &str = "Omarchy";
+/// Fallback used when the host does not expose a usable system hostname.
+const FALLBACK_ENDPOINT_NAME: &str = "Omarchy";
+/// Google advertisement value for a laptop-class endpoint.
+const LAPTOP_DEVICE_TYPE: u8 = 3;
+static ENDPOINT_NAME: LazyLock<String> = LazyLock::new(|| {
+    normalized_endpoint_name(
+        fs::read_to_string("/etc/hostname").ok().as_deref(),
+    )
+});
 
 /// Bluetooth connect budget after a candidate is already stored.
 const BLUETOOTH_CONNECT: Duration = Duration::from_secs(8);
@@ -370,19 +377,31 @@ fn connection_options(
     let mut metadata_key = [0; 14];
     rng.fill_bytes(&mut salt);
     rng.fill_bytes(&mut metadata_key);
+    let endpoint_name = endpoint_name();
     let endpoint_info = EndpointInfo::new(
         0,
-        5,
+        LAPTOP_DEVICE_TYPE,
         salt,
         metadata_key,
-        Some(ENDPOINT_NAME),
+        Some(endpoint_name),
         None,
         Vec::new(),
     )?
     .encode();
-    Ok(ConnectionOptions::new(ENDPOINT_ID, ENDPOINT_NAME)
+    Ok(ConnectionOptions::new(ENDPOINT_ID, endpoint_name)
         .with_endpoint_info(endpoint_info)
         .with_medium(medium))
+}
+
+/// Returns the stable host name shown to nearby peers.
+pub(crate) fn endpoint_name() -> &'static str {
+    &ENDPOINT_NAME
+}
+
+fn normalized_endpoint_name(raw: Option<&str>) -> String {
+    raw.map(str::trim)
+        .filter(|name| !name.is_empty() && u8::try_from(name.len()).is_ok())
+        .map_or_else(|| String::from(FALLBACK_ENDPOINT_NAME), String::from)
 }
 
 fn missing_adapter() -> ProtocolError {
@@ -433,4 +452,19 @@ fn trace_handshake<T>(
 
 fn bluetooth_error(error: quickshare_bluez::Error) -> ProtocolError {
     ProtocolError::Io(io::Error::other(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalized_endpoint_name;
+
+    #[test]
+    fn endpoint_name_uses_trimmed_hostname_or_fallback() {
+        assert_eq!(
+            normalized_endpoint_name(Some("omarchy-macbook\n")),
+            "omarchy-macbook"
+        );
+        assert_eq!(normalized_endpoint_name(Some(" \n")), "Omarchy");
+        assert_eq!(normalized_endpoint_name(None), "Omarchy");
+    }
 }

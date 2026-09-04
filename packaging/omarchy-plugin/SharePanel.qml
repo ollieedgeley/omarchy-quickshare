@@ -10,6 +10,7 @@ Item {
   property string actionError: ""
   property bool actionBusy: false
   property bool showPasteBadge: false
+  property string clipboardPreview: ""
 
   readonly property var activeShare: snapshot.active_share || ({})
   readonly property string activeShareId: String(activeShare.id_string || "")
@@ -34,7 +35,13 @@ Item {
   }
   readonly property string phase: String(activeShare.phase || "")
   readonly property string viewState: {
-    if (!hasActiveShare) return "idle"
+    if (!hasActiveShare) {
+      return snapshot.discovery === "searching"
+          || snapshot.discovery === "timed_out"
+          || orderedPeers.length > 0
+        ? "peer_choice"
+        : "idle"
+    }
     if (phase === "waiting_for_peer") return "peer_choice"
     if (phase === "awaiting_local_consent") return "consent"
     if (phase === "awaiting_peer_consent") return "waiting"
@@ -42,10 +49,20 @@ Item {
     return "terminal"
   }
   readonly property bool visibilityOpen: snapshot.visibility === "open"
-  readonly property string previewText: attachment.type === "file"
-    ? String(attachment.name || attachment.value || "File")
-    : String(attachment.value || attachment.name || "Unknown attachment")
-  readonly property string previewIcon: attachmentIcon(attachment)
+  readonly property var previewAttachment: hasActiveShare
+    ? attachment
+    : ({
+      type: clipboardPreview.startsWith("file:")
+        ? "file"
+        : (clipboardPreview.startsWith("http") ? "url" : "text"),
+      value: clipboardPreview,
+    })
+  readonly property string previewText: hasActiveShare
+    ? (attachment.type === "file"
+      ? String(attachment.name || attachment.value || "File")
+      : String(attachment.value || attachment.name || "Unknown attachment"))
+    : clipboardPreview
+  readonly property string previewIcon: attachmentIcon(previewAttachment)
   readonly property string peerName: String((activeShare.peer || {}).name || "")
   readonly property string consentPin:
     String(activeShare.verification_code || "")
@@ -144,7 +161,10 @@ Item {
     }
   }
   function cancel() {
-    if (!actionBusy && hasActiveShare && viewState !== "terminal") {
+    if (actionBusy || viewState === "terminal") return
+    if (!hasActiveShare && viewState === "peer_choice") {
+      stopDiscoveryRequested()
+    } else if (hasActiveShare) {
       cancelRequested(activeShareId)
     }
   }
@@ -296,15 +316,6 @@ Item {
             textFormat: Text.PlainText
           }
         }
-      }
-      Text {
-        width: parent.width
-        text: "Paste while this panel is open to choose a nearby device."
-        color: Color.muted
-        font.family: Style.font.family
-        font.pixelSize: Style.font.body
-        wrapMode: Text.WordWrap
-        textFormat: Text.PlainText
       }
       PanelSeparator {
         foreground: Color.foreground
