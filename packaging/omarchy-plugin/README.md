@@ -37,6 +37,17 @@ make install-local-simulation
 
 Running `make install-local` again restores the normal service mode.
 
+## Terminal sharing
+
+Pass one text value, URL, file, or folder directly to the native CLI. The
+explicit `send` form is equivalent.
+
+```sh
+omarchy-quickshare "hello from Omarchy"
+omarchy-quickshare ./photo.jpg
+omarchy-quickshare send https://example.test/share
+```
+
 ## Shell actions and keybindings
 
 The plugin uses Omarchy shell IPC, so a keybinding can open the panel without

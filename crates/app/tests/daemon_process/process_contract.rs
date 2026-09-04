@@ -142,7 +142,8 @@ fn isolated_command(runtime_directory: &Path, arguments: &[&str]) -> Command {
         .env("HOME", runtime_directory.join("home"))
         .env("XDG_CONFIG_HOME", runtime_directory.join("config"))
         .env("XDG_DOWNLOAD_DIR", runtime_directory.join("received"))
-        .env("XDG_RUNTIME_DIR", runtime_directory);
+        .env("XDG_RUNTIME_DIR", runtime_directory)
+        .env("OMARCHY_QUICKSHARE_DISABLE_NOTIFICATIONS", "1");
     if arguments.contains(&"simulate") {
         let _ = command.env("OMARCHY_QUICKSHARE_ALLOW_SIMULATION", "1");
     }
@@ -219,10 +220,8 @@ fn daemon_reports_submitted_text_in_its_public_snapshot() {
         return;
     };
 
-    let submission_result = run_command(
-        fixture.runtime_directory(),
-        &["send", "hello from Omarchy"],
-    );
+    let submission_result =
+        run_command(fixture.runtime_directory(), &["hello from Omarchy"]);
     assert!(submission_result.is_ok(), "failed to submit text");
     let Ok(submission) = submission_result else {
         return;

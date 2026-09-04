@@ -1,9 +1,12 @@
 //! Freedesktop desktop notifications for terminal shares.
 
 use std::collections::HashMap;
+use std::env;
 use std::io;
 
 use zbus::zvariant::Value;
+
+const DISABLE_NOTIFICATIONS: &str = "OMARCHY_QUICKSHARE_DISABLE_NOTIFICATIONS";
 
 /// Terminal notification classes that never include share content.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -28,7 +31,7 @@ pub(super) const fn summary(kind: NotifyKind) -> &'static str {
 
 /// Best-effort session-bus notification with no peer, file, or content body.
 pub(super) fn notify(kind: NotifyKind) {
-    if cfg!(test) {
+    if cfg!(test) || env::var_os(DISABLE_NOTIFICATIONS).is_some() {
         return;
     }
     let _result = send(summary(kind));

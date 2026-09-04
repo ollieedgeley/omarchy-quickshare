@@ -6,7 +6,6 @@ use std::io::{BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
-use clap::Parser;
 use quickshare_control::PROTOCOL_VERSION;
 use quickshare_control::codec::{read_response, write_request, write_response};
 use quickshare_control::request::Envelope as RequestEnvelope;
@@ -422,7 +421,7 @@ fn socket_path() -> io::Result<PathBuf> {
 /// Returns an error when arguments, environment, or local control are invalid.
 #[inline]
 pub fn run_from_environment() -> io::Result<()> {
-    let cli = match Cli::try_parse() {
+    let cli = match parse(env::args_os().skip(1)) {
         Ok(cli) => cli,
         Err(error) => error.exit(),
     };

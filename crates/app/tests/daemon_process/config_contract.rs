@@ -76,6 +76,7 @@ fn command(root: &Path, arguments: &[&str]) -> Command {
         .env("HOME", root)
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_RUNTIME_DIR", root)
+        .env("OMARCHY_QUICKSHARE_DISABLE_NOTIFICATIONS", "1")
         .env_remove("XDG_DOWNLOAD_DIR");
     command
 }

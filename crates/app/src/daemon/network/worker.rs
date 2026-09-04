@@ -58,6 +58,40 @@ pub(super) fn run_worker(
     let mut seen = HashSet::new();
     let mut mdns_browse_ok = None;
     let mut advertisement_decode_failed = false;
+    macro_rules! process_command {
+        ($command:expr) => {
+            handle_command(
+                $command,
+                &dns_sd,
+                &mut bluetooth,
+                manager.as_ref(),
+                &events,
+                &cancellation,
+                &mut discovering,
+                &mut restart_at,
+                &mut inbound,
+                &mut visibility,
+                &mut discovery,
+                &mut browser,
+                &mut seen,
+            )
+        };
+    }
+    macro_rules! receive_inbound {
+        ($stream:expr, $medium:expr) => {
+            receive_share(
+                $stream,
+                $medium,
+                &commands,
+                &events,
+                &cancellation,
+                &receive_directory,
+                consent_deadline,
+                manager.as_ref(),
+                &mut |command| process_command!(command),
+            )
+        };
+    }
     loop {
         if discovering && (browser.is_none() || Instant::now() >= restart_at) {
             restart_browser(
@@ -98,65 +132,13 @@ pub(super) fn run_worker(
             .as_ref()
             .and_then(|listener| listener.accept().ok().flatten())
         {
-            let event = receive_share(
-                stream,
-                Medium::WifiLan,
-                &commands,
-                &events,
-                &cancellation,
-                &receive_directory,
-                consent_deadline,
-                manager.as_ref(),
-                &mut |command| {
-                    handle_command(
-                        command,
-                        &dns_sd,
-                        &mut bluetooth,
-                        manager.as_ref(),
-                        &events,
-                        &cancellation,
-                        &mut discovering,
-                        &mut restart_at,
-                        &mut inbound,
-                        &mut visibility,
-                        &mut discovery,
-                        &mut browser,
-                        &mut seen,
-                    )
-                },
-            );
+            let event = receive_inbound!(stream, Medium::WifiLan);
             if events.send(event).is_err() {
                 break;
             }
         }
         if let Some((stream, medium)) = visibility.accept_next() {
-            let event = receive_share(
-                stream,
-                medium,
-                &commands,
-                &events,
-                &cancellation,
-                &receive_directory,
-                consent_deadline,
-                manager.as_ref(),
-                &mut |command| {
-                    handle_command(
-                        command,
-                        &dns_sd,
-                        &mut bluetooth,
-                        manager.as_ref(),
-                        &events,
-                        &cancellation,
-                        &mut discovering,
-                        &mut restart_at,
-                        &mut inbound,
-                        &mut visibility,
-                        &mut discovery,
-                        &mut browser,
-                        &mut seen,
-                    )
-                },
-            );
+            let event = receive_inbound!(stream, medium);
             if events.send(event).is_err() {
                 break;
             }
@@ -166,21 +148,7 @@ pub(super) fn run_worker(
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
-        if !handle_command(
-            command,
-            &dns_sd,
-            &mut bluetooth,
-            manager.as_ref(),
-            &events,
-            &cancellation,
-            &mut discovering,
-            &mut restart_at,
-            &mut inbound,
-            &mut visibility,
-            &mut discovery,
-            &mut browser,
-            &mut seen,
-        ) {
+        if !process_command!(command) {
             break;
         }
     }
