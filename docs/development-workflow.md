@@ -169,6 +169,9 @@ duplication. Generated code, immutable fixtures, dependency trees, caches,
 and lock data are excluded. Knip enables every configured issue category at
 error severity and includes entry-point exports. Vulture reports only
 100%-confidence dead code. Ruff retains all stable and preview rules.
+The full analysis aggregate delegates to separately timed general, clang-tidy,
+and Cppcheck child gates. This keeps each directly runnable gate within the
+60-second contract without dropping analyzers from `make verify`.
 
 Cppcheck enables all checkers, exhaustive analysis, inconclusive findings, and
 a nonzero error exit across every project C++ translation unit and standalone
@@ -219,7 +222,7 @@ Contract fixtures cover staged-mirror reuse, exact index bytes, partial Rust sta
 
 ## Pre-push verification and build
 
-The pre-push hook reads every ref update supplied by Git and resolves the unique local commit tips that will be sent. Deleted refs need no verification. For each remaining unique tree, create an isolated checkout of that exact commit and run:
+The pre-push hook reads every ref update supplied by Git and resolves the unique local commit tips that will be sent. Deleted refs need no verification. For each remaining unique tree, reuse a stable isolated checkout of that exact commit and run:
 
 ```text
 make verify
@@ -229,6 +232,9 @@ make build
 Run `make build` only if `make verify` succeeds. A verification failure must prevent the build from starting. A build failure must abort the push.
 
 Do not verify or build a dirty working tree and assume it represents the pushed commit. Reuse safe build caches, but keep source, generated outputs, build artifacts, and reports tied to the commit SHA. Dependencies and tool versions remain locked. A missing tool or dependency fails the hook rather than silently skipping a gate.
+
+The hook serializes access with a kernel lock at `.cache/gates/pre-push.lock` and reuses one ignored worktree at `.cache/gates/pre-push-worktree`. Before verifying each commit, it discards changes and untracked outputs from the prior run, then checks out the exact commit in detached mode. The stable source root preserves valid Cargo fingerprints between pushes; the lock prevents concurrent hooks from mutating that checkout.
+
 Fail fast from cheapest to costliest: check all formatting and static lint or
 environment definitions before compiler-backed Rust diagnostics, then run
 fast in-process tests before oracle, simulator, and virtual-system tests.
@@ -241,7 +247,7 @@ The hook stops on the first failed child gate and aborts the push. A successful 
 
 Creating, renaming, or splitting any hook child gate updates the root `AGENTS.md` in the same commit. Its `Fast feedback gates` section gives the exact Make command and the feature or failure class it checks in no more than two lines.
 
-The initial hook change must include contract fixtures for staged-only behavior, mirror/index setup and reuse, partial staging rejection, additions, deletions, renames, the first commit, CodeGraph stale and error fallbacks, LSP fallbacks, dependent-only candidate selection, Rust test-path recognition, unit and doc-test fallback, Cargo target mapping, multiple pushed refs, an exact-commit checkout, semantic commit validation, hook failure propagation, verification failure preventing a build, and build failure preventing a push.
+The initial hook change must include contract fixtures for staged-only behavior, mirror/index setup and reuse, partial staging rejection, additions, deletions, renames, the first commit, CodeGraph stale and error fallbacks, LSP fallbacks, dependent-only candidate selection, Rust test-path recognition, unit and doc-test fallback, Cargo target mapping, multiple pushed refs, locked stable exact-commit worktree reuse, semantic commit validation, hook failure propagation, verification failure preventing a build, and build failure preventing a push.
 
 ## Deferred setup
 

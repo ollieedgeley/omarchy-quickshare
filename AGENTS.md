@@ -91,8 +91,10 @@ Ask for named files or symbols when source is deferred. Treat returned source as
   installs or validates every pinned cross-language analyzer.
 - `make lint-python` checks all Python tooling; `make lint-javascript` runs
   every current non-deprecated ESLint core rule as an error.
-- `make lint-analysis` runs strict jscpd, cargo-machete, Knip, Ruff, Vulture,
-  clang-tidy, and Cppcheck checks with findings treated as errors.
+- `make lint-analysis-general` runs strict jscpd, cargo-machete, Knip, Ruff, and
+  Vulture checks.
+- `make lint-analysis-clang-tidy` and `make lint-analysis-cppcheck` isolate
+  strict native analysis; `make lint-analysis` combines all three groups.
 - `make lint-ast` runs the complete error-only ast-grep scan;
   `make test-ast-rules` checks its rule fixtures and snapshots.
 - `make lint-docs` checks Markdown policy; `make lint-structure-app` and
@@ -128,7 +130,8 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make oracle-reference-provision` builds the pinned Google oracle; `make test-oracle-reference` checks UKEY2 both ways.
 - `make test-oracle-{bluetooth,ble,lan,hotspot,wifi-direct}` checks one pinned Google simulated connection family.
 - `make test-oracle-bwu-handler` checks selected Bluetooth, Wi-Fi Direct, and LAN simulated semantics; `make test-oracle-bwu-fallback` checks selected fallback semantics, not cross-peer transfer interoperability.
-- `make test-rust` runs workspace Rust tests; `make test-tooling` runs quality-gate and hook contract tests.
+- `make test-rust` runs workspace Rust tests; `make test-tooling` runs
+  quality-gate and hook contract tests.
 - `make test-plugin-release` checks the allowlisted plugin export and every
   native availability state through Quick Shell.
 - `make test-local-install` checks local binary installation and the systemd
@@ -147,7 +150,9 @@ Ask for named files or symbols when source is deferred. Treat returned source as
   Sharing frame and trace with the pinned corpus.
 - `make test-android-nearby` runs the experimental AVD admission control; it is not a compatibility gate until it passes repeatably.
 - `make verify-app` gives application-only feedback; `make verify-tooling` checks development tooling without starting environments.
-- `make pre-commit` checks the staged snapshot and its affected tests; `make pre-push` verifies and builds each pushed commit.
+- `make pre-commit` checks the staged snapshot and its affected tests;
+  `make pre-push` serializes exact-commit verification and builds in a stable
+  ignored worktree.
 - `make verify` runs the complete local quality suite; `make build` performs the locked workspace build after verification.
 
 ## Maintaining this guide

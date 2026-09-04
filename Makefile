@@ -23,6 +23,7 @@ DOCUMENT_FILES = $(REPOSITORY_FILES) -- '*.md'
 .PHONY: format format-app format-tooling format-docs
 .PHONY: format-check format-app-check format-tooling-check format-docs-check
 .PHONY: lint-rust lint-javascript lint-python lint-ast lint-analysis lint-docs
+.PHONY: lint-analysis-general lint-analysis-clang-tidy lint-analysis-cppcheck
 .PHONY: lint-structure lint-structure-app lint-structure-tooling
 .PHONY: lint-sources lint-oracle lint-nearshare lint-nearby-linux
 .PHONY: lint-diverse-lan lint-proxies
@@ -129,116 +130,88 @@ format-docs-check: ## Check repository documentation formatting.
 
 check: ## Compiler-check the complete Cargo workspace.
 	@$(TIMEOUT) cargo check --workspace --all-targets --all-features --locked
-
 lint-javascript: ## Run every current ESLint core rule as an error.
 	@$(TIMEOUT) $(ESLINT) . --max-warnings 0 --no-warn-ignored
-
 lint-python: ## Run every enabled Ruff rule against Python tooling.
 	@$(TIMEOUT) $(RUFF) check .
-
 lint-ast: ## Run the full error-only ast-grep scan.
 	@$(TIMEOUT) node tools/gates/ast-schema.mjs
 	@$(TIMEOUT) $(AST_GREP) scan --config sgconfig.yml --error \
 		--min-severity=error --max-results=1 --inspect=summary .
-
-lint-analysis: ## Run strict duplication and unused-code analyzers.
-	@$(TIMEOUT) node tools/gates/lib/analysis.mjs --full
-
+lint-analysis: lint-analysis-general lint-analysis-clang-tidy \
+	lint-analysis-cppcheck
+lint-analysis: ## Run every strict cross-language analyzer.
+lint-analysis-general: ## Run duplication and managed-language analyzers.
+	@$(TIMEOUT) node tools/gates/lib/analysis.mjs --full-general
+lint-analysis-clang-tidy: ## Run strict clang-tidy analysis.
+	@$(TIMEOUT) node tools/gates/lib/analysis.mjs --full-clang-tidy
+lint-analysis-cppcheck: ## Run strict Cppcheck analysis.
+	@$(TIMEOUT) node tools/gates/lib/analysis.mjs --full-cppcheck
 lint-docs: ## Run Markdown policy checks.
 	@$(TIMEOUT) $(MARKDOWNLINT) '**/*.md' '#node_modules' '#target' '#.cache'
-
 lint-structure: lint-structure-app lint-structure-tooling
 lint-structure: ## Check all structure contracts.
-
 lint-structure-app: ## Check application structure contracts.
 	@$(TIMEOUT) node tools/gates/structure.mjs app
-
 lint-structure-tooling: ## Check tooling structure contracts.
 	@$(TIMEOUT) node tools/gates/structure.mjs tooling
-
 lint-sources: ## Validate immutable source definitions.
 	@$(TIMEOUT) node tools/gates/sources.mjs check
-
 lint-oracle: ## Validate pinned oracle image inputs without starting Docker.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs validate
-
 lint-nearshare: ## Validate the pinned diverse peer without starting Docker.
 	@$(TIMEOUT) node tests/environments/nearshare/environment.mjs validate
-
 lint-nearby-linux: ## Validate Google-derived Linux peer inputs statically.
 	@$(TIMEOUT) node tests/environments/nearby-linux/environment.mjs validate
-
 lint-diverse-lan: ## Validate isolated diverse-LAN interop inputs statically.
 	@$(TIMEOUT) node tests/environments/diverse-lan/environment.mjs validate
-
 lint-proxies: ## Validate pinned proxy environment inputs without starting it.
 	@$(TIMEOUT) node tests/environments/proxies/environment.mjs validate
-
 lint-dbus: ## Validate pinned private D-Bus environment inputs.
 	@$(TIMEOUT) node tests/environments/bluez/dbus-environment.mjs validate
-
 lint-bluetooth-radio: ## Validate the pinned BlueZ and Bumble radio image.
 	@$(TIMEOUT) node tests/environments/bluez/radio-environment.mjs validate
-
 lint-network: ## Validate pinned virtual Wi-Fi environment inputs.
 	@$(TIMEOUT) node tests/environments/network/environment.mjs validate
-
 lint-android: ## Validate pinned Android SDK, probe, and AVD inputs.
 	@$(TIMEOUT) node tests/environments/android/environment.mjs validate
-
 test-rust: ## Run complete workspace Rust tests and doc tests.
 	@$(TIMEOUT) cargo test --workspace --all-targets --all-features --locked
 	@$(TIMEOUT) cargo test --workspace --doc --all-features --locked
 
 test-contracts: ## Run shared transfer scenarios against fast test doubles.
 	@$(TIMEOUT) cargo test -p quickshare-contract-tests --test suite --locked
-
 test-tooling: ## Run quality-gate and hook contract tests.
 	@$(TIMEOUT) npm run test:tooling
-
 test-plugin-release: ## Check the plugin export and native status states.
 	@QUICKSHELL=$(QUICKSHELL) $(TIMEOUT) node --test \
 		tools/release/tests/plugin-release-contract.test.mjs
-
 test-local-install: ## Check local binary and systemd-user-service installation.
 	@$(TIMEOUT) node --test tools/release/tests/local-install-contract.test.mjs
-
 install-local: ## Build, install, and start the local user service.
 	@node tools/release/local-install.mjs
-
 install-local-simulation: ## Install the local service with simulated peers.
 	@node tools/release/local-install.mjs --simulate
-
 uninstall-local: ## Stop and remove the local user service without root.
 	@node tools/release/local-install.mjs --uninstall
-
 plugin-export: ## Create the validated local plugin Git repository.
 	@node tools/release/plugin-export.mjs
-
 release-native: ## Build the stripped native release artifact.
 	@node tools/release/native-release.mjs
-
 release-source: ## Build the allowlisted source-build bundle.
 	@node tools/release/source-build.mjs bundle
-
 release-sparse: ## Materialize the allowlisted Git sparse-checkout tree.
 	@node tools/release/source-build.mjs sparse
-
 release-arch: release-native ## Package the native Arch artifact and PKGBUILD.
 	@node tools/release/arch-package.mjs
-
 release: release-native release-source release-sparse release-arch plugin-export
 release: ## Produce native, source, sparse, Arch, and plugin artifacts.
-
 test-source-build: ## Check source-build path sets and clean-build closure.
 	@$(TIMEOUT) node --test tools/release/tests/source-build-contract.test.mjs
-
 test-native-release: ## Check native checksums, version, and Arch paths.
 	@$(TIMEOUT) node --test tools/release/tests/native-release-contract.test.mjs
-
 test-ast-rules: ## Run ast-grep rule fixtures and committed snapshots.
 	@$(TIMEOUT) $(AST_GREP) test --config sgconfig.yml
-
 test-source-cache: ## Hash-check prepared source archives.
 	@$(TIMEOUT) node tools/gates/sources.mjs verify-cache
 
@@ -492,7 +465,8 @@ pre-commit: pre-commit-prepare pre-commit-structure \
 pre-commit: ## Check the staged snapshot and its conservatively affected tests.
 
 pre-push: ## Verify, then build, every exact local commit tip being pushed.
-	@node tools/hooks/pre-push.mjs
+	@mkdir -p .cache/gates
+	@flock --exclusive .cache/gates/pre-push.lock node tools/hooks/pre-push.mjs
 
 include tools/gates/rust-lints.mk
 include tools/gates/environments.mk

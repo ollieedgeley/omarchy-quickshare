@@ -59,7 +59,13 @@ export function duplicationScanPaths(paths, scope = "files") {
   return paths;
 }
 
-export function analyzersForPaths(paths) {
+const FULL_ANALYZER_MODES = new Map([
+  ["--full-general", ["jscpd", "cargo-machete", "knip", "ruff", "vulture"]],
+  ["--full-clang-tidy", ["clang-tidy"]],
+  ["--full-cppcheck", ["cppcheck"]],
+]);
+
+export function analyzersForPaths(paths, requestedAnalyzers) {
   if (!paths.length) {
     return [];
   }
@@ -78,7 +84,11 @@ export function analyzersForPaths(paths) {
   if (paths.some((path) => CPP_EXT.test(path))) {
     tools.push("clang-tidy", "cppcheck");
   }
-  return tools;
+  if (!requestedAnalyzers) {
+    return tools;
+  }
+  const requested = new Set(requestedAnalyzers);
+  return tools.filter((tool) => requested.has(tool));
 }
 
 export function selectDomainPaths(stagedPaths, repositoryPaths) {
@@ -284,20 +294,24 @@ function runNative(paths, options) {
   const fixtureInclude = join(cwd, "tools", "oracle", "sharing-fixtures");
   const peerInclude = join(cwd, "tools", "oracle", "connections-peer");
 
-  runClangTidy(translationUnits, {
-    cwd,
-    fixtureInclude,
-    peerInclude,
-    sourceRoot,
-    tools,
-  });
-  runCppcheck(nativePaths, {
-    cwd,
-    fixtureInclude,
-    peerInclude,
-    scope,
-    tools,
-  });
+  if (tools["clang-tidy"]) {
+    runClangTidy(translationUnits, {
+      cwd,
+      fixtureInclude,
+      peerInclude,
+      sourceRoot,
+      tools,
+    });
+  }
+  if (tools.cppcheck) {
+    runCppcheck(nativePaths, {
+      cwd,
+      fixtureInclude,
+      peerInclude,
+      scope,
+      tools,
+    });
+  }
 }
 
 function runCargoMachete(tools, cargoPackages, cwd) {
@@ -314,14 +328,19 @@ function runCargoMachete(tools, cargoPackages, cwd) {
 
 function runPython(tools, paths, cwd) {
   const pythonPaths = paths.filter((path) => PYTHON_EXT.test(path));
-  if (pythonPaths.length) {
+  if (!pythonPaths.length) {
+    return;
+  }
+  if (tools.ruff) {
     run(tools.ruff, ["check", ...pythonPaths], { cwd });
+  }
+  if (tools.vulture) {
     run(tools.vulture, ["--min-confidence", "100", ...pythonPaths], { cwd });
   }
 }
 function runDuplication(tools, paths, options) {
   const duplicationPaths = duplicationScanPaths(paths, options.scope);
-  if (duplicationPaths.length) {
+  if (tools.jscpd && duplicationPaths.length) {
     run(tools.jscpd, ["--config", ".jscpd.json", ...duplicationPaths], {
       cwd: options.cwd,
     });
@@ -333,13 +352,14 @@ export function runAnalysis(options) {
     cargoPackages = [],
     cwd = process.cwd(),
     paths,
+    requestedAnalyzers,
     scope = "files",
     toolRoot = cwd,
   } = options;
   const existingPaths = unique(
     paths.filter((path) => existsSync(resolve(cwd, path))),
   );
-  const analyzers = analyzersForPaths(existingPaths);
+  const analyzers = analyzersForPaths(existingPaths, requestedAnalyzers);
   if (!analyzers.length) {
     return;
   }
@@ -358,7 +378,7 @@ export function runAnalysis(options) {
     });
   }
   runPython(tools, existingPaths, cwd);
-  if (analyzers.includes("clang-tidy")) {
+  if (analyzers.includes("clang-tidy") || analyzers.includes("cppcheck")) {
     const testEnvironmentCache =
       process.env.TEST_ENV_CACHE ?? join(toolRoot, ".cache", "test-env");
     runNative(existingPaths, {
@@ -380,8 +400,16 @@ const isDirectExecution =
 if (isDirectExecution) {
   const cwd = process.cwd();
   const [mode] = process.argv.slice(2);
-  if (mode !== "--full") {
-    throw new Error("usage: analysis.mjs --full");
+  const requestedAnalyzers = FULL_ANALYZER_MODES.get(mode);
+  if (!requestedAnalyzers) {
+    throw new Error(
+      "usage: analysis.mjs --full-general|--full-clang-tidy|--full-cppcheck",
+    );
   }
-  runAnalysis({ cwd, paths: listProjectFiles(cwd), scope: "full" });
+  runAnalysis({
+    cwd,
+    paths: listProjectFiles(cwd),
+    requestedAnalyzers,
+    scope: "full",
+  });
 }

@@ -23,7 +23,7 @@ import {
 } from "../../hooks/affected.mjs";
 import { validateCommitMessage } from "../../hooks/commit-msg.mjs";
 import { parseNameStatus } from "../../hooks/prepare-staged.mjs";
-import { pushedCommits } from "../../hooks/pre-push.mjs";
+import { pushedCommits, verificationWorktree } from "../../hooks/pre-push.mjs";
 import { parsePackageArgs } from "../rust-lints.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -44,6 +44,9 @@ const CARGO_MACHETE_ENV_PATTERN =
   /CARGO_MACHETE: join\(\s*ROOT,\s*"\.cache",\s*"tools",/u;
 const VULTURE_ENV_PATTERN = /VULTURE: join\(\s*ROOT,\s*"\.cache",\s*"tools",/u;
 const BROAD_CACHE_PATTERN = /TEST_ENV_CACHE: join\(ROOT, "\.cache"\)/u;
+const DISPOSABLE_WORKTREE_PATTERN = /process\.pid|SHORT_HASH_LENGTH/u;
+const PRE_PUSH_LOCK_PATTERN =
+  /flock --exclusive \.cache\/gates\/pre-push\.lock/u;
 const RUFF_ALL_PATTERN = /select = \["ALL"\]/u;
 const RUFF_PREVIEW_PATTERN = /preview = true/u;
 const RUFF_VERSION_PATTERN = /RUFF_VERSION="0\.16\.5"/u;
@@ -241,6 +244,18 @@ test("pre-push selects unique non-deletion tips", () => {
   assert.deepEqual(pushedCommits("", sha), [sha]);
 });
 
+test("pre-push reuses one locked exact-commit worktree", () => {
+  const cache = join(ROOT, ".cache", "gates");
+  assert.equal(verificationWorktree(cache), join(cache, "pre-push-worktree"));
+  const source = readFileSync(
+    join(ROOT, "tools", "hooks", "pre-push.mjs"),
+    "utf8",
+  );
+  assert.doesNotMatch(source, DISPOSABLE_WORKTREE_PATTERN);
+  const makefile = readFileSync(join(ROOT, "Makefile"), "utf8");
+  assert.match(makefile, PRE_PUSH_LOCK_PATTERN);
+});
+
 test(PRE_PUSH_ENVIRONMENT_TEST, () => {
   const source = readFileSync(
     join(ROOT, "tools", "hooks", "pre-push.mjs"),
@@ -273,6 +288,20 @@ test(VERIFY_ORDER_TEST, () => {
   assert.deepEqual(
     positions,
     positions.toSorted((left, right) => left - right),
+  );
+});
+
+test("analysis aggregate isolates timed analyzer groups", () => {
+  const makefile = readFileSync(join(ROOT, "Makefile"), "utf8");
+  assert.deepEqual(
+    makePrerequisites(makefile, "lint-analysis")
+      .split(WHITESPACE_PATTERN)
+      .slice(1),
+    [
+      "lint-analysis-general",
+      "lint-analysis-clang-tidy",
+      "lint-analysis-cppcheck",
+    ],
   );
 });
 
@@ -600,6 +629,12 @@ test("analysis dispatches every strict supported tool", () => {
     ],
   );
   assert.deepEqual(analyzersForPaths(["package.json"]), ["jscpd", "knip"]);
+  assert.deepEqual(analyzersForPaths(["tools/check.cc"], ["clang-tidy"]), [
+    "clang-tidy",
+  ]);
+  assert.deepEqual(analyzersForPaths(["tools/check.cc"], ["cppcheck"]), [
+    "cppcheck",
+  ]);
 });
 
 test("test-only analysis skips jscpd on a tests-only corpus", () => {
