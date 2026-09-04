@@ -168,7 +168,7 @@ mod tests {
             return;
         };
         let mut output = Vec::new();
-        let arguments = vec![String::from(value)];
+        let arguments = vec![String::from("send"), String::from(value)];
 
         let run_result = omarchy_quickshare::run(
             &arguments,
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn control_protocol_version_is_reported_without_an_endpoint() {
-        let arguments = vec![String::from("--protocol-version")];
+        let arguments = vec![String::from("protocol-version")];
         let mut output = Vec::new();
 
         let result = omarchy_quickshare::run(
@@ -257,7 +257,7 @@ mod tests {
         let Ok(fake) = fake_result else {
             return;
         };
-        let arguments = vec![String::from("--runtime-status")];
+        let arguments = vec![String::from("health")];
         let mut output = Vec::new();
 
         let result = omarchy_quickshare::run(
@@ -282,7 +282,8 @@ mod tests {
             return;
         };
         let mut output = Vec::new();
-        let arguments = vec![String::from("hello from Omarchy")];
+        let arguments =
+            vec![String::from("send"), String::from("hello from Omarchy")];
 
         let run_result = omarchy_quickshare::run(
             &arguments,
@@ -309,7 +310,7 @@ mod tests {
             return;
         };
         let mut output = Vec::new();
-        let arguments = vec![String::from("--runtime-status")];
+        let arguments = vec![String::from("health")];
 
         let run_result = omarchy_quickshare::run(
             &arguments,
@@ -354,7 +355,7 @@ mod tests {
         for _request in 0_usize..2_usize {
             let mut output = Vec::new();
             let result = omarchy_quickshare::run(
-                &[String::from("--runtime-status")],
+                &[String::from("health")],
                 Path::new("."),
                 &socket,
                 &mut output,

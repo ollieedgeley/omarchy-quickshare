@@ -6,13 +6,19 @@ use std::io::{BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
+use clap::Parser;
 use quickshare_control::PROTOCOL_VERSION;
 use quickshare_control::codec::{read_response, write_request, write_response};
 use quickshare_control::request::Envelope as RequestEnvelope;
 use quickshare_control::response::{Envelope as ResponseEnvelope, Response};
 use quickshare_sharing::{Direction, EndpointSnapshot, Phase};
 
-use super::classify::{action_request, request};
+use super::args::{
+    Cli, Command, ConfigCommand, DiscoverAction, PeerCommand, ShareCommand,
+    SimulateCommand, VisibilityAction, parse,
+};
+use super::classify::request;
+use super::log;
 use crate::config::Config;
 use crate::daemon;
 
@@ -26,7 +32,7 @@ fn exchange(
             error.kind(),
             format!(
                 "cannot reach the local endpoint at {}: {error}; start it \
-                 with omarchy-quickshare --daemon",
+                 with omarchy-quickshare daemon",
                 socket_path.display()
             ),
         )
@@ -42,15 +48,12 @@ fn exchange(
     }
     Ok(response)
 }
+
 /// Runs one command against the local endpoint.
 ///
 /// # Errors
 ///
 /// Returns an I/O error when local control cannot complete the command.
-#[expect(
-    clippy::pattern_type_mismatch,
-    reason = "Borrowed responses remain available for validation"
-)]
 #[inline]
 pub fn run<Output>(
     arguments: &[String],
@@ -61,57 +64,221 @@ pub fn run<Output>(
 where
     Output: Write,
 {
-    if matches!(arguments, [argument] if argument == "--protocol-version") {
-        return writeln!(output, "{PROTOCOL_VERSION}");
+    match parse(arguments.iter().cloned()) {
+        Ok(cli) => dispatch(cli, current_directory, socket_path, output),
+        Err(error) => clap_result(error, output),
     }
-    if matches!(arguments, [argument] if argument == "--config") {
-        return write!(output, "{}", Config::load()?.to_toml());
-    }
-    if let [flag, key, value] = arguments
-        && flag == "--config-set"
-    {
-        let mut config = Config::load()?;
-        config.set(key, value)?;
-        return writeln!(output, "Config updated.");
-    }
-    if matches!(arguments, [argument] if argument == "--runtime-status") {
-        let response = exchange(socket_path, &RequestEnvelope::status())?;
-        if matches!(response.response(), Response::Ready) {
-            return writeln!(output, "available");
+}
+
+/// Applies a parsed command without contacting the daemon for help or version.
+fn dispatch<Output>(
+    cli: Cli,
+    current_directory: &Path,
+    socket_path: &Path,
+    output: &mut Output,
+) -> io::Result<()>
+where
+    Output: Write,
+{
+    match cli.into_command() {
+        Command::Daemon {
+            simulate,
+            log_level,
+        } => {
+            log::init(log_level);
+            tracing::info!(simulate, "starting daemon");
+            if simulate {
+                daemon::run_simulated(socket_path)
+            } else {
+                daemon::run(socket_path)
+            }
         }
+        command => execute(command, current_directory, socket_path, output),
+    }
+}
+
+fn clap_result<Output>(
+    error: clap::Error,
+    output: &mut Output,
+) -> io::Result<()>
+where
+    Output: Write,
+{
+    if error.use_stderr() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, error));
+    }
+    write!(output, "{error}")
+}
+
+fn execute<Output>(
+    command: Command,
+    current_directory: &Path,
+    socket_path: &Path,
+    output: &mut Output,
+) -> io::Result<()>
+where
+    Output: Write,
+{
+    match command {
+        Command::Config { action } => config_command(action, output),
+        Command::Daemon { .. } => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "daemon commands start locally",
+        )),
+        Command::Discover { action } => write_action(
+            output,
+            exchange(socket_path, &discover_request(action))?.response(),
+        ),
+        Command::Health => {
+            let response = exchange(socket_path, &RequestEnvelope::status())?;
+            if matches!(response.response(), Response::Ready) {
+                return writeln!(output, "available");
+            }
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "endpoint did not confirm readiness",
+            ))
+        }
+        Command::Peer { action } => write_action(
+            output,
+            exchange(socket_path, &peer_request(&action))?.response(),
+        ),
+        Command::ProtocolVersion => writeln!(output, "{PROTOCOL_VERSION}"),
+        Command::Send { content } => {
+            let request = request(&content, current_directory)?;
+            let response = exchange(socket_path, &request)?;
+            match response.response() {
+                Response::Queued { share_id } => {
+                    writeln!(output, "Share {share_id} queued.")
+                }
+                Response::Applied
+                | Response::Cancelled
+                | Response::NotFound
+                | Response::Ready
+                | Response::Snapshot { .. }
+                | _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "endpoint returned an unsupported response",
+                )),
+            }
+        }
+        Command::Share { action } => write_action(
+            output,
+            exchange(socket_path, &share_request(&action))?.response(),
+        ),
+        Command::Simulate { action } => write_action(
+            output,
+            exchange(socket_path, &simulate_request(&action)?)?.response(),
+        ),
+        Command::Status { json } => {
+            let response = exchange(socket_path, &RequestEnvelope::snapshot())?;
+            if json {
+                write_response(output, &response)
+            } else {
+                write_status(output, response.response())
+            }
+        }
+        Command::Visibility { action } => write_action(
+            output,
+            exchange(socket_path, &visibility_request(action))?.response(),
+        ),
+    }
+}
+
+fn config_command<Output>(
+    action: ConfigCommand,
+    output: &mut Output,
+) -> io::Result<()>
+where
+    Output: Write,
+{
+    match action {
+        ConfigCommand::Set { key, value } => {
+            let mut config = Config::load()?;
+            config.set(&key, &value)?;
+            writeln!(output, "Config updated.")
+        }
+        ConfigCommand::Show => write!(output, "{}", Config::load()?.to_toml()),
+    }
+}
+
+const fn discover_request(action: DiscoverAction) -> RequestEnvelope {
+    match action {
+        DiscoverAction::Start => RequestEnvelope::discover(),
+        DiscoverAction::Stop => RequestEnvelope::stop_discovery(),
+    }
+}
+
+fn peer_request(action: &PeerCommand) -> RequestEnvelope {
+    match action {
+        PeerCommand::Pin { peer_id } => RequestEnvelope::pin_peer(peer_id),
+        PeerCommand::Unpin => RequestEnvelope::unpin_peer(),
+    }
+}
+
+fn share_request(action: &ShareCommand) -> RequestEnvelope {
+    match action {
+        ShareCommand::Accept { share_id } => RequestEnvelope::accept(*share_id),
+        ShareCommand::Cancel { share_id } => RequestEnvelope::cancel(*share_id),
+        ShareCommand::Dismiss { share_id } => {
+            RequestEnvelope::dismiss(*share_id)
+        }
+        ShareCommand::Reject { share_id } => RequestEnvelope::reject(*share_id),
+        ShareCommand::Select { share_id, peer_id } => {
+            RequestEnvelope::select_peer(*share_id, peer_id)
+        }
+    }
+}
+
+fn visibility_request(action: VisibilityAction) -> RequestEnvelope {
+    match action {
+        VisibilityAction::Close => RequestEnvelope::close_visibility(),
+        VisibilityAction::Open => RequestEnvelope::open_visibility(),
+    }
+}
+
+fn simulate_request(action: &SimulateCommand) -> io::Result<RequestEnvelope> {
+    if env::var_os("OMARCHY_QUICKSHARE_ALLOW_SIMULATION").is_none() {
         return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "endpoint did not confirm readiness",
+            io::ErrorKind::PermissionDenied,
+            "simulation commands are unavailable; start a simulated daemon \
+             with daemon --simulate and set \
+             OMARCHY_QUICKSHARE_ALLOW_SIMULATION=1",
         ));
     }
-    if matches!(arguments, [argument] if argument == "--status-json") {
-        let response = exchange(socket_path, &RequestEnvelope::snapshot())?;
-        return write_response(output, &response);
-    }
-    if matches!(arguments, [argument] if argument == "--status") {
-        let response = exchange(socket_path, &RequestEnvelope::snapshot())?;
-        return write_status(output, response.response());
-    }
-    if let Some(action) = action_request(arguments)? {
-        let response = exchange(socket_path, &action)?;
-        return write_action(output, response.response());
-    }
-    let request = request(arguments, current_directory)?;
-    let response = exchange(socket_path, &request)?;
-    match response.response() {
-        Response::Queued { share_id } => {
-            writeln!(output, "Share {share_id} queued.")
+    Ok(match action {
+        SimulateCommand::DiscoveryTimeout => {
+            RequestEnvelope::simulate_discovery_timeout()
         }
-        Response::Applied
-        | Response::Cancelled
-        | Response::NotFound
-        | Response::Ready
-        | Response::Snapshot { .. }
-        | _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "endpoint returned an unsupported response",
-        )),
-    }
+        SimulateCommand::Fail { share_id } => {
+            RequestEnvelope::simulate_fail(*share_id)
+        }
+        SimulateCommand::IncomingFile { name, size_bytes } => {
+            RequestEnvelope::simulate_incoming_file(name, *size_bytes)
+        }
+        SimulateCommand::IncomingText { text } => {
+            RequestEnvelope::simulate_incoming_text(text)
+        }
+        SimulateCommand::IncomingUrl { url } => {
+            RequestEnvelope::simulate_incoming_url(url)
+        }
+        SimulateCommand::PeerAccept { share_id } => {
+            RequestEnvelope::simulate_peer_accept(*share_id)
+        }
+        SimulateCommand::PeerLost { peer_id } => {
+            RequestEnvelope::simulate_peer_lost(peer_id)
+        }
+        SimulateCommand::PeerReject { share_id } => {
+            RequestEnvelope::simulate_peer_reject(*share_id)
+        }
+        SimulateCommand::PeerSeen { peer_id, name } => {
+            RequestEnvelope::simulate_peer_seen(peer_id, name)
+        }
+        SimulateCommand::Progress {
+            share_id,
+            transferred_bytes,
+        } => RequestEnvelope::simulate_progress(*share_id, *transferred_bytes),
+    })
 }
 
 /// Writes the user-facing result of a state-changing command.
@@ -132,7 +299,7 @@ where
         Response::NotFound => Err(io::Error::new(
             io::ErrorKind::NotFound,
             "action is not available in the current state; check \
-             --status-json and retry",
+             status --json and retry",
         )),
         Response::Queued { .. }
         | Response::Ready
@@ -236,16 +403,8 @@ const fn terminal_guidance(
     }
 }
 
-/// Runs one command using process arguments and the user runtime directory.
-///
-/// # Errors
-///
-/// Returns an error when arguments, environment, or local control are invalid.
-#[inline]
-pub fn run_from_environment() -> io::Result<()> {
-    let arguments = env::args().skip(1).collect::<Vec<_>>();
-    let current_directory = env::current_dir()?;
-    let socket_path = env::var_os("XDG_RUNTIME_DIR")
+fn socket_path() -> io::Result<PathBuf> {
+    env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .map(|root| root.join("omarchy-quickshare/control.sock"))
         .ok_or_else(|| {
@@ -253,18 +412,22 @@ pub fn run_from_environment() -> io::Result<()> {
                 io::ErrorKind::NotFound,
                 "XDG_RUNTIME_DIR is not available",
             )
-        })?;
-    if arguments.as_slice() == ["--daemon", "--simulate"] {
-        return daemon::run_simulated(&socket_path);
-    }
-    if matches!(arguments.as_slice(), [argument] if argument == "--daemon") {
-        return daemon::run(&socket_path);
-    }
+        })
+}
+
+/// Runs one command using process arguments and the user runtime directory.
+///
+/// # Errors
+///
+/// Returns an error when arguments, environment, or local control are invalid.
+#[inline]
+pub fn run_from_environment() -> io::Result<()> {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => error.exit(),
+    };
+    let current_directory = env::current_dir()?;
+    let socket_path = socket_path()?;
     let stdout = io::stdout();
-    run(
-        &arguments,
-        &current_directory,
-        &socket_path,
-        &mut stdout.lock(),
-    )
+    dispatch(cli, &current_directory, &socket_path, &mut stdout.lock())
 }

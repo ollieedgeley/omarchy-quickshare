@@ -53,11 +53,11 @@ impl DaemonProcessFixture {
     }
 
     fn start(root: PathBuf) -> io::Result<Self> {
-        Self::start_with(root, &["--daemon"])
+        Self::start_with(root, &["daemon"])
     }
 
     fn start_simulated(root: PathBuf) -> io::Result<Self> {
-        Self::start_with(root, &["--daemon", "--simulate"])
+        Self::start_with(root, &["daemon", "--simulate"])
     }
 
     fn start_with(root: PathBuf, arguments: &[&str]) -> io::Result<Self> {
@@ -111,7 +111,7 @@ impl DaemonProcessFixture {
     reason = "Borrowed response preserves the decoded envelope for validation"
 )]
 fn endpoint_snapshot(runtime_directory: &Path) -> io::Result<EndpointSnapshot> {
-    let output = run_command(runtime_directory, &["--status-json"])?;
+    let output = run_command(runtime_directory, &["status", "--json"])?;
     if !output.status.success() {
         return Err(io::Error::other("snapshot command failed"));
     }
@@ -143,17 +143,14 @@ fn isolated_command(runtime_directory: &Path, arguments: &[&str]) -> Command {
         .env("XDG_CONFIG_HOME", runtime_directory.join("config"))
         .env("XDG_DOWNLOAD_DIR", runtime_directory.join("received"))
         .env("XDG_RUNTIME_DIR", runtime_directory);
-    if arguments
-        .iter()
-        .any(|argument| argument.starts_with("--simulate"))
-    {
+    if arguments.contains(&"simulate") {
         let _ = command.env("OMARCHY_QUICKSHARE_ALLOW_SIMULATION", "1");
     }
     command
 }
 
 fn runtime_status(runtime_directory: &Path) -> io::Result<Output> {
-    isolated_command(runtime_directory, &["--runtime-status"]).output()
+    isolated_command(runtime_directory, &["health"]).output()
 }
 
 fn run_command(
@@ -222,8 +219,10 @@ fn daemon_reports_submitted_text_in_its_public_snapshot() {
         return;
     };
 
-    let submission_result =
-        run_command(fixture.runtime_directory(), &["hello from Omarchy"]);
+    let submission_result = run_command(
+        fixture.runtime_directory(),
+        &["send", "hello from Omarchy"],
+    );
     assert!(submission_result.is_ok(), "failed to submit text");
     let Ok(submission) = submission_result else {
         return;
@@ -231,7 +230,7 @@ fn daemon_reports_submitted_text_in_its_public_snapshot() {
     assert!(submission.status.success(), "daemon rejected text");
 
     let snapshot_result =
-        run_command(fixture.runtime_directory(), &["--status-json"]);
+        run_command(fixture.runtime_directory(), &["status", "--json"]);
     assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
     let Ok(snapshot) = snapshot_result else {
         return;
@@ -257,11 +256,11 @@ fn daemon_reports_submitted_url_in_its_public_snapshot() {
 
     let submission_result = run_command(
         fixture.runtime_directory(),
-        &["https://example.test/share"],
+        &["send", "https://example.test/share"],
     );
     assert!(submission_result.is_ok(), "failed to submit URL");
     let snapshot_result =
-        run_command(fixture.runtime_directory(), &["--status-json"]);
+        run_command(fixture.runtime_directory(), &["status", "--json"]);
     assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
     let Ok(snapshot) = snapshot_result else {
         return;
@@ -291,11 +290,11 @@ fn daemon_reports_submitted_file_in_its_public_snapshot() {
 
     let submission_result = run_command(
         fixture.runtime_directory(),
-        &[source.to_string_lossy().as_ref()],
+        &["send", source.to_string_lossy().as_ref()],
     );
     assert!(submission_result.is_ok(), "failed to submit file");
     let snapshot_result =
-        run_command(fixture.runtime_directory(), &["--status-json"]);
+        run_command(fixture.runtime_directory(), &["status", "--json"]);
     assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
     let Ok(snapshot) = snapshot_result else {
         return;
@@ -315,11 +314,11 @@ fn daemon_cancels_the_active_share_by_identifier() {
         return;
     };
     let submission_result =
-        run_command(fixture.runtime_directory(), &["hello"]);
+        run_command(fixture.runtime_directory(), &["send", "hello"]);
     assert!(submission_result.is_ok(), "failed to submit text");
 
     let cancellation_result =
-        run_command(fixture.runtime_directory(), &["--cancel", "1"]);
+        run_command(fixture.runtime_directory(), &["share", "cancel", "1"]);
     assert!(cancellation_result.is_ok(), "failed to run cancellation");
     let Ok(cancellation) = cancellation_result else {
         return;
@@ -330,7 +329,7 @@ fn daemon_cancels_the_active_share_by_identifier() {
     );
     assert_eq!(cancellation.stdout, b"Share cancelled.\n");
     let snapshot_result =
-        run_command(fixture.runtime_directory(), &["--status-json"]);
+        run_command(fixture.runtime_directory(), &["status", "--json"]);
     assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
     let Ok(snapshot) = snapshot_result else {
         return;
@@ -356,8 +355,8 @@ fn simulated_daemon_runs_an_outbound_transfer_with_a_pinned_peer() {
     };
     assert_eq!(initial.peers().len(), 2);
 
-    assert_command(fixture.runtime_directory(), &["--pin", "galaxy-tab"]);
-    assert_command(fixture.runtime_directory(), &["hello"]);
+    assert_command(fixture.runtime_directory(), &["peer", "pin", "galaxy-tab"]);
+    assert_command(fixture.runtime_directory(), &["send", "hello"]);
     assert_active_peer(
         fixture.runtime_directory(),
         "galaxy-tab",
@@ -365,11 +364,11 @@ fn simulated_daemon_runs_an_outbound_transfer_with_a_pinned_peer() {
     );
     assert_command(
         fixture.runtime_directory(),
-        &["--simulate-peer-accept", "1"],
+        &["simulate", "peer-accept", "1"],
     );
     assert_command(
         fixture.runtime_directory(),
-        &["--simulate-progress", "1", "5"],
+        &["simulate", "progress", "1", "5"],
     );
     assert_phase(
         fixture.runtime_directory(),
@@ -390,17 +389,17 @@ fn simulated_daemon_runs_an_inbound_transfer() {
     };
     assert_command(
         fixture.runtime_directory(),
-        &["--simulate-incoming-text", "from phone"],
+        &["simulate", "incoming-text", "from phone"],
     );
     assert_active_peer(
         fixture.runtime_directory(),
         "pixel-8",
         Phase::AwaitingLocalConsent,
     );
-    assert_command(fixture.runtime_directory(), &["--accept", "1"]);
+    assert_command(fixture.runtime_directory(), &["share", "accept", "1"]);
     assert_command(
         fixture.runtime_directory(),
-        &["--simulate-progress", "1", "10"],
+        &["simulate", "progress", "1", "10"],
     );
     assert_phase(
         fixture.runtime_directory(),
@@ -419,18 +418,21 @@ fn simulated_daemon_exposes_peer_rejection_and_dismissal() {
     let Ok(fixture) = fixture_result else {
         return;
     };
-    assert_command(fixture.runtime_directory(), &["hello"]);
-    assert_command(fixture.runtime_directory(), &["--send-to", "1", "pixel-8"]);
+    assert_command(fixture.runtime_directory(), &["send", "hello"]);
     assert_command(
         fixture.runtime_directory(),
-        &["--simulate-peer-reject", "1"],
+        &["share", "select", "1", "pixel-8"],
+    );
+    assert_command(
+        fixture.runtime_directory(),
+        &["simulate", "peer-reject", "1"],
     );
     assert_phase(
         fixture.runtime_directory(),
         Direction::Outbound,
         Phase::Rejected,
     );
-    assert_command(fixture.runtime_directory(), &["--dismiss", "1"]);
+    assert_command(fixture.runtime_directory(), &["share", "dismiss", "1"]);
     assert_idle(fixture.runtime_directory());
     assert!(fixture.stop().is_ok(), "failed to stop simulated daemon");
 }
@@ -443,19 +445,22 @@ fn simulated_daemon_exposes_failure_and_dismissal() {
     let Ok(fixture) = fixture_result else {
         return;
     };
-    assert_command(fixture.runtime_directory(), &["hello"]);
-    assert_command(fixture.runtime_directory(), &["--send-to", "1", "pixel-8"]);
+    assert_command(fixture.runtime_directory(), &["send", "hello"]);
     assert_command(
         fixture.runtime_directory(),
-        &["--simulate-peer-accept", "1"],
+        &["share", "select", "1", "pixel-8"],
     );
-    assert_command(fixture.runtime_directory(), &["--simulate-fail", "1"]);
+    assert_command(
+        fixture.runtime_directory(),
+        &["simulate", "peer-accept", "1"],
+    );
+    assert_command(fixture.runtime_directory(), &["simulate", "fail", "1"]);
     assert_phase(
         fixture.runtime_directory(),
         Direction::Outbound,
         Phase::Failed,
     );
-    assert_command(fixture.runtime_directory(), &["--dismiss", "1"]);
+    assert_command(fixture.runtime_directory(), &["share", "dismiss", "1"]);
     assert_idle(fixture.runtime_directory());
     assert!(fixture.stop().is_ok(), "failed to stop simulated daemon");
 }
@@ -470,16 +475,16 @@ fn simulated_daemon_changes_visible_peers() {
     };
     assert_command(
         fixture.runtime_directory(),
-        &["--simulate-peer-lost", "pixel-8"],
+        &["simulate", "peer-lost", "pixel-8"],
     );
     assert_command(
         fixture.runtime_directory(),
-        &["--simulate-peer-lost", "galaxy-tab"],
+        &["simulate", "peer-lost", "galaxy-tab"],
     );
     assert_peer_ids(fixture.runtime_directory(), &[]);
     assert_command(
         fixture.runtime_directory(),
-        &["--simulate-peer-seen", "watch-7", "Pixel Watch"],
+        &["simulate", "peer-seen", "watch-7", "Pixel Watch"],
     );
     assert_peer_ids(fixture.runtime_directory(), &["watch-7"]);
     assert!(fixture.stop().is_ok(), "failed to stop simulated daemon");
@@ -493,13 +498,13 @@ fn simulated_daemon_drives_discovery_and_visibility() {
     let Ok(fixture) = fixture_result else {
         return;
     };
-    assert_command(fixture.runtime_directory(), &["--discover"]);
+    assert_command(fixture.runtime_directory(), &["discover", "start"]);
     assert_endpoint_modes(
         fixture.runtime_directory(),
         DiscoveryState::Searching,
         VisibilityState::Closed,
     );
-    assert_command(fixture.runtime_directory(), &["--open-visibility"]);
+    assert_command(fixture.runtime_directory(), &["visibility", "open"]);
     assert_endpoint_modes(
         fixture.runtime_directory(),
         DiscoveryState::Searching,
@@ -507,16 +512,16 @@ fn simulated_daemon_drives_discovery_and_visibility() {
     );
     assert_command(
         fixture.runtime_directory(),
-        &["--simulate-discovery-timeout"],
+        &["simulate", "discovery-timeout"],
     );
     assert_endpoint_modes(
         fixture.runtime_directory(),
         DiscoveryState::TimedOut,
         VisibilityState::Open,
     );
-    assert_command(fixture.runtime_directory(), &["--discover"]);
-    assert_command(fixture.runtime_directory(), &["--stop-discovery"]);
-    assert_command(fixture.runtime_directory(), &["--close-visibility"]);
+    assert_command(fixture.runtime_directory(), &["discover", "start"]);
+    assert_command(fixture.runtime_directory(), &["discover", "stop"]);
+    assert_command(fixture.runtime_directory(), &["visibility", "close"]);
     assert_endpoint_modes(
         fixture.runtime_directory(),
         DiscoveryState::Idle,
@@ -535,17 +540,21 @@ fn simulated_daemon_offers_url_and_file_attachments() {
     };
     assert_command(
         fixture.runtime_directory(),
-        &["--simulate-incoming-url", "https://example.test/from-phone"],
+        &[
+            "simulate",
+            "incoming-url",
+            "https://example.test/from-phone",
+        ],
     );
     assert_attachment(
         fixture.runtime_directory(),
         &Attachment::url("https://example.test/from-phone"),
     );
-    assert_command(fixture.runtime_directory(), &["--reject", "1"]);
-    assert_command(fixture.runtime_directory(), &["--dismiss", "1"]);
+    assert_command(fixture.runtime_directory(), &["share", "reject", "1"]);
+    assert_command(fixture.runtime_directory(), &["share", "dismiss", "1"]);
     assert_command(
         fixture.runtime_directory(),
-        &["--simulate-incoming-file", "photo.jpg", "1024"],
+        &["simulate", "incoming-file", "photo.jpg", "1024"],
     );
     assert_attachment(
         fixture.runtime_directory(),

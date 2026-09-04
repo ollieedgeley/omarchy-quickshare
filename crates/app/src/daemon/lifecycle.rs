@@ -1,7 +1,11 @@
-//! Config, timeouts, pin persistence, and folder archives for the daemon.
+//! Control socket, config, timeout, and archive lifecycle for the daemon.
 
 use core::time::Duration;
+use std::fs;
 use std::io;
+use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use quickshare_sharing::{
@@ -10,6 +14,7 @@ use quickshare_sharing::{
 use quickshare_storage::OutboundSource;
 
 use super::Daemon;
+use super::network::NetworkWorker;
 use super::notify::{self, NotifyKind};
 use super::observations::recovery_guidance;
 use crate::archive;
@@ -43,10 +48,7 @@ impl Daemon {
     }
 
     /// Queues a file or a ZIP of a folder and remembers temporary archives.
-    pub(super) fn queue_file(
-        &mut self,
-        path: &std::path::Path,
-    ) -> io::Result<u64> {
+    pub(super) fn queue_file(&mut self, path: &Path) -> io::Result<u64> {
         if path.is_dir() {
             let archive_path = archive::zip_directory(path)?;
             let source = OutboundSource::open(&archive_path)
@@ -103,6 +105,7 @@ impl Daemon {
             >= Duration::from_secs(self.config.discovery_timeout_secs)
         {
             let _timed_out = self.sharing.discovery_timed_out();
+            tracing::info!(phase = "timed_out", "discovery timed out");
             if let Some(network) = &self.network {
                 network.stop_discovery()?;
             }
@@ -124,6 +127,7 @@ impl Daemon {
             return Ok(());
         }
         self.sharing.close_visibility();
+        tracing::info!(phase = "closed", "visibility closed");
         if let Some(network) = &self.network {
             network.close_visibility()?;
         }
@@ -149,6 +153,12 @@ impl Daemon {
             return Ok(());
         }
         if self.sharing.fail(share_id) {
+            tracing::warn!(
+                share_id,
+                phase = "failed",
+                error_class = "timed_out",
+                "share failed"
+            );
             let _observed = self.sharing.record_observation(
                 share_id,
                 None,
@@ -165,6 +175,116 @@ impl Daemon {
         self.transfer_started_at = None;
         Ok(())
     }
+}
+
+/// Owner-only mode for the control socket directory.
+const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
+/// Owner-only mode for the control socket.
+const PRIVATE_SOCKET_MODE: u32 = 0o600;
+
+/// A bound control listener that removes its socket on a clean shutdown.
+#[derive(Debug)]
+struct ControlSocket {
+    /// The listener served by the local endpoint.
+    listener: UnixListener,
+    /// The filesystem entry removed when the listener is dropped.
+    path: PathBuf,
+}
+
+impl ControlSocket {
+    /// Binds an owner-only socket after rejecting a running endpoint.
+    fn bind(path: &Path) -> io::Result<Self> {
+        let directory = path.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "control socket has no parent directory",
+            )
+        })?;
+        fs::create_dir_all(directory)?;
+        fs::set_permissions(
+            directory,
+            fs::Permissions::from_mode(PRIVATE_DIRECTORY_MODE),
+        )?;
+        remove_stale_socket(path)?;
+        let listener = UnixListener::bind(path)?;
+        fs::set_permissions(
+            path,
+            fs::Permissions::from_mode(PRIVATE_SOCKET_MODE),
+        )?;
+        Ok(Self {
+            listener,
+            path: path.to_path_buf(),
+        })
+    }
+}
+
+#[expect(
+    clippy::missing_trait_methods,
+    reason = "Drop has no project-implementable default methods"
+)]
+impl Drop for ControlSocket {
+    fn drop(&mut self) {
+        drop(fs::remove_file(&self.path));
+    }
+}
+
+/// Removes an abandoned socket without replacing a running endpoint.
+#[expect(
+    clippy::single_call_fn,
+    reason = "The stale-socket decision remains separate from binding"
+)]
+fn remove_stale_socket(path: &Path) -> io::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    match UnixStream::connect(path) {
+        Ok(_stream) => Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            "local endpoint is already running",
+        )),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+            ) =>
+        {
+            fs::remove_file(path)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Runs the local endpoint until the process is terminated.
+///
+/// # Errors
+pub fn run(socket_path: &Path) -> io::Result<()> {
+    let config = Config::load()?;
+    fs::create_dir_all(&config.receive_directory)?;
+    let socket = ControlSocket::bind(socket_path)?;
+    let network = NetworkWorker::start(
+        config.receive_directory.clone(),
+        Duration::from_secs(config.visibility_timeout_secs),
+    )?;
+    let mut endpoint = Daemon::with_network_worker(network);
+    endpoint.install_config(config);
+    tracing::info!(phase = "ready", "daemon ready");
+    let result = endpoint.serve_until(&socket.listener, || false);
+    tracing::info!(phase = "shutdown", "daemon shutdown");
+    result
+}
+
+/// Runs a deterministic local peer for complete application testing.
+///
+/// # Errors
+///
+/// Returns an error when the private control socket cannot be served.
+#[inline]
+pub fn run_simulated(socket_path: &Path) -> io::Result<()> {
+    let config = Config::load()?;
+    let socket = ControlSocket::bind(socket_path)?;
+    let mut endpoint = Daemon::simulated();
+    endpoint.install_config(config);
+    endpoint.serve_until(&socket.listener, || false)
 }
 
 #[cfg(test)]

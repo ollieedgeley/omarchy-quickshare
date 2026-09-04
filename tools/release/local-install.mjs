@@ -17,7 +17,7 @@ import { run } from "../gates/lib/process.mjs";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const EXECUTABLE_MODE = 0o755;
 const SERVICE_NAME = "omarchy-quickshare.service";
-const SERVICE_COMMAND_PATTERN = /^ExecStart=.* --daemon$/mu;
+const SERVICE_COMMAND_PATTERN = /^ExecStart=.* daemon$/mu;
 
 function installationPaths(root, homeDirectory) {
   const binaryName = "omarchy-quickshare";

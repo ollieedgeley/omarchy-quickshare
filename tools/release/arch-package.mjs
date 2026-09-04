@@ -23,7 +23,7 @@ const BINARY_NAME = "omarchy-quickshare";
 const EXECUTABLE_MODE = 0o755;
 const PKGREL = 1;
 const MILLISECONDS_PER_SECOND = 1000;
-const PACKAGE_EXEC = "ExecStart=/usr/bin/omarchy-quickshare --daemon";
+const PACKAGE_EXEC = "ExecStart=/usr/bin/omarchy-quickshare daemon";
 const EXEC_START_PATTERN = /^ExecStart=.*$/mu;
 const FILES = [
   BINARY_NAME,

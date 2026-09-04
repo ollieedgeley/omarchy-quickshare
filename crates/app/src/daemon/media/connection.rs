@@ -17,7 +17,7 @@ use quickshare_sharing::{EndpointInfo, ProtocolError, SharingSession};
 use rand_core::{OsRng, RngCore as _};
 
 use crate::daemon::observations::{
-    BLE, BLUETOOTH, WIFI_DIRECT, WIFI_HOTSPOT, WIFI_LAN,
+    BLE, BLUETOOTH, WIFI_DIRECT, WIFI_HOTSPOT, WIFI_LAN, protocol_reason,
 };
 
 /// Connections endpoint identifier used by every SharingSession identity.
@@ -100,13 +100,16 @@ pub(crate) fn connect_connection<Stream>(
 where
     Stream: ConnectionIo + 'static,
 {
-    let mut rng = OsRng;
-    let options = connection_options(&mut rng, medium)?;
-    Ok(Connection::connect_io(
-        stream,
-        Handshake::initiator_with_rng(&mut rng),
-        options,
-    )?)
+    let result = (|| {
+        let mut rng = OsRng;
+        let options = connection_options(&mut rng, medium)?;
+        Ok(Connection::connect_io(
+            stream,
+            Handshake::initiator_with_rng(&mut rng),
+            options,
+        )?)
+    })();
+    trace_handshake(medium, result)
 }
 
 /// Opens a responder Connections relationship over any byte stream.
@@ -121,13 +124,16 @@ pub(crate) fn accept_connection<Stream>(
 where
     Stream: ConnectionIo + 'static,
 {
-    let mut rng = OsRng;
-    let options = connection_options(&mut rng, medium)?;
-    Ok(Connection::accept_io(
-        stream,
-        Handshake::responder_with_rng(&mut rng),
-        options,
-    )?)
+    let result = (|| {
+        let mut rng = OsRng;
+        let options = connection_options(&mut rng, medium)?;
+        Ok(Connection::accept_io(
+            stream,
+            Handshake::responder_with_rng(&mut rng),
+            options,
+        )?)
+    })();
+    trace_handshake(medium, result)
 }
 
 /// Connects a stored candidate and returns an encrypted connection.
@@ -141,27 +147,78 @@ pub(crate) fn connect_route(
 ) -> Result<Connection, ProtocolError> {
     match route {
         PeerRoute::Lan(address) => {
-            let stream = connect_lan(*address)?;
+            let stream = match connect_lan(*address) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    tracing::warn!(
+                        stage = "connection",
+                        medium = WIFI_LAN,
+                        error_class = "io",
+                        "connection failed"
+                    );
+                    return Err(ProtocolError::Io(error));
+                }
+            };
             connect_connection(stream, Medium::WifiLan)
         }
         PeerRoute::Ble(candidate) => {
-            let adapter = adapter.ok_or_else(missing_adapter)?;
-            let io = adapter
+            let Some(adapter) = adapter else {
+                tracing::warn!(
+                    stage = "connection",
+                    medium = BLE,
+                    available = false,
+                    error_class = "unavailable",
+                    "connection failed"
+                );
+                return Err(missing_adapter());
+            };
+            let io = match adapter
                 .connect_gatt_weave(candidate, BLUETOOTH_CONNECT)
                 .and_then(quickshare_bluez::WeaveSocket::into_io)
-                .map_err(bluetooth_error)?;
+            {
+                Ok(io) => io,
+                Err(error) => {
+                    tracing::warn!(
+                        stage = "connection",
+                        medium = BLE,
+                        error_class = "io",
+                        "connection failed"
+                    );
+                    return Err(bluetooth_error(error));
+                }
+            };
             connect_connection(io, Medium::Ble)
         }
         PeerRoute::Classic(candidate) => {
-            let adapter = adapter.ok_or_else(missing_adapter)?;
-            let io = adapter
+            let Some(adapter) = adapter else {
+                tracing::warn!(
+                    stage = "connection",
+                    medium = BLUETOOTH,
+                    available = false,
+                    error_class = "unavailable",
+                    "connection failed"
+                );
+                return Err(missing_adapter());
+            };
+            let io = match adapter
                 .connect_classic(
                     candidate,
                     QUICK_SHARE_BLE_UUID,
                     BLUETOOTH_CONNECT,
                 )
                 .and_then(quickshare_bluez::ClassicSocket::into_io)
-                .map_err(bluetooth_error)?;
+            {
+                Ok(io) => io,
+                Err(error) => {
+                    tracing::warn!(
+                        stage = "connection",
+                        medium = BLUETOOTH,
+                        error_class = "io",
+                        "connection failed"
+                    );
+                    return Err(bluetooth_error(error));
+                }
+            };
             connect_connection(io, Medium::Bluetooth)
         }
     }
@@ -179,14 +236,18 @@ pub(crate) fn open_visibility(adapter: Option<&Adapter>) -> VisibilityLeases {
     let Some(adapter) = adapter else {
         return VisibilityLeases::default();
     };
-    let advertisement = adapter
-        .advertise_receiver(ReceiverAdvertisement::new(
+    let advertisement = optional_lease(
+        "ble_advertise",
+        adapter.advertise_receiver(ReceiverAdvertisement::new(
             ENDPOINT_ID.as_bytes().to_vec(),
-        ))
-        .ok();
-    let classic = adapter.listen_classic(QUICK_SHARE_BLE_UUID).ok();
-    let gatt = adapter.serve_gatt_weave().ok();
-    let l2cap = adapter.listen_l2cap(0x1001).ok();
+        )),
+    );
+    let classic = optional_lease(
+        "classic_listen",
+        adapter.listen_classic(QUICK_SHARE_BLE_UUID),
+    );
+    let gatt = optional_lease("gatt_weave", adapter.serve_gatt_weave());
+    let l2cap = optional_lease("l2cap_listen", adapter.listen_l2cap(0x1001));
     VisibilityLeases {
         advertisement,
         classic,
@@ -205,8 +266,11 @@ pub(crate) fn start_discovery(
         return DiscoveryLeases::default();
     };
     DiscoveryLeases {
-        ble: adapter.scan_ble(deadline).ok(),
-        classic: adapter.discover_classic(deadline).ok(),
+        ble: optional_lease("ble_scan", adapter.scan_ble(deadline)),
+        classic: optional_lease(
+            "classic_scan",
+            adapter.discover_classic(deadline),
+        ),
     }
 }
 
@@ -326,6 +390,45 @@ fn missing_adapter() -> ProtocolError {
         io::ErrorKind::NotFound,
         "bluetooth adapter is missing",
     ))
+}
+
+fn optional_lease<T, E>(
+    stage: &'static str,
+    result: Result<T, E>,
+) -> Option<T> {
+    result
+        .inspect(|_| {
+            tracing::debug!(stage, available = true, "adapter stage ready");
+        })
+        .inspect_err(|_| {
+            tracing::warn!(stage, available = false, "adapter stage failed");
+        })
+        .ok()
+}
+
+fn trace_handshake<T>(
+    medium: Medium,
+    result: Result<T, ProtocolError>,
+) -> Result<T, ProtocolError> {
+    match result {
+        Ok(value) => {
+            tracing::debug!(
+                stage = "handshake",
+                medium = medium_name(medium),
+                "adapter stage ready"
+            );
+            Ok(value)
+        }
+        Err(error) => {
+            tracing::warn!(
+                stage = "handshake",
+                medium = medium_name(medium),
+                error_class = protocol_reason(&error),
+                "handshake failed"
+            );
+            Err(error)
+        }
+    }
 }
 
 fn bluetooth_error(error: quickshare_bluez::Error) -> ProtocolError {

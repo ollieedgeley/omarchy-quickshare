@@ -17,7 +17,9 @@ use quickshare_network::network_manager::{
 };
 use quickshare_sharing::ProtocolError;
 
-use super::{ENDPOINT_NAME, attempt_order};
+use crate::daemon::observations::protocol_reason;
+
+use super::{ENDPOINT_NAME, attempt_order, medium_name};
 
 /// Deadline used to join or own an upgraded Wi-Fi medium.
 const UPGRADE_DEADLINE: Duration = Duration::from_secs(8);
@@ -50,7 +52,19 @@ where
     match upgraded {
         Ok(stream) => {
             if connection.complete_upgrade_io(medium, stream).is_err() {
+                tracing::warn!(
+                    stage = "upgrade",
+                    medium = medium_name(medium),
+                    error_class = "disconnected",
+                    "upgrade failed"
+                );
                 connection.fail_upgrade(medium)?;
+            } else {
+                tracing::debug!(
+                    stage = "upgrade",
+                    medium = medium_name(medium),
+                    "adapter stage ready"
+                );
             }
             Ok(())
         }
@@ -76,6 +90,12 @@ pub(crate) fn initiate_bandwidth_upgrade(
         return Ok(None);
     }
     let Some(manager) = manager else {
+        tracing::warn!(
+            stage = "upgrade",
+            available = false,
+            error_class = "unavailable",
+            "upgrade failed"
+        );
         connection.fail_upgrade(Medium::WifiHotspot)?;
         return Ok(None);
     };
@@ -106,20 +126,46 @@ pub(crate) fn initiate_bandwidth_upgrade(
                 match wait_for_upgrade_stream(&listener) {
                     Ok(stream) => {
                         match connection.complete_upgrade_io(medium, stream) {
-                            Ok(()) => return Ok(Some(session)),
+                            Ok(()) => {
+                                tracing::debug!(
+                                    stage = "upgrade",
+                                    medium = medium_name(medium),
+                                    "adapter stage ready"
+                                );
+                                return Ok(Some(session));
+                            }
                             Err(_) => {
+                                tracing::warn!(
+                                    stage = "upgrade",
+                                    medium = medium_name(medium),
+                                    error_class = "disconnected",
+                                    "upgrade failed"
+                                );
                                 connection.fail_upgrade(medium)?;
                                 drop(session);
                             }
                         }
                     }
                     Err(_) => {
+                        tracing::warn!(
+                            stage = "upgrade",
+                            medium = medium_name(medium),
+                            error_class = "timed_out",
+                            "upgrade failed"
+                        );
                         connection.fail_upgrade(medium)?;
                         drop(session);
                     }
                 }
             }
-            Err(_) => {}
+            Err(_) => {
+                tracing::warn!(
+                    stage = "upgrade",
+                    medium = medium_name(medium),
+                    error_class = "unavailable",
+                    "upgrade failed"
+                );
+            }
         }
     }
     connection.fail_upgrade(Medium::WifiHotspot)?;
@@ -156,6 +202,12 @@ pub(crate) fn accept_bandwidth_upgrade(
             Ok(session)
         }
         Err(error) => {
+            tracing::warn!(
+                stage = "upgrade",
+                medium = medium_name(medium),
+                error_class = protocol_reason(&error),
+                "upgrade failed"
+            );
             complete_or_fail_upgrade::<TcpStream>(
                 connection,
                 medium,

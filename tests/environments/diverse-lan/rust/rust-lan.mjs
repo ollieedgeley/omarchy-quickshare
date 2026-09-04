@@ -101,7 +101,7 @@ function rustCommand(arguments_, directories, capture = true) {
 
 async function status(directories) {
   const envelope = JSON.parse(
-    await rustCommand(["--status-json"], directories),
+    await rustCommand(["status", "--json"], directories),
   );
   return envelope.response?.snapshot;
 }
@@ -206,7 +206,7 @@ async function assertGoogleToRust(directories) {
   const file = `google-to-rust-${randomUUID()}.txt`;
   const source = join(directories.google, "outbound", file);
   writeFileSync(source, Buffer.alloc(MULTI_FRAME_FILE_SIZE, "G"));
-  await rustCommand(["--open-visibility"], directories);
+  await rustCommand(["visibility", "open"], directories);
   const sender = startGoogleSender(directories, file);
   try {
     const offered = await waitFor(
@@ -215,7 +215,7 @@ async function assertGoogleToRust(directories) {
       (value) => value.active_share?.direction === "inbound",
     );
     const shareId = String(offered.active_share.id);
-    await rustCommand(["--accept", shareId], directories);
+    await rustCommand(["share", "accept", shareId], directories);
     await sender.wait({ timeoutMs: DISCOVERY_TIMEOUT_MS });
     resetDiscoveryDeadline(directories);
     await waitFor(
@@ -245,7 +245,7 @@ async function assertRustToGoogle(directories) {
   const file = `rust-to-google-${randomUUID()}.txt`;
   const source = join(directories.rust, "outbound", file);
   writeFileSync(source, Buffer.alloc(MULTI_FRAME_FILE_SIZE, "R"));
-  await rustCommand(["--discover"], directories);
+  await rustCommand(["discover", "start"], directories);
   const receiver = startGoogleReceiver(directories);
   try {
     const snapshot = await waitFor(
@@ -253,13 +253,19 @@ async function assertRustToGoogle(directories) {
       "report the reference mDNS peer",
       (value) => value.peers?.length,
     );
-    const queued = await rustCommand([`/cases/outbound/${file}`], directories);
+    const queued = await rustCommand(
+      ["send", `/cases/outbound/${file}`],
+      directories,
+    );
     const shareId = queued.match(QUEUED_SHARE_PATTERN)?.groups.id;
     assert.ok(
       shareId,
       `Rust daemon did not queue an outbound share: ${queued}`,
     );
-    await rustCommand(["--send-to", shareId, peerId(snapshot)], directories);
+    await rustCommand(
+      ["share", "select", shareId, peerId(snapshot)],
+      directories,
+    );
     await receiver.wait({ timeoutMs: DISCOVERY_TIMEOUT_MS });
     resetDiscoveryDeadline(directories);
     await waitFor(
@@ -293,7 +299,7 @@ function startDaemon(directories) {
       "--tty=false",
       "rust",
       BINARY,
-      "--daemon",
+      "daemon",
     ],
     { cwd: ROOT, env: environment(directories) },
   );

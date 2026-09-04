@@ -28,6 +28,9 @@ pub(super) const fn summary(kind: NotifyKind) -> &'static str {
 
 /// Best-effort session-bus notification with no peer, file, or content body.
 pub(super) fn notify(kind: NotifyKind) {
+    if cfg!(test) {
+        return;
+    }
     let _result = send(summary(kind));
 }
 

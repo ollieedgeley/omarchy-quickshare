@@ -20,14 +20,14 @@ That builds the locked release binary, installs it to `~/.local/bin`,
 writes `omarchy-quickshare.service` under `~/.config/systemd/user`, copies
 a default config to `~/.config/omarchy-quickshare/config.toml` if that
 file is missing, then reloads, enables, and starts the user service. The
-unit runs `omarchy-quickshare --daemon` and restarts after failures.
+unit runs `omarchy-quickshare daemon` and restarts after failures.
 
 ```sh
 make install-local-simulation
 make uninstall-local
 ```
 
-Simulation starts `--daemon --simulate` with fake peers.
+Simulation starts `daemon --simulate` with fake peers.
 `make install-local` restores the normal service. Uninstall stops and
 removes the user unit and binary. It leaves the config file in place.
 
@@ -114,56 +114,56 @@ does not publish one. A full checkout can run the same Cargo command.
 The CLI talks to `$XDG_RUNTIME_DIR/omarchy-quickshare/control.sock`. Start
 the user service first.
 
-Submit one argument. An existing file or directory is a file share.
-Directories are zipped first. `http://` or `https://` is a URL. Anything
-else is text.
+Submit one argument with `send`. An existing file or directory is a file
+share. Directories are zipped first. `http://` or `https://` is a URL.
+Anything else is text.
 
 ```sh
-omarchy-quickshare "hello from Omarchy"
-omarchy-quickshare https://example.test/share
-omarchy-quickshare ./note.txt
-omarchy-quickshare ./photos
+omarchy-quickshare send "hello from Omarchy"
+omarchy-quickshare send https://example.test/share
+omarchy-quickshare send ./note.txt
+omarchy-quickshare send ./photos
 ```
 
 Successful submits print `Share N queued.` If a peer is pinned, the share
 selects that peer. If not, discovery starts and you pick one.
 
 ```sh
-omarchy-quickshare --discover
-omarchy-quickshare --pin galaxy-tab
-omarchy-quickshare --send-to 1 pixel-8
-omarchy-quickshare --stop-discovery
+omarchy-quickshare discover start
+omarchy-quickshare peer pin galaxy-tab
+omarchy-quickshare share select 1 pixel-8
+omarchy-quickshare discover stop
 ```
 
-Live LAN file transfer starts with `--send-to` once the peer has a LAN
+Live LAN file transfer starts with `share select` once the peer has a LAN
 route. Simulated mode can drive consent without that step.
 
 Receive:
 
 ```sh
-omarchy-quickshare --open-visibility
-omarchy-quickshare --accept 1
-omarchy-quickshare --reject 1
-omarchy-quickshare --close-visibility
+omarchy-quickshare visibility open
+omarchy-quickshare share accept 1
+omarchy-quickshare share reject 1
+omarchy-quickshare visibility close
 ```
 
 Cancel or clear a finished share:
 
 ```sh
-omarchy-quickshare --cancel 1
-omarchy-quickshare --dismiss 1
+omarchy-quickshare share cancel 1
+omarchy-quickshare share dismiss 1
 ```
 
 Status:
 
 ```sh
-omarchy-quickshare --protocol-version
-omarchy-quickshare --runtime-status
-omarchy-quickshare --status-json
+omarchy-quickshare protocol-version
+omarchy-quickshare health
+omarchy-quickshare status --json
 ```
 
-`--protocol-version` prints `2`. That is the only control protocol this tree
-speaks. `--status-json` writes one versioned envelope. A transferring file
+`protocol-version` prints `2`. That is the only control protocol this tree
+speaks. `status --json` writes one versioned envelope. A transferring file
 looks like:
 
 ```json
@@ -194,9 +194,20 @@ looks like:
 `terminal_reason`, and `recovery_guidance` appear when the daemon has them.
 `verification_code` appears while consent is open.
 
-`--daemon` and `--daemon --simulate` belong to the service, not daily use.
-`--simulate-*` flags work only when the service was started with
-`--simulate`.
+`daemon` and `daemon --simulate` belong to the service, not daily use.
+Hidden `simulate` subcommands work only when the service was started with
+`--simulate` and `OMARCHY_QUICKSHARE_ALLOW_SIMULATION=1`.
+
+Development daemon:
+
+```sh
+omarchy-quickshare daemon --log-level debug
+journalctl --user -u omarchy-quickshare.service -f
+```
+
+`--log-level` is `error`, `warn`, `info` (default), `debug`, or `trace`.
+`RUST_LOG` overrides that choice. Logs are compact lines on stderr so the
+journal captures them.
 
 ## Config and downloads
 
@@ -214,7 +225,7 @@ commit.
 
 Live inbound LAN saves files under `receive_directory`. Text and URL
 payloads complete on the same path; their values appear in
-`--status-json`. Simulated inbound flags remain for local UI work
+`status --json`. Simulated inbound commands remain for local UI work
 without a peer.
 
 ## Hyprland
@@ -253,12 +264,12 @@ Privacy-safe manual smoke, simulated first:
 1. `make install-local-simulation`
 2. Send dummy text, `https://example.test/share`, a throwaway file, and a
    throwaway folder.
-3. Pin one fake peer, then send again. Try `--send-to` when nothing is
+3. Pin one fake peer, then send again. Try `share select` when nothing is
    pinned.
-4. Offer inbound text, URL, and `note.txt` with the simulate flags, then
+4. Offer inbound text, URL, and `note.txt` with the simulate commands, then
    accept or reject.
-5. Cancel mid-transfer with `--cancel`. Dismiss terminal shares.
-6. Read `--status-json`. Keep `verification_code` off anything you share.
+5. Cancel mid-transfer with `share cancel`. Dismiss terminal shares.
+6. Read `status --json`. Keep `verification_code` off anything you share.
    Do not use real names, photos, or tokens.
 
 Optional real-device pass after LAN tests are green: dummy files both

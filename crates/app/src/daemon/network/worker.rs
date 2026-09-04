@@ -44,8 +44,8 @@ pub(super) fn run_worker(
     receive_directory: PathBuf,
     consent_deadline: Duration,
 ) {
-    let bluetooth = Adapter::system().ok();
-    let manager = NetworkManager::system().ok();
+    let mut bluetooth = system_stage("bluez_adapter", Adapter::system());
+    let manager = system_stage("network_manager", NetworkManager::system());
     let mut browser: Option<Browser> = None;
     let mut discovering = false;
     let mut inbound: Option<PublishedLanListener> = None;
@@ -53,23 +53,27 @@ pub(super) fn run_worker(
     let mut discovery = DiscoveryLeases::default();
     let mut restart_at = Instant::now();
     let mut seen = HashSet::new();
+    let mut mdns_browse_ok = None;
+    let mut advertisement_decode_failed = false;
     loop {
         if discovering && (browser.is_none() || Instant::now() >= restart_at) {
-            if let Some(active_browser) = browser.take() {
-                let _result = active_browser.stop();
-            }
-            browser = dns_sd.browse(MdnsInstance::service_type()).ok();
-            let now = Instant::now();
-            restart_at = now.checked_add(BROWSE_RETRY_INTERVAL).unwrap_or(now);
+            restart_browser(
+                &dns_sd,
+                &mut browser,
+                &mut mdns_browse_ok,
+                &mut restart_at,
+            );
         }
         if let Some(active_browser) = browser.as_ref()
             && let Ok(Some(service)) = active_browser.resolve(POLL_INTERVAL)
-            && let Some(event) = discovered_peer(&service)
+            && !emit_resolved_peer(
+                &service,
+                &mut seen,
+                &events,
+                &mut advertisement_decode_failed,
+            )
         {
-            remember_seen(&mut seen, &event);
-            if events.send(event).is_err() {
-                break;
-            }
+            break;
         }
         if let Some(sighting) = discovery.next_sighting() {
             let event = NetworkEvent::PeerSeen {
@@ -99,7 +103,7 @@ pub(super) fn run_worker(
                     handle_command(
                         command,
                         &dns_sd,
-                        bluetooth.as_ref(),
+                        &mut bluetooth,
                         manager.as_ref(),
                         &events,
                         &cancellation,
@@ -131,7 +135,7 @@ pub(super) fn run_worker(
                     handle_command(
                         command,
                         &dns_sd,
-                        bluetooth.as_ref(),
+                        &mut bluetooth,
                         manager.as_ref(),
                         &events,
                         &cancellation,
@@ -157,7 +161,7 @@ pub(super) fn run_worker(
         if !handle_command(
             command,
             &dns_sd,
-            bluetooth.as_ref(),
+            &mut bluetooth,
             manager.as_ref(),
             &events,
             &cancellation,
@@ -172,6 +176,7 @@ pub(super) fn run_worker(
             break;
         }
     }
+    tracing::debug!(stage = "network_worker", "network worker stopped");
     core::mem::take(&mut discovery).close();
     core::mem::take(&mut visibility).close();
     if let Some(active_browser) = browser.take() {
@@ -187,7 +192,7 @@ pub(super) fn run_worker(
 fn handle_command(
     command: NetworkCommand,
     dns_sd: &DnsSd,
-    bluetooth: Option<&Adapter>,
+    bluetooth: &mut Option<Adapter>,
     manager: Option<&NetworkManager>,
     events: &Sender<NetworkEvent>,
     cancellation: &TransferCancellation,
@@ -213,7 +218,8 @@ fn handle_command(
             *discovering = true;
             *restart_at = Instant::now();
             core::mem::take(discovery).close();
-            *discovery = start_discovery(bluetooth, DISCOVERY_LEASE);
+            *discovery =
+                start_discovery(refresh_adapter(bluetooth), DISCOVERY_LEASE);
             true
         }
         NetworkCommand::OpenVisibility => {
@@ -231,7 +237,7 @@ fn handle_command(
                 }
             }
             core::mem::take(visibility).close();
-            *visibility = open_visibility(bluetooth);
+            *visibility = open_visibility(refresh_adapter(bluetooth));
             true
         }
         NetworkCommand::SendShare { share_id, transfer } => events
@@ -240,7 +246,7 @@ fn handle_command(
                 &transfer,
                 events,
                 cancellation,
-                bluetooth,
+                bluetooth.as_ref(),
                 manager,
             ))
             .is_ok(),
@@ -253,6 +259,112 @@ fn handle_command(
             emit_peer_lost(seen, events)
         }
     }
+}
+
+fn refresh_adapter(bluetooth: &mut Option<Adapter>) -> Option<&Adapter> {
+    refresh_adapter_with(bluetooth, Adapter::system)
+}
+
+fn refresh_adapter_with<Open, OpenError>(
+    bluetooth: &mut Option<Adapter>,
+    open: Open,
+) -> Option<&Adapter>
+where
+    Open: FnOnce() -> Result<Adapter, OpenError>,
+{
+    let previous = bluetooth.is_some();
+    match open() {
+        Ok(adapter) => {
+            if !previous {
+                tracing::debug!(
+                    stage = "bluez_adapter",
+                    available = true,
+                    "adapter stage ready"
+                );
+            }
+            *bluetooth = Some(adapter);
+        }
+        Err(_) => {
+            if previous {
+                tracing::warn!(
+                    stage = "bluez_adapter",
+                    available = false,
+                    "adapter stage failed"
+                );
+            }
+            *bluetooth = None;
+        }
+    }
+    bluetooth.as_ref()
+}
+
+fn system_stage<T, E>(stage: &'static str, result: Result<T, E>) -> Option<T> {
+    result
+        .inspect(|_| {
+            tracing::debug!(stage, available = true, "adapter stage ready");
+        })
+        .inspect_err(|_| {
+            tracing::warn!(stage, available = false, "adapter stage failed");
+        })
+        .ok()
+}
+
+fn restart_browser(
+    dns_sd: &DnsSd,
+    browser: &mut Option<Browser>,
+    mdns_browse_ok: &mut Option<bool>,
+    restart_at: &mut Instant,
+) {
+    if let Some(active_browser) = browser.take() {
+        let _result = active_browser.stop();
+    }
+    *browser = match dns_sd.browse(MdnsInstance::service_type()) {
+        Ok(started) => {
+            if *mdns_browse_ok != Some(true) {
+                tracing::debug!(
+                    stage = "mdns_browse",
+                    available = true,
+                    "adapter stage ready"
+                );
+            }
+            *mdns_browse_ok = Some(true);
+            Some(started)
+        }
+        Err(_) => {
+            if *mdns_browse_ok != Some(false) {
+                tracing::warn!(
+                    stage = "mdns_browse",
+                    available = false,
+                    "adapter stage failed"
+                );
+            }
+            *mdns_browse_ok = Some(false);
+            None
+        }
+    };
+    let now = Instant::now();
+    *restart_at = now.checked_add(BROWSE_RETRY_INTERVAL).unwrap_or(now);
+}
+
+fn emit_resolved_peer(
+    service: &ResolvedService,
+    seen: &mut HashSet<String>,
+    events: &Sender<NetworkEvent>,
+    advertisement_decode_failed: &mut bool,
+) -> bool {
+    let Some(event) = discovered_peer(service) else {
+        if !*advertisement_decode_failed {
+            *advertisement_decode_failed = true;
+            tracing::warn!(
+                stage = "advertisement_decode",
+                error_class = "invalid_payload",
+                "adapter stage failed"
+            );
+        }
+        return true;
+    };
+    remember_seen(seen, &event);
+    events.send(event).is_ok()
 }
 
 /// Records a newly advertised peer so stop/timeout can emit PeerLost.
@@ -288,4 +400,31 @@ fn discovered_peer(service: &ResolvedService) -> Option<NetworkEvent> {
         peer_id: instance.label(),
         route: PeerRoute::Lan(SocketAddrV4::new(address, service.port())),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refresh_adapter_with;
+    use quickshare_bluez::testing::FakeRadio;
+    use quickshare_bluez::{Adapter, Address};
+
+    #[test]
+    fn controller_loss_then_late_availability_refreshes_the_slot() {
+        let original = FakeRadio::new()
+            .adapter(Address::from_bytes([2, 0, 0, 0, 0, 1]))
+            .expect("original adapter");
+        let replacement = FakeRadio::new()
+            .adapter(Address::from_bytes([2, 0, 0, 0, 0, 2]))
+            .expect("replacement adapter");
+        let mut bluetooth = Some(original);
+
+        let missing =
+            refresh_adapter_with(&mut bluetooth, || Err::<Adapter, ()>(()));
+        assert!(missing.is_none());
+        let recovered =
+            refresh_adapter_with(&mut bluetooth, || Ok::<_, ()>(replacement));
+
+        assert!(recovered.is_some());
+        assert!(bluetooth.is_some());
+    }
 }

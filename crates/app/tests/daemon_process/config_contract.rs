@@ -26,7 +26,7 @@ struct Fixture {
 
 impl Fixture {
     fn start(root: PathBuf) -> io::Result<Self> {
-        Self::start_with(root, &["--daemon", "--simulate"])
+        Self::start_with(root, &["daemon", "--simulate"])
     }
 
     fn start_with(root: PathBuf, arguments: &[&str]) -> io::Result<Self> {
@@ -52,7 +52,7 @@ impl Fixture {
             .ok_or_else(|| io::Error::other("startup deadline overflowed"))?;
         while Instant::now() < deadline {
             if matches!(
-                command(&self.root, &["--runtime-status"]).output(),
+                command(&self.root, &["health"]).output(),
                 Ok(status) if status.status.success()
             ) {
                 return Ok(());
@@ -93,7 +93,7 @@ fn run(root: &Path, arguments: &[&str]) -> io::Result<Output> {
 }
 
 fn snapshot(root: &Path) -> io::Result<EndpointSnapshot> {
-    let output = run(root, &["--status-json"])?;
+    let output = run(root, &["status", "--json"])?;
     if !output.status.success() {
         return Err(io::Error::other("snapshot command failed"));
     }
@@ -114,7 +114,7 @@ fn missing_config_uses_documented_defaults() {
     let root = fixture_root();
     let created = fs::create_dir_all(&root);
     assert!(created.is_ok(), "fixture root");
-    let output = run(&root, &["--config"]);
+    let output = run(&root, &["config", "show"]);
     assert!(output.is_ok(), "config inspect");
     let Ok(output) = output else {
         return;
@@ -141,7 +141,7 @@ fn missing_config_uses_xdg_download_dir_when_set() {
     let created = fs::create_dir_all(&root);
     assert!(created.is_ok(), "fixture root");
 
-    let mut xdg = command(&root, &["--config"]);
+    let mut xdg = command(&root, &["config", "show"]);
     let _ = xdg.env("XDG_DOWNLOAD_DIR", "/cases/received");
     let xdg_output = xdg.output();
     assert!(xdg_output.is_ok(), "xdg config inspect");
@@ -154,7 +154,7 @@ fn missing_config_uses_xdg_download_dir_when_set() {
         "receive_directory = \"/cases/received/omarchy-quickshare\""
     ));
 
-    let mut empty = command(&root, &["--config"]);
+    let mut empty = command(&root, &["config", "show"]);
     let _ = empty.env("XDG_DOWNLOAD_DIR", "");
     let empty_output = empty.output();
     assert!(empty_output.is_ok(), "empty xdg config inspect");
@@ -188,20 +188,20 @@ fn config_set_persists_and_rejects_unknown_keys() {
         return;
     };
     let updated =
-        run(&root, &["--config-set", "receive_directory", receive_path]);
+        run(&root, &["config", "set", "receive_directory", receive_path]);
     assert!(updated.is_ok(), "config-set");
     let Ok(updated) = updated else {
         return;
     };
     assert!(updated.status.success(), "config-set failed");
-    let inspect = run(&root, &["--config"]);
+    let inspect = run(&root, &["config", "show"]);
     assert!(inspect.is_ok(), "config inspect");
     let Ok(inspect) = inspect else {
         return;
     };
     let body = String::from_utf8_lossy(&inspect.stdout);
     assert!(body.contains(&receive.display().to_string()));
-    let unknown = run(&root, &["--config-set", "not_a_key", "1"]);
+    let unknown = run(&root, &["config", "set", "not_a_key", "1"]);
     assert!(unknown.is_ok(), "unknown key");
     let Ok(unknown) = unknown else {
         return;
@@ -214,7 +214,7 @@ fn config_set_persists_and_rejects_unknown_keys() {
         "mystery = 1\n",
     );
     assert!(hostile.is_ok(), "hostile config");
-    let invalid = run(&root, &["--config"]);
+    let invalid = run(&root, &["config", "show"]);
     assert!(invalid.is_ok(), "invalid config");
     let Ok(invalid) = invalid else {
         return;
@@ -234,7 +234,7 @@ fn simulation_commands_are_unavailable_without_explicit_opt_in() {
     };
     let output = run(
         fixture.root.as_path(),
-        &["--simulate-peer-seen", "watch-7", "Watch"],
+        &["simulate", "peer-seen", "watch-7", "Watch"],
     );
     assert!(output.is_ok(), "simulate command");
     let Ok(output) = output else {
@@ -265,7 +265,7 @@ fn folder_submit_queues_a_zip_and_status_exposes_share_observations() {
     let Some(folder_path) = folder.to_str() else {
         return;
     };
-    let submitted = run(fixture.root.as_path(), &[folder_path]);
+    let submitted = run(fixture.root.as_path(), &["send", folder_path]);
     assert!(submitted.is_ok(), "submit folder");
     let Ok(submitted) = submitted else {
         return;
@@ -288,7 +288,7 @@ fn folder_submit_queues_a_zip_and_status_exposes_share_observations() {
         Attachment::Text { .. } | Attachment::Url { .. } | _ => "",
     };
     assert!(name.ends_with(".zip"), "queued {name}");
-    let status = run(fixture.root.as_path(), &["--status"]);
+    let status = run(fixture.root.as_path(), &["status"]);
     assert!(status.is_ok(), "status");
     let Ok(status) = status else {
         return;
@@ -308,20 +308,20 @@ fn pin_persists_and_unpin_clears_the_single_peer() {
     let Ok(fixture) = fixture else {
         return;
     };
-    let pinned = run(fixture.root.as_path(), &["--pin", "galaxy-tab"]);
+    let pinned = run(fixture.root.as_path(), &["peer", "pin", "galaxy-tab"]);
     assert!(pinned.is_ok(), "pin");
     let Ok(pinned) = pinned else {
         return;
     };
     assert!(pinned.status.success(), "pin failed");
-    let inspect = run(fixture.root.as_path(), &["--config"]);
+    let inspect = run(fixture.root.as_path(), &["config", "show"]);
     assert!(inspect.is_ok(), "config");
     let Ok(inspect) = inspect else {
         return;
     };
     let body = String::from_utf8_lossy(&inspect.stdout);
     assert!(body.contains("galaxy-tab"));
-    let unpinned = run(fixture.root.as_path(), &["--unpin"]);
+    let unpinned = run(fixture.root.as_path(), &["peer", "unpin"]);
     assert!(unpinned.is_ok(), "unpin");
     let Ok(unpinned) = unpinned else {
         return;
@@ -333,7 +333,7 @@ fn pin_persists_and_unpin_clears_the_single_peer() {
         return;
     };
     assert!(snapshot.peers().iter().all(|peer| !peer.is_pinned()));
-    let inspect = run(fixture.root.as_path(), &["--config"]);
+    let inspect = run(fixture.root.as_path(), &["config", "show"]);
     assert!(inspect.is_ok(), "config after unpin");
     let Ok(inspect) = inspect else {
         return;

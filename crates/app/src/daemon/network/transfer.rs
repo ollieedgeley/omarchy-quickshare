@@ -109,7 +109,17 @@ fn send_on_connection(
         .map_err(|error| {
             ProtocolError::Io(io::Error::new(io::ErrorKind::BrokenPipe, error))
         })?;
-    let _pairing = session.exchange_account_free_pairing()?;
+    let _pairing =
+        session
+            .exchange_account_free_pairing()
+            .inspect_err(|error| {
+                tracing::warn!(
+                    share_id,
+                    stage = "handshake",
+                    error_class = protocol_reason(error),
+                    "handshake failed"
+                );
+            })?;
     let on_accepted = || {
         let _result = events.send(NetworkEvent::OutboundAccepted { share_id });
     };
@@ -128,23 +138,28 @@ fn send_on_connection(
             on_accepted,
             on_progress,
             is_cancelled,
-        ),
+        )
+        .inspect_err(|error| trace_payload_failure(share_id, error)),
         OutboundPayload::Text(value) => {
-            session.send_outgoing_text(
-                value,
-                on_accepted,
-                on_progress,
-                is_cancelled,
-            )?;
+            session
+                .send_outgoing_text(
+                    value,
+                    on_accepted,
+                    on_progress,
+                    is_cancelled,
+                )
+                .inspect_err(|error| trace_payload_failure(share_id, error))?;
             Ok(u64::try_from(value.len()).unwrap_or(0))
         }
         OutboundPayload::Url(value) => {
-            session.send_outgoing_url(
-                value,
-                on_accepted,
-                on_progress,
-                is_cancelled,
-            )?;
+            session
+                .send_outgoing_url(
+                    value,
+                    on_accepted,
+                    on_progress,
+                    is_cancelled,
+                )
+                .inspect_err(|error| trace_payload_failure(share_id, error))?;
             Ok(u64::try_from(value.len()).unwrap_or(0))
         }
     }
@@ -181,4 +196,16 @@ where
         is_cancelled,
     )?;
     Ok(size)
+}
+
+fn trace_payload_failure(share_id: u64, error: &ProtocolError) {
+    if matches!(error, ProtocolError::Cancelled | ProtocolError::Rejected) {
+        return;
+    }
+    tracing::warn!(
+        share_id,
+        stage = "payload_transfer",
+        error_class = protocol_reason(error),
+        "share failed"
+    );
 }

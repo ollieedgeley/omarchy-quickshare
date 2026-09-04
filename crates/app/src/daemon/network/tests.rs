@@ -9,9 +9,11 @@ use core::time::Duration;
 use quickshare_connections::Medium;
 use std::fs;
 use std::net::TcpListener;
-use std::sync::mpsc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc,
+};
 use std::thread;
-use std::time::Instant;
 
 #[test]
 fn stopping_discovery_emits_peer_lost_for_remembered_peers() {
@@ -35,11 +37,13 @@ fn stopping_discovery_emits_peer_lost_for_remembered_peers() {
     assert!(receiver.try_recv().is_err());
 }
 
+static NEXT_RECEIVE_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
 fn receive_directory() -> std::path::PathBuf {
+    let sequence = NEXT_RECEIVE_DIRECTORY.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "omarchy-quickshare-worker-{}-{}",
-        std::process::id(),
-        Instant::now().elapsed().as_nanos()
+        "omarchy-quickshare-worker-{}-{sequence}",
+        std::process::id()
     ));
     fs::create_dir_all(&path).expect("receive directory");
     path

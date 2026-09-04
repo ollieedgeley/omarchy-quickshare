@@ -38,9 +38,25 @@ enum Consent {
 pub(super) fn open_listener(
     dns_sd: &DnsSd,
 ) -> io::Result<PublishedLanListener> {
-    let listener = Listener::bind_any()?;
-    let advertisement = advertisement(listener.port())?;
-    listener.publish(dns_sd, &advertisement)
+    let result = (|| {
+        let listener = Listener::bind_any()?;
+        let advertisement = advertisement(listener.port())?;
+        listener.publish(dns_sd, &advertisement)
+    })();
+    match &result {
+        Ok(_) => tracing::debug!(
+            stage = "lan_listener",
+            available = true,
+            "adapter stage ready"
+        ),
+        Err(_) => tracing::warn!(
+            stage = "lan_listener",
+            available = false,
+            error_class = "io",
+            "adapter stage failed"
+        ),
+    }
+    result
 }
 
 pub(super) fn receive_share<Stream>(
@@ -91,17 +107,45 @@ where
 {
     let mut connection = accept_connection(stream, medium)
         .map_err(|error| (String::from(protocol_reason(&error)), None))?;
-    let _wifi = accept_negotiated_upgrade(&mut connection, manager)
-        .map_err(|error| (String::from(protocol_reason(&error)), None))?;
+    let _wifi = accept_negotiated_upgrade(&mut connection, manager).map_err(
+        |error| {
+            tracing::warn!(
+                stage = "upgrade",
+                medium = medium_name(medium),
+                error_class = protocol_reason(&error),
+                "upgrade failed"
+            );
+            (String::from(protocol_reason(&error)), None)
+        },
+    )?;
     let mut session = sharing_session(connection);
-    let _pairing = session
-        .exchange_account_free_pairing()
-        .map_err(|error| (String::from(protocol_reason(&error)), None))?;
-    let offer = session
-        .receive_incoming_offer()
-        .map_err(|error| (String::from(protocol_reason(&error)), None))?;
-    announce_offer(&offer, session.verification_code(), events)
-        .map_err(|_| (String::from("disconnected"), None))?;
+    let _pairing =
+        session.exchange_account_free_pairing().map_err(|error| {
+            tracing::warn!(
+                stage = "handshake",
+                error_class = protocol_reason(&error),
+                "handshake failed"
+            );
+            (String::from(protocol_reason(&error)), None)
+        })?;
+    let offer = session.receive_incoming_offer().map_err(|error| {
+        tracing::warn!(
+            stage = "consent",
+            error_class = protocol_reason(&error),
+            "consent failed"
+        );
+        (String::from(protocol_reason(&error)), None)
+    })?;
+    announce_offer(&offer, session.verification_code(), events).map_err(
+        |_| {
+            tracing::warn!(
+                stage = "consent",
+                error_class = "disconnected",
+                "consent failed"
+            );
+            (String::from("disconnected"), None)
+        },
+    )?;
     let share_id = match wait_for_consent(commands, consent_deadline, on_other)?
     {
         Consent::Accepted(share_id) => share_id,
@@ -113,6 +157,11 @@ where
             return Ok(NetworkEvent::InboundRejected { share_id });
         }
         Consent::TimedOut => {
+            tracing::warn!(
+                stage = "consent",
+                error_class = "timed_out",
+                "consent failed"
+            );
             session.timeout_incoming_offer().map_err(|error| {
                 (String::from(protocol_reason(&error)), None)
             })?;
@@ -124,9 +173,21 @@ where
     let mut staged = if offer.kind().persists_as_file() {
         let target =
             ReceiveTarget::open(receive_directory).map_err(|error| {
+                tracing::warn!(
+                    share_id,
+                    stage = "payload_transfer",
+                    error_class = storage_reason(&error),
+                    "share failed"
+                );
                 (String::from(storage_reason(&error)), Some(share_id))
             })?;
         target.preflight(bytes).map_err(|error| {
+            tracing::warn!(
+                share_id,
+                stage = "payload_transfer",
+                error_class = storage_reason(&error),
+                "share failed"
+            );
             (String::from(storage_reason(&error)), Some(share_id))
         })?;
         let mut files = Vec::with_capacity(offer.file_count());
@@ -138,6 +199,12 @@ where
                 (String::from("invalid_payload"), Some(share_id))
             })?;
             files.push(target.stage(part.name(), size).map_err(|error| {
+                tracing::warn!(
+                    share_id,
+                    stage = "payload_transfer",
+                    error_class = storage_reason(&error),
+                    "share failed"
+                );
                 (String::from(storage_reason(&error)), Some(share_id))
             })?);
         }
@@ -162,6 +229,12 @@ where
         Ok(event) => {
             for file in staged {
                 let _published = file.commit().map_err(|error| {
+                    tracing::warn!(
+                        share_id,
+                        stage = "payload_transfer",
+                        error_class = storage_reason(&error),
+                        "share failed"
+                    );
                     (String::from(storage_reason(&error)), Some(share_id))
                 })?;
             }
@@ -171,6 +244,12 @@ where
             Ok(NetworkEvent::InboundCancelled { share_id })
         }
         Err(error) => {
+            tracing::warn!(
+                share_id,
+                stage = "payload_transfer",
+                error_class = protocol_reason(&error),
+                "share failed"
+            );
             Err((String::from(protocol_reason(&error)), Some(share_id)))
         }
     }

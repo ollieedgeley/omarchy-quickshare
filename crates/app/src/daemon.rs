@@ -8,13 +8,12 @@ mod observations;
 mod outbound;
 mod production;
 
+pub use self::lifecycle::{run, run_simulated};
+
 use core::time::Duration;
 use std::io::{self, BufReader};
-use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
 use std::thread;
-use std::{fs, os::unix::net::UnixStream};
 
 use quickshare_control::PROTOCOL_VERSION;
 use quickshare_control::codec::{read_request, write_response};
@@ -24,11 +23,6 @@ use quickshare_sharing::{Attachment, Coordinator};
 
 use self::network::NetworkWorker;
 use self::outbound::OutboundState;
-
-/// Owner-only mode for the control socket directory.
-const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
-/// Owner-only mode for the control socket.
-const PRIVATE_SOCKET_MODE: u32 = 0o600;
 
 /// The same-user local endpoint state.
 #[derive(Debug, Default)]
@@ -53,52 +47,6 @@ pub struct Daemon {
     visibility_opened_at: Option<std::time::Instant>,
 }
 
-/// A bound control listener that removes its socket on a clean shutdown.
-#[derive(Debug)]
-struct ControlSocket {
-    /// The listener served by the local endpoint.
-    listener: UnixListener,
-    /// The filesystem entry removed when the listener is dropped.
-    path: PathBuf,
-}
-
-impl ControlSocket {
-    /// Binds an owner-only socket after rejecting a running endpoint.
-    fn bind(path: &Path) -> io::Result<Self> {
-        let directory = path.parent().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "control socket has no parent directory",
-            )
-        })?;
-        fs::create_dir_all(directory)?;
-        fs::set_permissions(
-            directory,
-            fs::Permissions::from_mode(PRIVATE_DIRECTORY_MODE),
-        )?;
-        remove_stale_socket(path)?;
-        let listener = UnixListener::bind(path)?;
-        fs::set_permissions(
-            path,
-            fs::Permissions::from_mode(PRIVATE_SOCKET_MODE),
-        )?;
-        Ok(Self {
-            listener,
-            path: path.to_path_buf(),
-        })
-    }
-}
-
-#[expect(
-    clippy::missing_trait_methods,
-    reason = "Drop has no project-implementable default methods"
-)]
-impl Drop for ControlSocket {
-    fn drop(&mut self) {
-        drop(fs::remove_file(&self.path));
-    }
-}
-
 #[expect(
     clippy::multiple_inherent_impl,
     reason = "Production network behavior stays in its owned daemon submodule"
@@ -117,24 +65,28 @@ impl Daemon {
         match request {
             Request::CloseVisibility => {
                 self.sharing.close_visibility();
+                tracing::info!(phase = "closed", "visibility closed");
                 if let Some(network) = &self.network {
                     network.close_visibility()?;
                 }
             }
             Request::Discover => {
                 self.sharing.start_discovery();
+                tracing::info!(phase = "searching", "discovery started");
                 if let Some(network) = &self.network {
                     network.discover()?;
                 }
             }
             Request::OpenVisibility => {
                 self.sharing.open_visibility();
+                tracing::info!(phase = "open", "visibility opened");
                 if let Some(network) = &self.network {
                     network.open_visibility()?;
                 }
             }
             Request::StopDiscovery => {
                 self.sharing.stop_discovery();
+                tracing::info!(phase = "idle", "discovery stopped");
                 if let Some(network) = &self.network {
                     network.stop_discovery()?;
                 }
@@ -164,9 +116,18 @@ impl Daemon {
     /// Queues one validated attachment and reports its stable identifier.
     fn queue_attachment(&mut self, attachment: Attachment) -> u64 {
         let share_id = self.sharing.queue_outbound(attachment).get();
+        tracing::info!(
+            share_id,
+            direction = "outbound",
+            phase = "waiting_for_peer",
+            "share phase"
+        );
         self.sharing.start_discovery();
-        if let Some(network) = &self.network {
-            let _result = network.discover();
+        tracing::info!(phase = "searching", "discovery started");
+        if let Some(network) = &self.network
+            && network.discover().is_err()
+        {
+            tracing::error!(stage = "discover", "daemon cannot continue");
         }
         share_id
     }
@@ -272,7 +233,13 @@ impl Daemon {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(5));
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    tracing::error!(
+                        error_class = "io",
+                        "daemon cannot continue"
+                    );
+                    return Err(error);
+                }
             }
         }
         Ok(())
@@ -292,6 +259,12 @@ impl Daemon {
             Request::Accept { share_id } => {
                 let accepted = self.sharing.accept_inbound(*share_id);
                 if accepted {
+                    tracing::info!(
+                        share_id,
+                        direction = "inbound",
+                        phase = "transferring",
+                        "share phase"
+                    );
                     self.transfer_started_at = Some(std::time::Instant::now());
                     if let Some(network) = &self.network {
                         network.accept_inbound(*share_id)?;
@@ -301,6 +274,11 @@ impl Daemon {
             }
             Request::Cancel { share_id } => {
                 if self.sharing.cancel(*share_id) {
+                    tracing::info!(
+                        share_id,
+                        phase = "cancelled",
+                        "share phase"
+                    );
                     if let Some(network) = &self.network {
                         network.cancel_transfer(*share_id);
                     }
@@ -327,8 +305,16 @@ impl Daemon {
             Request::UnpinPeer => action_response(self.unpin_peers()?),
             Request::Reject { share_id } => {
                 let rejected = self.sharing.reject_inbound(*share_id);
-                if rejected && let Some(network) = &self.network {
-                    network.reject_inbound(*share_id)?;
+                if rejected {
+                    tracing::info!(
+                        share_id,
+                        direction = "inbound",
+                        phase = "rejected",
+                        "share phase"
+                    );
+                    if let Some(network) = &self.network {
+                        network.reject_inbound(*share_id)?;
+                    }
                 }
                 action_response(rejected)
             }
@@ -433,61 +419,4 @@ const fn action_response(applied: bool) -> ResponseEnvelope {
     } else {
         ResponseEnvelope::not_found()
     }
-}
-
-/// Builds public file facts after confirming the source still exists.
-/// Removes an abandoned socket without replacing a running endpoint.
-#[expect(
-    clippy::single_call_fn,
-    reason = "The stale-socket decision remains separate from binding"
-)]
-fn remove_stale_socket(path: &Path) -> io::Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    match UnixStream::connect(path) {
-        Ok(_stream) => Err(io::Error::new(
-            io::ErrorKind::AddrInUse,
-            "local endpoint is already running",
-        )),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
-            ) =>
-        {
-            fs::remove_file(path)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-/// Runs the local endpoint until the process is terminated.
-///
-/// # Errors
-pub fn run(socket_path: &Path) -> io::Result<()> {
-    let config = crate::config::Config::load()?;
-    fs::create_dir_all(&config.receive_directory)?;
-    let socket = ControlSocket::bind(socket_path)?;
-    let network = NetworkWorker::start(
-        config.receive_directory.clone(),
-        Duration::from_secs(config.visibility_timeout_secs),
-    )?;
-    let mut endpoint = Daemon::with_network_worker(network);
-    endpoint.install_config(config);
-    endpoint.serve_until(&socket.listener, || false)
-}
-
-/// Runs a deterministic local peer for complete application testing.
-///
-/// # Errors
-///
-/// Returns an error when the private control socket cannot be served.
-#[inline]
-pub fn run_simulated(socket_path: &Path) -> io::Result<()> {
-    let config = crate::config::Config::load()?;
-    let socket = ControlSocket::bind(socket_path)?;
-    let mut endpoint = Daemon::simulated();
-    endpoint.install_config(config);
-    endpoint.serve_until(&socket.listener, || false)
 }

@@ -33,10 +33,6 @@ impl Daemon {
 
     /// Applies one production network observation to public daemon state.
     #[expect(
-        clippy::print_stderr,
-        reason = "Production transfer failures need actionable daemon logs"
-    )]
-    #[expect(
         clippy::too_many_lines,
         reason = "Exhaustive match keeps the network lifecycle together"
     )]
@@ -44,6 +40,12 @@ impl Daemon {
         match event {
             NetworkEvent::InboundCancelled { share_id } => {
                 let _cancelled = self.sharing.cancel(share_id);
+                tracing::info!(
+                    share_id,
+                    direction = "inbound",
+                    phase = "cancelled",
+                    "share phase"
+                );
             }
             NetworkEvent::InboundCompleted {
                 bytes,
@@ -60,6 +62,13 @@ impl Daemon {
                         self.sharing.replace_attachment(share_id, attachment);
                 }
                 let recorded = self.sharing.record_progress(share_id, bytes);
+                tracing::info!(
+                    share_id,
+                    direction = "inbound",
+                    phase = "completed",
+                    bytes,
+                    "share phase"
+                );
                 self.notify_if_completed(recorded, NotifyKind::Received);
             }
             NetworkEvent::InboundFailed { reason, share_id } => {
@@ -67,6 +76,12 @@ impl Daemon {
             }
             NetworkEvent::InboundRejected { share_id } => {
                 let _rejected = self.sharing.reject_inbound(share_id);
+                tracing::info!(
+                    share_id,
+                    direction = "inbound",
+                    phase = "rejected",
+                    "share phase"
+                );
             }
             NetworkEvent::InboundOffered {
                 kind,
@@ -88,6 +103,12 @@ impl Daemon {
                     INBOUND_PEER_ID,
                     Some(size_bytes),
                 ) {
+                    tracing::info!(
+                        share_id = share_id.get(),
+                        direction = "inbound",
+                        phase = "awaiting_local_consent",
+                        "share phase"
+                    );
                     let _recorded = self.sharing.record_verification_code(
                         share_id.get(),
                         &verification_code,
@@ -96,27 +117,58 @@ impl Daemon {
             }
             NetworkEvent::OutboundAccepted { share_id } => {
                 let _accepted = self.sharing.accept_by_peer(share_id);
+                tracing::info!(
+                    share_id,
+                    direction = "outbound",
+                    phase = "transferring",
+                    "share phase"
+                );
                 self.transfer_started_at = Some(Instant::now());
             }
             NetworkEvent::OutboundPairing {
                 share_id,
                 verification_code,
             } => {
+                tracing::info!(
+                    share_id,
+                    direction = "outbound",
+                    phase = "awaiting_peer_consent",
+                    "share phase"
+                );
                 let _recorded = self
                     .sharing
                     .record_verification_code(share_id, &verification_code);
             }
             NetworkEvent::OutboundCancelled { share_id } => {
                 let _cancelled = self.sharing.cancel(share_id);
+                tracing::info!(
+                    share_id,
+                    direction = "outbound",
+                    phase = "cancelled",
+                    "share phase"
+                );
                 self.outbound.finish(share_id);
             }
             NetworkEvent::OutboundCompleted { bytes, share_id } => {
                 let recorded = self.sharing.record_progress(share_id, bytes);
+                tracing::info!(
+                    share_id,
+                    direction = "outbound",
+                    phase = "completed",
+                    bytes,
+                    "share phase"
+                );
                 self.outbound.finish(share_id);
                 self.notify_if_completed(recorded, NotifyKind::Sent);
             }
             NetworkEvent::OutboundFailed { reason, share_id } => {
-                eprintln!("outbound share {share_id} failed: {reason}");
+                tracing::warn!(
+                    share_id,
+                    direction = "outbound",
+                    phase = "failed",
+                    error_class = "network",
+                    "share failed"
+                );
                 let _failed = self.sharing.fail(share_id);
                 let _observed = self.sharing.record_observation(
                     share_id,
@@ -130,10 +182,21 @@ impl Daemon {
             }
             NetworkEvent::OutboundRejected { share_id } => {
                 let _rejected = self.sharing.reject_by_peer(share_id);
+                tracing::info!(
+                    share_id,
+                    direction = "outbound",
+                    phase = "rejected",
+                    "share phase"
+                );
                 self.outbound.finish(share_id);
             }
             NetworkEvent::PeerLost { peer_id } => {
+                let before = self.sharing.snapshot().peers().len();
                 let _removed = self.sharing.remove_peer(&peer_id);
+                let peer_count = self.sharing.snapshot().peers().len();
+                if peer_count != before {
+                    tracing::info!(peer_count, "peer count changed");
+                }
                 self.outbound.forget_peer(&peer_id);
             }
             NetworkEvent::PeerSeen {
@@ -141,7 +204,12 @@ impl Daemon {
                 peer_id,
                 route,
             } => {
+                let before = self.sharing.snapshot().peers().len();
                 self.sharing.observe_peer(&peer_id, &name);
+                let peer_count = self.sharing.snapshot().peers().len();
+                if peer_count != before {
+                    tracing::info!(peer_count, "peer count changed");
+                }
                 self.pin_if_configured(&peer_id);
                 self.outbound.remember_peer(&peer_id, route);
                 self.auto_start_pinned(&peer_id);
@@ -155,7 +223,19 @@ impl Daemon {
                     self.sharing.record_progress(share_id, transferred_bytes);
                 if self.transfer_started_at.is_none() {
                     self.transfer_started_at = Some(Instant::now());
+                    tracing::info!(
+                        share_id,
+                        medium = medium.as_str(),
+                        phase = "transferring",
+                        "medium selected"
+                    );
                 }
+                tracing::debug!(
+                    share_id,
+                    medium = medium.as_str(),
+                    bytes = transferred_bytes,
+                    "transfer progress"
+                );
                 let remaining = self.transfer_started_at.and_then(|started| {
                     remaining_seconds(
                         transferred_bytes,
@@ -178,16 +258,17 @@ impl Daemon {
         }
     }
 
-    #[expect(
-        clippy::print_stderr,
-        reason = "Production transfer failures need actionable daemon logs"
-    )]
     fn apply_inbound_failure(
         &mut self,
         candidate_share_id: Option<u64>,
         reason: &str,
     ) {
-        eprintln!("inbound share failed: {reason}");
+        tracing::warn!(
+            direction = "inbound",
+            phase = "failed",
+            error_class = "network",
+            "share failed"
+        );
         if let Some(share_id) =
             candidate_share_id.or_else(|| self.active_inbound_consent_id())
         {
@@ -246,12 +327,26 @@ impl Daemon {
             .routes()
             .first()
             .map(|route| medium_name(route.medium()));
+        if let Some(medium) = medium {
+            tracing::info!(share_id, medium, "medium selected");
+        }
         let _observed = self
             .sharing
             .record_observation(share_id, medium, None, None, None);
         if network.send_share(share_id, transfer).is_ok() {
+            tracing::info!(
+                share_id,
+                direction = "outbound",
+                phase = "awaiting_peer_consent",
+                "share phase"
+            );
             return true;
         }
+        tracing::error!(
+            share_id,
+            stage = "send_share",
+            "daemon cannot continue"
+        );
         let _failed = self.sharing.fail(share_id);
         false
     }

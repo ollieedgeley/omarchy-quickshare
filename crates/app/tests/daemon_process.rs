@@ -12,11 +12,14 @@
     reason = "Process contracts keep descriptive command-output bindings"
 )]
 
+use clap as _;
 use quickshare_bluez as _;
 use quickshare_connections as _;
 use quickshare_crypto as _;
 use quickshare_storage as _;
 use rand_core as _;
+use tracing as _;
+use tracing_subscriber as _;
 use zbus as _;
 
 #[cfg(test)]

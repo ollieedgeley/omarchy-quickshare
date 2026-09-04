@@ -31,7 +31,6 @@
     clippy::redundant_pub_crate,
     clippy::shadow_reuse,
     clippy::single_call_fn,
-    clippy::single_match,
     clippy::single_match_else,
     clippy::string_slice,
     clippy::too_many_arguments,

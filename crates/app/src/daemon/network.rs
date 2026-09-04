@@ -300,10 +300,20 @@ impl NetworkWorker {
         let worker = thread::spawn(move || {
             let dns_sd = match DnsSd::new() {
                 Ok(dns_sd) => {
+                    tracing::debug!(
+                        stage = "mdns",
+                        available = true,
+                        "adapter stage ready"
+                    );
                     let _result = ready_sender.send(Ok(()));
                     dns_sd
                 }
                 Err(error) => {
+                    tracing::error!(
+                        stage = "mdns",
+                        available = false,
+                        "daemon cannot continue"
+                    );
                     let _result = ready_sender.send(Err(error.to_string()));
                     return;
                 }

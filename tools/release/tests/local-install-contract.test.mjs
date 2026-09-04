@@ -19,9 +19,9 @@ const EXECUTABLE_MODE = 0o100755;
 const RESTART = /^Restart=on-failure$/mu;
 const RESTART_DELAY = /^RestartSec=2s$/mu;
 const SERVICE_COMMAND =
-  /^ExecStart=%h\/\.local\/bin\/omarchy-quickshare --daemon$/mu;
+  /^ExecStart=%h\/\.local\/bin\/omarchy-quickshare daemon$/mu;
 const SIMULATED_SERVICE_COMMAND =
-  /^ExecStart=%h\/\.local\/bin\/omarchy-quickshare --daemon --simulate$/mu;
+  /^ExecStart=%h\/\.local\/bin\/omarchy-quickshare daemon --simulate$/mu;
 const SERVICE_TARGET = /^WantedBy=default.target$/mu;
 const DISCOVERY_TIMEOUT = /^discovery_timeout_secs = 15$/mu;
 const RECEIVE_DIRECTORY =
@@ -55,7 +55,7 @@ function preparedSource(root) {
   writeFileSync(config, DEFAULT_CONFIG);
   writeFileSync(
     service,
-    "[Service]\nExecStart=%h/.local/bin/omarchy-quickshare --daemon\n",
+    "[Service]\nExecStart=%h/.local/bin/omarchy-quickshare daemon\n",
   );
   return { binary, config, service };
 }

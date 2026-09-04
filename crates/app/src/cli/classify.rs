@@ -1,135 +1,9 @@
-//! Classifies CLI arguments into control-protocol requests.
+//! Classifies `send` content into control-protocol requests.
 
-use std::env;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use quickshare_control::request::Envelope as RequestEnvelope;
-
-/// Parses one state-changing CLI command.
-#[expect(
-    clippy::pattern_type_mismatch,
-    reason = "Borrowed CLI arguments retain their string ownership"
-)]
-pub(super) fn action_request(
-    arguments: &[String],
-) -> io::Result<Option<RequestEnvelope>> {
-    let request = match arguments {
-        [flag, value] if flag == "--accept" => {
-            RequestEnvelope::accept(parse_number(value, "share ID")?)
-        }
-        [flag, value] if flag == "--cancel" => {
-            RequestEnvelope::cancel(parse_number(value, "share ID")?)
-        }
-        [flag] if flag == "--close-visibility" => {
-            RequestEnvelope::close_visibility()
-        }
-        [flag] if flag == "--discover" => RequestEnvelope::discover(),
-        [flag, value] if flag == "--dismiss" => {
-            RequestEnvelope::dismiss(parse_number(value, "share ID")?)
-        }
-        [flag] if flag == "--open-visibility" => {
-            RequestEnvelope::open_visibility()
-        }
-        [flag, peer_id] if flag == "--pin" => {
-            RequestEnvelope::pin_peer(peer_id)
-        }
-        [flag, value] if flag == "--reject" => {
-            RequestEnvelope::reject(parse_number(value, "share ID")?)
-        }
-        [flag, share_id, peer_id] if flag == "--send-to" => {
-            RequestEnvelope::select_peer(
-                parse_number(share_id, "share ID")?,
-                peer_id,
-            )
-        }
-        [flag] if flag == "--stop-discovery" => {
-            RequestEnvelope::stop_discovery()
-        }
-        [flag] if flag == "--unpin" => RequestEnvelope::unpin_peer(),
-        _ => return simulation_action_request(arguments),
-    };
-    Ok(Some(request))
-}
-
-/// Parses one simulator-only peer or transport event.
-#[expect(
-    clippy::pattern_type_mismatch,
-    reason = "Borrowed simulator arguments retain their string ownership"
-)]
-fn simulation_action_request(
-    arguments: &[String],
-) -> io::Result<Option<RequestEnvelope>> {
-    if !arguments
-        .first()
-        .is_some_and(|flag| flag.starts_with("--simulate-"))
-    {
-        return Ok(None);
-    }
-    if env::var_os("OMARCHY_QUICKSHARE_ALLOW_SIMULATION").is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "simulation commands are unavailable; start a simulated daemon \
-             with --daemon --simulate and set \
-             OMARCHY_QUICKSHARE_ALLOW_SIMULATION=1",
-        ));
-    }
-    let request = match arguments {
-        [flag] if flag == "--simulate-discovery-timeout" => {
-            RequestEnvelope::simulate_discovery_timeout()
-        }
-        [flag, value] if flag == "--simulate-fail" => {
-            RequestEnvelope::simulate_fail(parse_number(value, "share ID")?)
-        }
-        [flag, name, size] if flag == "--simulate-incoming-file" => {
-            RequestEnvelope::simulate_incoming_file(
-                name,
-                parse_number(size, "byte count")?,
-            )
-        }
-        [flag, text] if flag == "--simulate-incoming-text" => {
-            RequestEnvelope::simulate_incoming_text(text)
-        }
-        [flag, url] if flag == "--simulate-incoming-url" => {
-            RequestEnvelope::simulate_incoming_url(url)
-        }
-        [flag, value] if flag == "--simulate-peer-accept" => {
-            RequestEnvelope::simulate_peer_accept(parse_number(
-                value, "share ID",
-            )?)
-        }
-        [flag, peer_id] if flag == "--simulate-peer-lost" => {
-            RequestEnvelope::simulate_peer_lost(peer_id)
-        }
-        [flag, value] if flag == "--simulate-peer-reject" => {
-            RequestEnvelope::simulate_peer_reject(parse_number(
-                value, "share ID",
-            )?)
-        }
-        [flag, peer_id, name] if flag == "--simulate-peer-seen" => {
-            RequestEnvelope::simulate_peer_seen(peer_id, name)
-        }
-        [flag, share_id, transferred] if flag == "--simulate-progress" => {
-            RequestEnvelope::simulate_progress(
-                parse_number(share_id, "share ID")?,
-                parse_number(transferred, "byte count")?,
-            )
-        }
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "unrecognized simulation command",
-            ));
-        }
-    };
-    Ok(Some(request))
-}
-/// Parses a non-negative control protocol integer.
-fn parse_number(value: &str, field: &str) -> io::Result<u64> {
-    value.parse::<u64>().map_err(|_error| {
-        io::Error::new(io::ErrorKind::InvalidInput, format!("invalid {field}"))
-    })
-}
 
 /// Treats one local `file://` URI as an absolute filesystem path.
 fn file_uri_path(text: &str) -> io::Result<Option<PathBuf>> {
@@ -251,25 +125,12 @@ fn hex_digit(byte: u8) -> io::Result<u8> {
     }
 }
 
-/// Classifies one command argument without contacting the local endpoint.
+/// Classifies one `send` argument without contacting the local endpoint.
 pub(super) fn request(
-    arguments: &[String],
+    content: &str,
     current_directory: &Path,
 ) -> io::Result<RequestEnvelope> {
-    let mut values = arguments.iter();
-    let Some(text) = values.next() else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "usage: omarchy-quickshare <text|url|file|folder>",
-        ));
-    };
-    if values.next().is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "usage: omarchy-quickshare <text|url|file|folder>",
-        ));
-    }
-    if let Some(path) = file_uri_path(text)? {
+    if let Some(path) = file_uri_path(content)? {
         if path.is_dir() || path.is_file() {
             return Ok(RequestEnvelope::submit_file(&path));
         }
@@ -278,12 +139,12 @@ pub(super) fn request(
             "file URI path does not exist",
         ));
     }
-    let path = current_directory.join(text);
+    let path = current_directory.join(content);
     if path.is_dir() || path.is_file() {
         return Ok(RequestEnvelope::submit_file(&path));
     }
-    if text.starts_with("http://") || text.starts_with("https://") {
-        return Ok(RequestEnvelope::submit_url(text));
+    if content.starts_with("http://") || content.starts_with("https://") {
+        return Ok(RequestEnvelope::submit_url(content));
     }
-    Ok(RequestEnvelope::submit_text(text))
+    Ok(RequestEnvelope::submit_text(content))
 }

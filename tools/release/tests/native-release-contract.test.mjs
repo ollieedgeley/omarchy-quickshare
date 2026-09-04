@@ -27,7 +27,7 @@ const ARCH_SERVICE_PATTERN =
 const ARCH_CONFIG_PATTERN = /usr\/share\/omarchy-quickshare\/config.toml/u;
 const ARCH_LICENSE_PATTERN = /usr\/share\/licenses\/\$pkgname\/LICENSE/u;
 const PACKAGE_EXEC_PATTERN =
-  /^ExecStart=\/usr\/bin\/omarchy-quickshare --daemon$/mu;
+  /^ExecStart=\/usr\/bin\/omarchy-quickshare daemon$/mu;
 const LOCAL_BIN_PATTERN = /%h\/\.local\/bin/u;
 const PKGINFO_NAME_PATTERN = /^pkgname = omarchy-quickshare$/mu;
 const PKGINFO_VERSION_PATTERN = /^pkgver = 0\.0\.0-1$/mu;
@@ -54,7 +54,7 @@ function preparedNativeRoot(root) {
   writeFileSync(join(root, "target", "release", "omarchy-quickshare"), "bin");
   writeFileSync(
     join(root, "packaging", "systemd", "omarchy-quickshare.service"),
-    "[Service]\nExecStart=%h/.local/bin/omarchy-quickshare --daemon\n",
+    "[Service]\nExecStart=%h/.local/bin/omarchy-quickshare daemon\n",
   );
   writeFileSync(
     join(root, "packaging", "systemd", "omarchy-quickshare.toml"),

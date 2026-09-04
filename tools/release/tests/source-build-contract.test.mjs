@@ -84,7 +84,7 @@ function writeLeanDocs(root) {
   mkdirSync(join(root, "packaging", "systemd"), { recursive: true });
   writeFileSync(
     join(root, "packaging", "systemd", "omarchy-quickshare.service"),
-    "[Service]\nExecStart=%h/.local/bin/omarchy-quickshare --daemon\n",
+    "[Service]\nExecStart=%h/.local/bin/omarchy-quickshare daemon\n",
   );
   writeFileSync(
     join(root, "packaging", "systemd", "omarchy-quickshare.toml"),

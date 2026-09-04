@@ -15,6 +15,10 @@ quickshare-crypto = { path = "../core/crypto" }
 quickshare-network = { path = "../platform/network" }
 quickshare-sharing = { path = "../core/sharing" }
 quickshare-storage = { path = "../platform/storage" }
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
 rand_core.workspace = true
 zbus.workspace = true
 [lints]
