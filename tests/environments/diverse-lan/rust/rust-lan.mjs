@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -28,6 +28,8 @@ const DISCOVERY_TIMEOUT_MS = 18_000;
 const MULTI_FRAME_FILE_SIZE = 1_048_577;
 const POLL_MS = 100;
 const QUEUED_SHARE_PATTERN = /Share (?<id>\d+) queued/u;
+const RECEIVED_SUBDIRECTORY = "omarchy-quickshare";
+const RUST_LAN_IMAGE = "omarchy-quickshare/rust-lan-peer:development";
 
 function environment(directories) {
   const manifest = JSON.parse(readFileSync(GOOGLE_MANIFEST, "utf8"));
@@ -221,7 +223,12 @@ async function assertGoogleToRust(directories) {
       "complete the inbound share",
       (value) => value.active_share?.phase === "completed",
     );
-    const received = join(directories.rust, "received", file);
+    const received = join(
+      directories.rust,
+      "received",
+      RECEIVED_SUBDIRECTORY,
+      file,
+    );
     assert.equal(transferHash(source), transferHash(received));
   } catch (error) {
     throw new Error(
@@ -299,11 +306,45 @@ function startDaemon(directories) {
   });
   return { daemon, logs: () => logs };
 }
+function removeCaseRoot(root) {
+  try {
+    rmSync(root, { force: true, recursive: true });
+    return;
+  } catch (error) {
+    if (error.code !== "EACCES") {
+      throw error;
+    }
+  }
+  const result = spawnSync(process.env.DOCKER ?? "docker", [
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "--user",
+    "0",
+    "--entrypoint",
+    "/bin/chmod",
+    "--volume",
+    `${root}:/wipe`,
+    RUST_LAN_IMAGE,
+    "-R",
+    "a+rwx",
+    "/wipe",
+  ]);
+  if (result.status !== 0) {
+    throw new Error(
+      result.stderr.toString() ||
+        "could not make rust LAN case files removable",
+    );
+  }
+  rmSync(root, { force: true, recursive: true });
+}
 
 export async function runRustLanScenario({ direction }) {
   assert.ok(direction === "rust-to-google" || direction === "google-to-rust");
   const directories = caseDirectories();
   let daemon = null;
+  let failure = null;
   try {
     await compose(
       ["up", "--detach", "--no-build", "--wait", "--wait-timeout", "30"],
@@ -318,6 +359,8 @@ export async function runRustLanScenario({ direction }) {
     } else {
       await assertGoogleToRust(directories);
     }
+  } catch (error) {
+    failure = error;
   } finally {
     daemon?.daemon.kill();
     await compose(
@@ -325,7 +368,14 @@ export async function runRustLanScenario({ direction }) {
       directories,
       false,
     );
-    rmSync(directories.root, { force: true, recursive: true });
+    try {
+      removeCaseRoot(directories.root);
+    } catch (error) {
+      failure ??= error;
+    }
+  }
+  if (failure) {
+    throw failure;
   }
 }
 
