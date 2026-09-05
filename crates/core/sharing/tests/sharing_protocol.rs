@@ -34,6 +34,8 @@ use std::{
     io::{self, Cursor, Read},
     thread,
 };
+use tracing as _;
+use tracing_subscriber as _;
 
 const MULTI_FRAME_FILE_SIZE: usize = 0x0010_0001;
 

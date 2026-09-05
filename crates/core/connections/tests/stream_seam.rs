@@ -16,6 +16,7 @@ use quickshare_crypto::Handshake;
 use quickshare_wire::sharing::Frame;
 use rand_core as _;
 use std::{io::Write as _, os::unix::net::UnixStream, thread};
+use tracing as _;
 
 const INITIATOR_RANDOM: [u8; 32] = [1; 32];
 const RESPONDER_RANDOM: [u8; 32] = [2; 32];

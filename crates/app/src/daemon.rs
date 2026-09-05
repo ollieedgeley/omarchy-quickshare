@@ -65,28 +65,56 @@ impl Daemon {
         match request {
             Request::CloseVisibility => {
                 self.sharing.close_visibility();
-                tracing::info!(phase = "closed", "visibility closed");
+                tracing::info!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "local_control",
+                    operation = "close_visibility",
+                    outcome = "completed",
+                    phase = "closed",
+                    "visibility closed"
+                );
                 if let Some(network) = &self.network {
                     network.close_visibility()?;
                 }
             }
             Request::Discover => {
                 self.sharing.start_discovery();
-                tracing::info!(phase = "searching", "discovery started");
+                tracing::info!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "local_control",
+                    operation = "discover",
+                    outcome = "completed",
+                    phase = "searching",
+                    "discovery started"
+                );
                 if let Some(network) = &self.network {
                     network.discover()?;
                 }
             }
             Request::OpenVisibility => {
                 self.sharing.open_visibility();
-                tracing::info!(phase = "open", "visibility opened");
+                tracing::info!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "local_control",
+                    operation = "open_visibility",
+                    outcome = "completed",
+                    phase = "open",
+                    "visibility opened"
+                );
                 if let Some(network) = &self.network {
                     network.open_visibility()?;
                 }
             }
             Request::StopDiscovery => {
                 self.sharing.stop_discovery();
-                tracing::info!(phase = "idle", "discovery stopped");
+                tracing::info!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "local_control",
+                    operation = "stop_discovery",
+                    outcome = "completed",
+                    phase = "idle",
+                    "discovery stopped"
+                );
                 if let Some(network) = &self.network {
                     network.stop_discovery()?;
                 }
@@ -297,6 +325,10 @@ impl Daemon {
                 let accepted = self.sharing.accept_inbound(*share_id);
                 if accepted {
                     tracing::info!(
+                        target: "omarchy_quickshare::protocol",
+                        stage = "local_control",
+                        operation = "accept",
+                        outcome = "completed",
                         share_id,
                         direction = "inbound",
                         phase = "transferring",
@@ -312,6 +344,10 @@ impl Daemon {
             Request::Cancel { share_id } => {
                 if self.sharing.cancel(*share_id) {
                     tracing::info!(
+                        target: "omarchy_quickshare::protocol",
+                        stage = "local_control",
+                        operation = "cancel",
+                        outcome = "completed",
                         share_id,
                         phase = "cancelled",
                         "share phase"
@@ -344,6 +380,10 @@ impl Daemon {
                 let rejected = self.sharing.reject_inbound(*share_id);
                 if rejected {
                     tracing::info!(
+                        target: "omarchy_quickshare::protocol",
+                        stage = "local_control",
+                        operation = "reject",
+                        outcome = "completed",
                         share_id,
                         direction = "inbound",
                         phase = "rejected",

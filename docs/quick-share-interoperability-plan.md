@@ -9,23 +9,28 @@ its receive prompt from the protocol exchange. The four-digit value is derived
 from the UKEY2 authentication token and is compared on both devices; it is not
 entered on the phone.
 
-The physical-phone failures are below the UI and attachment layers. In both
-directions, the current daemon completes discovery, a same-LAN TCP connection,
-and the Connections/UKEY2 setup, then disconnects inside the account-free
-paired-key exchange. Neither direction reaches the Sharing introduction or
-receiver-consent stage.
+The 2026-09-04 physical-phone runs are a historical baseline. In both
+directions, that daemon completed discovery, a same-LAN TCP connection, and
+Connections/UKEY2, then disconnected inside the account-free paired-key
+exchange before introduction or consent.
 
-That evidence localizes the immediate investigation to
-`SharingSession::exchange_account_free_pairing`. It does not yet identify which
-of that method's four wire operations fails. The first implementation change
-must therefore make those operations observable without logging keys, tokens,
-signatures, filenames, clipboard text, or payload bytes. Change the wire behavior
-only after the next physical run identifies the last successful operation and
-the peer frame or close that follows it.
+The latest physical run used `b45235f` and superseded the earlier
+`invalid_payload` diagnosis. In its auto-accept sequence, acceptance occurred
+after 108 ms and disconnection followed 58 ms later. None of 20 attempts
+completed. The evidence does not establish the disconnect origin or reveal the
+proprietary peer's internal reason, so no phone fix is claimed.
+
+The newer diagnostic instrumentation has since been exercised with the actual
+daemon and the pinned Google-derived Linux peer. A 1,048,577-byte `FILE`
+completed in both directions with matching integrity. Its logs preserved
+`connection_id` correlation before assigning each `share_id`. That is
+reference-peer evidence, not a stock Android result. The instrumented build
+still awaits its next physical-phone run.
 
 This document complements the broader
-[implementation baseline](research/implementation-baseline-2026-09.md) and
-[programmatic verification policy](research/bidirectional-programmatic-verification.md).
+[implementation baseline](research/implementation-baseline-2026-09.md),
+[programmatic verification policy](research/bidirectional-programmatic-verification.md),
+and [source-backed payload lifecycle audit](research/simulator-vs-android-paired-key.md).
 
 ## Scope and evidence rules
 
@@ -162,12 +167,15 @@ exist yet.
 6. returns the response and receives the payload.
 
 The inbound UI ordering is correct: no local consent screen is emitted before
-pairing and introduction. The current phone-to-laptop failure occurs before
-step 3, so the absence of a plugin prompt is expected.
+pairing and introduction. The pre-`b45235f` phone-to-laptop runs reached local
+consent and then failed during step 6 with `invalid_payload` in
+`payload_transfer`. The newer auto-accept run is the current physical evidence.
 
 ## Physical-device evidence
 
-The 2026-09-04 user-service journal records:
+### Historical baseline from 2026-09-04
+
+The 2026-09-04 user-service journal recorded:
 
 - three laptop-to-phone attempts selecting `wifi_lan`, followed about 15 seconds
   later by `network::transfer` reporting `stage="handshake"` and
@@ -177,24 +185,59 @@ The 2026-09-04 user-service journal records:
 - no introduction, receiver-consent, payload-progress, or completion event in
   either direction.
 
-In both call paths, that log statement wraps
-`SharingSession::exchange_account_free_pairing`. Connections/UKEY2 already
-returned successfully. Therefore:
+Those logs localized that baseline to
+`SharingSession::exchange_account_free_pairing`, after Connections/UKEY2. They
+did not identify which paired-key operation failed. This remains useful
+historical evidence, but it is not the current diagnosis.
 
-- discovery, the firewall, TCP establishment, and UKEY2 are not the current
-  failure boundary;
-- notifications, plugin acceptance, attachment type, and payload framing have
-  not yet become relevant;
-- the common failing module is the account-free paired-key exchange;
-- the exact failing substep remains unknown because all four operations share
-  one coarse log label.
+### Latest completed run before `b45235f`
+
+- Pairing completed in both transfer directions.
+- Outbound attempts 01 and 03 succeeded on the phone.
+- Outbound attempt 02 ended with a phone error while the daemon reported local
+  completion.
+- Inbound attempts passed consent, then repeatedly returned `invalid_payload`
+  during `payload_transfer`.
+- The third inbound phone observation was ambiguous because the result appeared
+  only after a delay.
+
+That run moved the observed inbound boundary past pairing and consent into
+payload transfer. It also exposed a terminal-outcome disagreement on one
+outbound attempt without identifying the exact inbound rejection branch.
+
+At that point, commit `b45235f` had been installed with the source-backed
+lifecycle corrections documented in the
+[payload lifecycle audit](research/simulator-vs-android-paired-key.md), but no
+physical run had tested it. Neither the inbound failure nor the outbound result
+disagreement could then be called fixed.
+
+### Newest physical run on `b45235f`
+
+- The auto-accept sequence ran 20 attempts and completed 0.
+- Acceptance was observed after 108 ms. Disconnection followed 58 ms later.
+- The available evidence did not establish the disconnect origin or expose the
+  proprietary peer's internal reason.
+
+This run supersedes `invalid_payload` as the newest observed failure, but it
+does not explain the failure and does not demonstrate a phone fix.
+
+### Diagnostic reference run
+
+After the physical run, the instrumented daemon transferred a 1,048,577-byte
+`FILE` with the pinned Google-derived Linux peer in both directions over LAN.
+Both directions passed exact integrity checks in the temporary harness. The
+logs also preserved the connection-to-share chronology: `connection_id`
+correlated the exchange before `share_id` was assigned. The run verifies the
+new observability on a live reference exchange. It does not establish stock
+Android compatibility, and the instrumented build still needs a physical-phone
+test.
 
 ## Why the simulations pass
 
 The tests are useful, but their claims are narrower than physical Android
 interoperability.
 
-| Test layer                     | What it proves                                                                                                                                                                                          | Why it can pass while this phone fails                                                                                                                                                                                                                   |
+| Test layer                     | What it proves                                                                                                                                                                                          | Why it does not settle current-phone behavior                                                                                                                                                                                                            |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Rust unit and stream loopbacks | Rust initiator and responder agree on UKEY2, pairing, introductions, consent, payloads, and failures.                                                                                                   | Both ends share the same implementation and assumptions. A symmetric protocol error can pass.                                                                                                                                                            |
 | Google UKEY2 oracle            | Rust and Google's standalone UKEY2 implementation derive compatible tokens and encrypt/decrypt in both roles.                                                                                           | It stops below Nearby Connections framing and the paired-key Sharing exchange. The journal indicates UKEY2 already succeeds.                                                                                                                             |
@@ -204,38 +247,57 @@ interoperability.
 | Android Nearby probe           | Google Play services `ConnectionsClient` can advertise, discover, connect, compare authentication digits, and exchange a payload in emulator roles.                                                     | It tests generic Nearby Connections, not stock Quick Share's paired-key, introduction, consent, or UI behavior.                                                                                                                                          |
 | Stock Quick Share AVD plan     | The documented plan would exercise the proprietary product through UI Automator.                                                                                                                        | No admitted bidirectional stock Quick Share AVD-to-Rust gate currently closes this gap. `make test-android-nearby` remains experimental, not compatibility evidence.                                                                                     |
 
-The critical mismatch is therefore not "simulation versus hardware" in general.
-It is **Google-derived/open peers and lower-layer probes versus the current stock
-Android Quick Share product at the paired-key Sharing stage**.
+The critical mismatch is therefore not "simulation versus hardware" in
+general. It is the remaining gap between Google-derived or open peers,
+lower-layer probes, and the current stock Android Quick Share product. The
+newest phone run ends shortly after acceptance, with no known disconnect
+origin.
 
 ## Evidence-backed gaps
 
 ### Confirmed gaps
 
-1. `exchange_account_free_pairing` exposes no substage, peer frame type, peer
-   result status, or distinction between EOF, timeout, decode failure, and
-   explicit verification failure.
-2. Outbound UI state says peer consent is pending before pairing completes or an
-   introduction is sent.
-3. The Google fixture corpus covers introduction/response semantics but not a
+1. The newest physical auto-accept sequence completed 0 of 20 attempts.
+   Acceptance occurred after 108 ms and disconnection followed 58 ms later,
+   but the disconnect origin remains unknown.
+2. The proprietary peer did not provide an internal failure reason. Local
+   diagnostics cannot reconstruct a reason the peer did not send.
+3. One earlier outbound attempt produced a phone error after the daemon
+   reported local completion. The newest run does not show that disagreement
+   fixed.
+4. The Google fixture corpus covers introduction/response semantics but not a
    role-complete paired-key transcript generated by Google's runner.
-4. The live Linux reference test proves one peer implementation and file
+5. The live Linux reference test proves one peer implementation and file
    transfers, not current stock Android policy or protocol drift.
-5. The Android probe stops at Nearby Connections and cannot validate Quick Share
-   Sharing or its UI.
-6. No admitted black-box stock Quick Share test covers Android sender and
+6. The Android probe stops at Nearby Connections and cannot validate Quick
+   Share Sharing or its UI.
+7. No admitted black-box stock Quick Share test covers Android sender and
    receiver roles against the Rust daemon.
+8. The new diagnostic instrumentation has passed the bidirectional reference
+   `FILE` run but has not yet been exercised in another physical-phone run.
 
 ### Not yet proven
 
-The current evidence does **not** prove that any particular paired-key field is
-wrong. Candidate differences include frame ordering, accepted status values,
-role-dependent verification policy, interleaved control frames, timeout
-handling, or newer Android validation. Changing random-signature lengths,
-result status, OS type, payload IDs, or visibility rules without the missing
-substage evidence would be guessing.
+The current evidence does not identify which side initiated the newest
+disconnect or which proprietary validation or policy branch caused it. The
+108 ms acceptance and 58 ms post-acceptance interval narrow the timing, not the
+cause. Debug fields can report a local operation, outcome, reason,
+`io_error_kind`, or `disconnect_origin` when the daemon knows them. They cannot
+reveal an internal peer reason that never crosses the wire.
 
-## Staged implementation plan
+The 1,048,577-byte reference `FILE` run proves bidirectional integrity and
+connection-to-share correlation for that Google-derived Linux peer. It does
+not prove the current phone fixed, settle the earlier phone-versus-daemon
+outcome disagreement, or certify arbitrary peers and transports.
+
+## Original staged implementation plan
+
+This plan records the investigation sequence written from the 2026-09-04
+paired-key baseline. The later physical run showed pairing completing in both
+directions, so phases 1 through 3 do not describe the active failure boundary.
+Keep them as the rationale for the earlier investigation, not as a claim that
+pairing still fails. The immediate work now starts with physical validation of
+the installed lifecycle changes.
 
 ### Phase 1: make the failure diagnosable
 
@@ -365,16 +427,20 @@ matching code, introduction, explicit consent, exact payload, terminal outcome,
 and cleanup are all observed. Seeing a peer or reaching a consent-looking local
 screen is insufficient.
 
-## Required change order
+## Current change order
 
-1. **Now:** Phase 1 observability and truthful UI state.
-2. **Next:** Phase 2 Google paired-key oracle.
-3. **Then:** Phase 3 wire/state correction selected by evidence.
-4. **Before compatibility claims:** Phase 4 stock Android gate or a documented
-   reason it cannot run, plus Phase 5 physical acceptance.
-5. **After same-LAN works:** broaden Bluetooth, hotspot, Wi-Fi Direct, OEM, and
-   Android-version coverage. These are not prerequisites for repairing the
-   current same-LAN pairing failure.
+1. **Now:** run the instrumented build against the physical phone and correlate
+   events by `connection_id`, then `share_id` once assigned.
+2. **Next:** record the privacy-safe terminal outcome and any available
+   `io_error_kind` or `disconnect_origin`. Do not infer a proprietary peer's
+   internal reason from a generic disconnect.
+3. **Then:** change wire behavior only if the physical evidence identifies a
+   concrete rejected frame, validation branch, or terminal-state mismatch.
+4. **Before compatibility claims:** complete the Phase 4 stock Android gate or
+   document why it cannot run, and complete Phase 5 physical acceptance.
+5. **After same-LAN transfer is verified on the phone:** broaden Bluetooth,
+   hotspot, Wi-Fi Direct, OEM, and Android-version coverage. The successful
+   reference-peer `FILE` run does not certify those paths.
 
 ## Primary sources
 

@@ -16,9 +16,20 @@ use quickshare_storage::OutboundSource;
 use super::Daemon;
 use super::network::NetworkWorker;
 use super::notify::{self, NotifyKind};
-use super::observations::recovery_guidance;
+use super::observations::{
+    io_error_kind, recovery_guidance, trace_protocol, trace_storage,
+};
 use crate::archive;
 use crate::config::Config;
+
+fn open_source(path: &Path) -> io::Result<OutboundSource> {
+    let source = OutboundSource::open(path).map_err(|error| {
+        trace_storage("open_source", "failed", Some(&error));
+        io::Error::other(error)
+    })?;
+    trace_storage("open_source", "completed", None);
+    Ok(source)
+}
 
 #[expect(
     clippy::multiple_inherent_impl,
@@ -54,9 +65,18 @@ impl Daemon {
         peer_id: Option<&str>,
     ) -> io::Result<u64> {
         if path.is_dir() {
-            let archive_path = archive::zip_directory(path)?;
-            let source = OutboundSource::open(&archive_path)
-                .map_err(io::Error::other)?;
+            let archive_path =
+                archive::zip_directory(path).inspect_err(|error| {
+                    trace_protocol(
+                        "source",
+                        "archive",
+                        "failed",
+                        Some("io"),
+                        Some(io_error_kind(error)),
+                    );
+                })?;
+            trace_protocol("source", "archive", "completed", None, None);
+            let source = open_source(&archive_path)?;
             let attachment = quickshare_sharing::Attachment::file(
                 &source.name().to_string_lossy(),
                 source.len(),
@@ -67,7 +87,7 @@ impl Daemon {
             self.outbound.remember_archive(share_id, archive_path);
             return Ok(share_id);
         }
-        let source = OutboundSource::open(path).map_err(io::Error::other)?;
+        let source = open_source(path)?;
         let attachment = quickshare_sharing::Attachment::file(
             &source.name().to_string_lossy(),
             source.len(),
@@ -108,7 +128,14 @@ impl Daemon {
             >= Duration::from_secs(self.config.discovery_timeout_secs)
         {
             let _timed_out = self.sharing.discovery_timed_out();
-            tracing::info!(phase = "timed_out", "discovery timed out");
+            tracing::info!(
+                target: "omarchy_quickshare::protocol",
+                stage = "discovery",
+                operation = "deadline",
+                outcome = "timed_out",
+                phase = "timed_out",
+                "discovery timed out"
+            );
             if let Some(network) = &self.network {
                 network.stop_discovery()?;
             }
@@ -130,7 +157,15 @@ impl Daemon {
             return Ok(());
         }
         self.sharing.close_visibility();
-        tracing::info!(phase = "closed", "visibility closed");
+        tracing::info!(
+            target: "omarchy_quickshare::protocol",
+            stage = "visibility",
+            operation = "deadline",
+            outcome = "completed",
+            reason = "timed_out",
+            phase = "closed",
+            "visibility closed"
+        );
         if let Some(network) = &self.network {
             network.close_visibility()?;
         }
@@ -157,7 +192,12 @@ impl Daemon {
         }
         if self.sharing.fail(share_id) {
             tracing::warn!(
+                target: "omarchy_quickshare::protocol",
                 share_id,
+                stage = "transfer",
+                operation = "deadline",
+                outcome = "failed",
+                reason = "timed_out",
                 phase = "failed",
                 error_class = "timed_out",
                 "share failed"

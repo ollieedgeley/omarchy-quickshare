@@ -42,17 +42,63 @@ pub(in crate::protocol) fn account_free_result() -> Frame {
 pub(in crate::protocol) fn decode_pairing(
     bytes: &[u8],
 ) -> Result<PairingStatus, ProtocolError> {
-    let v1 = Frame::decode(bytes)?
-        .v1
-        .ok_or(ProtocolError::InvalidFrame)?;
+    let frame = Frame::decode(bytes).map_err(|error| {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "validation",
+            operation = "pairing",
+            outcome = "rejected",
+            reason = "protobuf_decode",
+            "protocol_stage"
+        );
+        ProtocolError::from(error)
+    })?;
+    let supported_version = frame.version == Some(1);
+    let v1 = frame.v1.ok_or_else(|| {
+        let reason = if supported_version {
+            "missing_v1"
+        } else {
+            "unsupported_version"
+        };
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "validation",
+            operation = "pairing",
+            outcome = "rejected",
+            reason,
+            "protocol_stage"
+        );
+        ProtocolError::InvalidFrame
+    })?;
     if let Some(result) = v1.paired_key_result {
         return (result.status
             == Some(paired_key_result_frame::Status::Unable as i32))
         .then_some(PairingStatus::Unable)
-        .ok_or(ProtocolError::InvalidFrame);
+        .ok_or_else(|| {
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "validation",
+                operation = "pairing",
+                outcome = "rejected",
+                reason = "pairing_status",
+                frame_type = "paired_key_result",
+                "protocol_stage"
+            );
+            ProtocolError::InvalidFrame
+        });
     }
     v1.paired_key_encryption
-        .ok_or(ProtocolError::InvalidFrame)
+        .ok_or_else(|| {
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "validation",
+                operation = "pairing",
+                outcome = "rejected",
+                reason = "pairing_frame_type",
+                "protocol_stage"
+            );
+            ProtocolError::InvalidFrame
+        })
         .map(|_| PairingStatus::Unable)
 }
 
@@ -65,37 +111,122 @@ pub(in crate::protocol) fn is_cancel(
             == Some(v1_frame::FrameType::Cancel as i32))
 }
 
-pub(in crate::protocol) fn is_v1_control(bytes: &[u8]) -> bool {
-    let Ok(frame) = Frame::decode(bytes) else {
-        return false;
-    };
+pub(in crate::protocol) fn control_event_type(
+    bytes: &[u8],
+) -> Option<&'static str> {
+    let frame = Frame::decode(bytes).ok()?;
     if frame.version != Some(1) {
-        return false;
+        return None;
     }
-    frame
-        .v1
-        .and_then(|v1| v1.r#type)
-        .and_then(|kind| v1_frame::FrameType::try_from(kind).ok())
-        .is_some_and(|kind| kind != v1_frame::FrameType::UnknownFrameType)
+    match v1_frame::FrameType::try_from(frame.v1?.r#type?).ok()? {
+        v1_frame::FrameType::UnknownFrameType => None,
+        v1_frame::FrameType::Introduction => Some("introduction"),
+        v1_frame::FrameType::Response => Some("response"),
+        v1_frame::FrameType::PairedKeyEncryption => {
+            Some("paired_key_encryption")
+        }
+        v1_frame::FrameType::PairedKeyResult => Some("paired_key_result"),
+        v1_frame::FrameType::CertificateInfo => Some("certificate_info"),
+        v1_frame::FrameType::Cancel => Some("cancel"),
+        v1_frame::FrameType::ProgressUpdate => Some("progress_update"),
+        v1_frame::FrameType::Bindings => Some("bindings"),
+    }
 }
 
 pub(in crate::protocol) fn decode_response(
     bytes: &[u8],
 ) -> Result<connection_response_frame::Status, ProtocolError> {
-    let response = Frame::decode(bytes)?
-        .v1
-        .ok_or(ProtocolError::InvalidFrame)?
-        .connection_response
-        .ok_or(ProtocolError::InvalidFrame)?;
-    connection_response_frame::Status::try_from(
-        response.status.ok_or(ProtocolError::InvalidFrame)?,
-    )
-    .map_err(|_| ProtocolError::InvalidFrame)
+    let frame = Frame::decode(bytes).map_err(|error| {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "validation",
+            operation = "consent",
+            outcome = "rejected",
+            reason = "protobuf_decode",
+            "protocol_stage"
+        );
+        ProtocolError::from(error)
+    })?;
+    let supported_version = frame.version == Some(1);
+    let v1 = frame.v1.ok_or_else(|| {
+        let reason = if supported_version {
+            "missing_v1"
+        } else {
+            "unsupported_version"
+        };
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "validation",
+            operation = "consent",
+            outcome = "rejected",
+            reason,
+            "protocol_stage"
+        );
+        ProtocolError::InvalidFrame
+    })?;
+    let frame_type = v1
+        .r#type
+        .and_then(|value| v1_frame::FrameType::try_from(value).ok());
+    let response = v1.connection_response.ok_or_else(|| {
+        let reason = match frame_type {
+            None | Some(v1_frame::FrameType::UnknownFrameType) => {
+                "unknown_frame_type"
+            }
+            Some(_) => "unexpected_frame_type",
+        };
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "validation",
+            operation = "consent",
+            outcome = "rejected",
+            reason,
+            "protocol_stage"
+        );
+        ProtocolError::InvalidFrame
+    })?;
+    let status = response.status.ok_or_else(|| {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "validation",
+            operation = "consent",
+            outcome = "rejected",
+            reason = "missing_status",
+            "protocol_stage"
+        );
+        ProtocolError::InvalidFrame
+    })?;
+    connection_response_frame::Status::try_from(status).map_err(|_| {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "validation",
+            operation = "consent",
+            outcome = "rejected",
+            reason = "unknown_status",
+            "protocol_stage"
+        );
+        ProtocolError::InvalidFrame
+    })
 }
 
 pub(in crate::protocol) fn consent_result(
     status: connection_response_frame::Status,
 ) -> Result<(), ProtocolError> {
+    let outcome = match status {
+        connection_response_frame::Status::Accept => "accepted",
+        connection_response_frame::Status::TimedOut => "timed_out",
+        connection_response_frame::Status::UnsupportedAttachmentType => {
+            "unsupported"
+        }
+        _ => "rejected",
+    };
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "consent",
+        operation = "receive",
+        outcome,
+        event_type = "response",
+        "protocol_stage"
+    );
     match status {
         connection_response_frame::Status::Accept => Ok(()),
         connection_response_frame::Status::TimedOut => {

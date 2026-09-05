@@ -195,6 +195,13 @@ impl Daemon {
                 let _removed = self.sharing.remove_peer(&peer_id);
                 let peer_count = self.sharing.snapshot().peers().len();
                 if peer_count != before {
+                    tracing::debug!(
+                        target: "omarchy_quickshare::protocol",
+                        stage = "discovery",
+                        operation = "peer_lost",
+                        outcome = "observed",
+                        "discovery state changed"
+                    );
                     tracing::info!(peer_count, "peer count changed");
                 }
                 self.outbound.forget_peer(&peer_id);
@@ -204,10 +211,19 @@ impl Daemon {
                 peer_id,
                 route,
             } => {
+                let medium = medium_name(route.medium());
                 let before = self.sharing.snapshot().peers().len();
                 self.sharing.observe_peer(&peer_id, &name);
                 let peer_count = self.sharing.snapshot().peers().len();
                 if peer_count != before {
+                    tracing::debug!(
+                        target: "omarchy_quickshare::protocol",
+                        stage = "discovery",
+                        operation = "peer_seen",
+                        outcome = "observed",
+                        medium,
+                        "discovery state changed"
+                    );
                     tracing::info!(peer_count, "peer count changed");
                 }
                 self.pin_if_configured(&peer_id);
@@ -230,7 +246,8 @@ impl Daemon {
                         "medium selected"
                     );
                 }
-                tracing::debug!(
+                tracing::trace!(
+                    target: "omarchy_quickshare::protocol",
                     share_id,
                     medium = medium.as_str(),
                     bytes = transferred_bytes,
@@ -328,7 +345,15 @@ impl Daemon {
             .first()
             .map(|route| medium_name(route.medium()));
         if let Some(medium) = medium {
-            tracing::info!(share_id, medium, "medium selected");
+            tracing::info!(
+                target: "omarchy_quickshare::protocol",
+                share_id,
+                stage = "route_selection",
+                operation = "select_peer",
+                outcome = "selected",
+                medium,
+                "medium selected"
+            );
         }
         let _observed = self
             .sharing

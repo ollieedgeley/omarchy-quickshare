@@ -8,6 +8,8 @@ use std::time::Instant;
 use zbus::blocking::Proxy;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
+use super::diagnostics::event;
+use super::settings::{Settings, p2p, wireless};
 use super::{
     Candidate, Credentials, Discovery, Medium, NetworkManager, Peer, Role,
     Session,
@@ -28,8 +30,6 @@ const WIFI_P2P: u32 = 30;
 const ACTIVATED: u32 = 2;
 const POLL: Duration = Duration::from_millis(10);
 
-type Settings = HashMap<String, HashMap<String, OwnedValue>>;
-
 impl NetworkManager {
     pub(super) fn activate_hotspot(
         &self,
@@ -44,7 +44,7 @@ impl NetworkManager {
             Role::Owner => ("quickshare-hotspot-owner", "ap", "shared"),
         };
         self.activate(
-            wireless_settings(id, mode, credentials, ipv4)?,
+            wireless(id, mode, credentials, ipv4)?,
             WIFI,
             "/",
             timeout,
@@ -58,6 +58,13 @@ impl NetworkManager {
         &self,
         timeout: Duration,
     ) -> Result<Discovery, Error> {
+        event(
+            "start_discovery",
+            "started",
+            "none",
+            Some(Medium::WifiDirect),
+            None,
+        );
         let device = self.find_device(WIFI_P2P)?;
         let mut options = HashMap::new();
         let seconds = u32::try_from(timeout.as_secs().min(u64::from(u32::MAX)))
@@ -67,7 +74,16 @@ impl NetworkManager {
         let _start_find_reply = self
             .proxy(device.as_str(), P2P_IFACE)?
             .call_method("StartFind", &options)
-            .map_err(nm_error)?;
+            .map_err(nm_error)
+            .inspect_err(|_| {
+                event(
+                    "start_discovery",
+                    "failure",
+                    "dbus",
+                    Some(Medium::WifiDirect),
+                    None,
+                );
+            })?;
         Ok(Discovery {
             device,
             manager: self.clone(),
@@ -96,7 +112,7 @@ impl NetworkManager {
             "quickshare-p2p-owner"
         };
         self.activate(
-            p2p_settings(id, peer.map(Peer::address), credentials)?,
+            p2p(id, peer.map(Peer::address), credentials)?,
             WIFI_P2P,
             specific.as_str(),
             timeout,
@@ -116,6 +132,7 @@ impl NetworkManager {
         role: Role,
         credentials: &Credentials,
     ) -> Result<Session, Error> {
+        event("activate", "started", "none", Some(medium), Some(role));
         let device = self.find_device(device_type)?;
         let specific = ObjectPath::try_from(specific).map_err(nm_error)?;
         let (profile, active): (OwnedObjectPath, OwnedObjectPath) = self
@@ -140,15 +157,28 @@ impl NetworkManager {
         if let Err(error) =
             self.wait_activated(session.active.as_ref(), timeout)
         {
+            event(
+                "activate",
+                "failure",
+                "activation_failed",
+                Some(medium),
+                Some(role),
+            );
             session.cleanup();
             return Err(error);
         }
-        session.candidate = self.read_candidate(
-            session.active.as_ref(),
-            medium,
-            role,
-            credentials,
-        )?;
+        session.candidate = self
+            .read_candidate(session.active.as_ref(), medium, role, credentials)
+            .inspect_err(|_| {
+                event(
+                    "read_candidate",
+                    "failure",
+                    "dbus",
+                    Some(medium),
+                    Some(role),
+                );
+            })?;
+        event("activate", "success", "none", Some(medium), Some(role));
         Ok(session)
     }
 
@@ -170,11 +200,13 @@ impl NetworkManager {
                 return Ok(());
             }
             let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
+                event("activate", "timeout", "deadline", None, None);
                 return Err(Error(String::from(
                     "network session timed out before activation",
                 )));
             };
             if remaining.is_zero() {
+                event("activate", "timeout", "deadline", None, None);
                 return Err(Error(String::from(
                     "network session timed out before activation",
                 )));
@@ -288,12 +320,33 @@ impl Discovery {
         let started = Instant::now();
         loop {
             if let Some(peer) = self.read_peer()? {
+                event(
+                    "discover_peer",
+                    "success",
+                    "none",
+                    Some(Medium::WifiDirect),
+                    None,
+                );
                 return Ok(Some(peer));
             }
             let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
+                event(
+                    "discover_peer",
+                    "timeout",
+                    "deadline",
+                    Some(Medium::WifiDirect),
+                    None,
+                );
                 return Ok(None);
             };
             if remaining.is_zero() {
+                event(
+                    "discover_peer",
+                    "timeout",
+                    "deadline",
+                    Some(Medium::WifiDirect),
+                    None,
+                );
                 return Ok(None);
             }
             std::thread::sleep(remaining.min(POLL));
@@ -332,19 +385,57 @@ impl Discovery {
             .call_method("StopFind", &())
             .map(|_reply| ())
             .map_err(nm_error)
+            .inspect(|&()| {
+                event(
+                    "stop_discovery",
+                    "success",
+                    "none",
+                    Some(Medium::WifiDirect),
+                    None,
+                );
+            })
+            .inspect_err(|_| {
+                event(
+                    "stop_discovery",
+                    "failure",
+                    "dbus",
+                    Some(Medium::WifiDirect),
+                    None,
+                );
+            })
     }
 }
 
 impl Session {
     pub(super) fn teardown(&mut self) -> Result<(), Error> {
+        let medium = self.candidate.medium;
+        let role = self.candidate.role;
         let deactivate = self
             .active
             .take()
             .map_or(Ok(()), |active| self.manager.deactivate(&active));
+        event(
+            "deactivate",
+            if deactivate.is_ok() {
+                "success"
+            } else {
+                "failure"
+            },
+            if deactivate.is_ok() { "none" } else { "dbus" },
+            Some(medium),
+            Some(role),
+        );
         let delete = self
             .profile
             .take()
             .map_or(Ok(()), |profile| self.manager.delete(&profile));
+        event(
+            "delete_profile",
+            if delete.is_ok() { "success" } else { "failure" },
+            if delete.is_ok() { "none" } else { "dbus" },
+            Some(medium),
+            Some(role),
+        );
         deactivate.and(delete)
     }
 
@@ -373,89 +464,6 @@ impl Drop for Discovery {
     fn drop(&mut self) {
         let _result = self.stop_find();
     }
-}
-
-fn wireless_settings(
-    id: &str,
-    mode: &str,
-    credentials: &Credentials,
-    ipv4_method: &str,
-) -> Result<Settings, Error> {
-    let mut connection = HashMap::new();
-    let _previous_id = connection
-        .insert(String::from("id"), owned(Value::from(id.to_owned()))?);
-    let _previous_type = connection
-        .insert(String::from("type"), owned(Value::from("802-11-wireless"))?);
-    let _previous_autoconnect = connection
-        .insert(String::from("autoconnect"), owned(Value::from(false))?);
-    let mut wireless = HashMap::new();
-    let _previous_mode = wireless
-        .insert(String::from("mode"), owned(Value::from(mode.to_owned()))?);
-    let _previous_ssid = wireless.insert(
-        String::from("ssid"),
-        owned(Value::from(credentials.ssid.as_bytes().to_vec()))?,
-    );
-    if let Some(frequency) = credentials.frequency {
-        let _previous_channel = wireless
-            .insert(String::from("channel"), owned(Value::from(frequency))?);
-    }
-    let mut security = HashMap::new();
-    let _previous_key_mgmt = security
-        .insert(String::from("key-mgmt"), owned(Value::from("wpa-psk"))?);
-    let _previous_psk = security.insert(
-        String::from("psk"),
-        owned(Value::from(credentials.password.clone()))?,
-    );
-    let mut ipv4 = HashMap::new();
-    let _previous_method = ipv4.insert(
-        String::from("method"),
-        owned(Value::from(ipv4_method.to_owned()))?,
-    );
-    Ok(HashMap::from([
-        (String::from("connection"), connection),
-        (String::from("802-11-wireless"), wireless),
-        (String::from("802-11-wireless-security"), security),
-        (String::from("ipv4"), ipv4),
-    ]))
-}
-
-fn p2p_settings(
-    id: &str,
-    peer: Option<&str>,
-    credentials: &Credentials,
-) -> Result<Settings, Error> {
-    let mut connection = HashMap::new();
-    let _previous_id = connection
-        .insert(String::from("id"), owned(Value::from(id.to_owned()))?);
-    let _previous_type = connection
-        .insert(String::from("type"), owned(Value::from("wifi-p2p"))?);
-    let _previous_autoconnect = connection
-        .insert(String::from("autoconnect"), owned(Value::from(false))?);
-    let mut p2p = HashMap::new();
-    let _previous_wps =
-        p2p.insert(String::from("wps-method"), owned(Value::from(1_u32))?);
-    if let Some(peer) = peer {
-        let _previous_peer = p2p
-            .insert(String::from("peer"), owned(Value::from(peer.to_owned()))?);
-    }
-    let mut ipv4 = HashMap::new();
-    let _previous_method =
-        ipv4.insert(String::from("method"), owned(Value::from("auto"))?);
-    let mut settings = HashMap::from([
-        (String::from("connection"), connection),
-        (String::from("wifi-p2p"), p2p),
-        (String::from("ipv4"), ipv4),
-    ]);
-    if !credentials.ssid.is_empty() {
-        let mut wireless = HashMap::new();
-        let _previous_ssid = wireless.insert(
-            String::from("ssid"),
-            owned(Value::from(credentials.ssid.as_bytes().to_vec()))?,
-        );
-        let _previous_wireless =
-            settings.insert(String::from("802-11-wireless"), wireless);
-    }
-    Ok(settings)
 }
 
 fn owned(value: Value<'static>) -> Result<OwnedValue, Error> {

@@ -17,6 +17,7 @@ prost.workspace = true
 quickshare-wire = { path = "../wire" }
 rand_core.workspace = true
 sha2.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

@@ -48,6 +48,11 @@ impl OutboundState {
         drop(self.payloads.remove(&share_id));
         if let Some(archive) = self.archives.remove(&share_id) {
             crate::archive::remove_archive(&archive);
+            crate::daemon::observations::trace_storage(
+                "cleanup_archive",
+                "attempted",
+                None,
+            );
         }
     }
 

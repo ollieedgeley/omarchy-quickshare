@@ -50,6 +50,14 @@ impl Connection {
         self.send(&upgrade_path_available(medium.to_wire(), credentials))?;
         self.upgrade = UpgradeState::Offered(medium);
         self.upgrade_host = true;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "upgrade",
+            operation = "offer",
+            outcome = "locally_written",
+            event_type = "upgrade_path_available",
+            "upgrade transition"
+        );
         Ok(())
     }
 
@@ -64,7 +72,16 @@ impl Connection {
     ) -> Result<(), Error> {
         let encoded: Vec<i32> =
             mediums.iter().copied().map(Medium::to_wire).collect();
-        self.send(&upgrade_path_request(&encoded))
+        self.send(&upgrade_path_request(&encoded))?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "upgrade",
+            operation = "request",
+            outcome = "locally_written",
+            event_type = "upgrade_path_request",
+            "upgrade transition"
+        );
+        Ok(())
     }
 
     /// Makes `event` the next value returned by [`Self::receive`].
@@ -105,40 +122,69 @@ impl Connection {
     {
         let mut new_stream = Box::new(stream);
         self.upgrade = UpgradeState::Accepted(medium);
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "upgrade",
+            operation = "handshake",
+            outcome = "started",
+            "upgrade transition"
+        );
         if self.upgrade_host {
-            self.expect_upgrade(
-                &mut *new_stream,
-                EventType::ClientIntroduction as i32,
-            )?;
-            self.send_on(&mut *new_stream, &client_introduction_ack())?;
-            self.send(&last_write_to_prior_channel())?;
-            self.expect_current_upgrade(
-                EventType::LastWriteToPriorChannel as i32,
-            )?;
-            self.send_on(&mut *new_stream, &safe_to_close_prior_channel())?;
-            self.expect_upgrade(
-                &mut *new_stream,
-                EventType::SafeToClosePriorChannel as i32,
-            )?;
+            self.complete_upgrade_as_host(&mut *new_stream)?;
         } else {
-            let endpoint_id = self.endpoint_id.clone();
-            self.send_on(&mut *new_stream, &client_introduction(&endpoint_id))?;
-            self.expect_upgrade(
-                &mut *new_stream,
-                EventType::ClientIntroductionAck as i32,
-            )?;
-            self.expect_current_upgrade(
-                EventType::LastWriteToPriorChannel as i32,
-            )?;
-            self.send(&last_write_to_prior_channel())?;
-            self.expect_upgrade(
-                &mut *new_stream,
-                EventType::SafeToClosePriorChannel as i32,
-            )?;
-            self.send_on(&mut *new_stream, &safe_to_close_prior_channel())?;
+            self.complete_upgrade_as_client(&mut *new_stream)?;
         }
         self.stream = new_stream;
-        self.complete_upgrade(medium)
+        self.complete_upgrade(medium)?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "upgrade",
+            operation = "switch_medium",
+            outcome = "completed",
+            "upgrade transition"
+        );
+        Ok(())
+    }
+
+    fn complete_upgrade_as_host(
+        &mut self,
+        new_stream: &mut dyn ConnectionIo,
+    ) -> Result<(), Error> {
+        self.expect_upgrade(new_stream, EventType::ClientIntroduction as i32)?;
+        self.send_on(new_stream, &client_introduction_ack())?;
+        upgrade_sent("client_introduction_ack");
+        self.send(&last_write_to_prior_channel())?;
+        upgrade_sent("last_write_to_prior_channel");
+        self.expect_current_upgrade(EventType::LastWriteToPriorChannel as i32)?;
+        self.send_on(new_stream, &safe_to_close_prior_channel())?;
+        upgrade_sent("safe_to_close_prior_channel");
+        self.expect_upgrade(
+            new_stream,
+            EventType::SafeToClosePriorChannel as i32,
+        )
+    }
+
+    fn complete_upgrade_as_client(
+        &mut self,
+        new_stream: &mut dyn ConnectionIo,
+    ) -> Result<(), Error> {
+        let endpoint_id = self.endpoint_id.clone();
+        self.send_on(new_stream, &client_introduction(&endpoint_id))?;
+        upgrade_sent("client_introduction");
+        self.expect_upgrade(
+            new_stream,
+            EventType::ClientIntroductionAck as i32,
+        )?;
+        self.expect_current_upgrade(EventType::LastWriteToPriorChannel as i32)?;
+        self.send(&last_write_to_prior_channel())?;
+        upgrade_sent("last_write_to_prior_channel");
+        self.expect_upgrade(
+            new_stream,
+            EventType::SafeToClosePriorChannel as i32,
+        )?;
+        self.send_on(new_stream, &safe_to_close_prior_channel())?;
+        upgrade_sent("safe_to_close_prior_channel");
+        Ok(())
     }
 
     /// Records that `attempted` failed and payload stays on the current medium.
@@ -153,6 +199,14 @@ impl Connection {
             fallback: self.medium,
         };
         self.upgrade_host = false;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "upgrade",
+            operation = "fallback",
+            outcome = "locally_written",
+            event_type = "upgrade_failure",
+            "upgrade transition"
+        );
         Ok(())
     }
 
@@ -172,18 +226,70 @@ impl Connection {
         frame: OfflineFrame,
         event_type: i32,
     ) -> Result<(), Error> {
-        let v1 = frame.v1.ok_or(Error::UnexpectedFrame)?;
+        let Some(v1) = frame.v1 else {
+            upgrade_rejected("missing_v1");
+            return Err(Error::UnexpectedFrame);
+        };
         if v1.r#type
             != Some(v1_frame::FrameType::BandwidthUpgradeNegotiation as i32)
         {
+            upgrade_rejected("unexpected_frame_type");
             return Err(Error::UnexpectedFrame);
         }
-        let negotiation = v1
-            .bandwidth_upgrade_negotiation
-            .ok_or(Error::UnexpectedFrame)?;
+        let negotiation =
+            v1.bandwidth_upgrade_negotiation.ok_or_else(|| {
+                upgrade_rejected("missing_negotiation");
+                Error::UnexpectedFrame
+            })?;
         if negotiation.event_type != Some(event_type) {
+            upgrade_rejected("unexpected_event_type");
             return Err(Error::UnexpectedFrame);
         }
+        let event_name = upgrade_event_name(event_type);
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "upgrade",
+            operation = "receive",
+            outcome = "completed",
+            event_type = event_name,
+            "upgrade transition"
+        );
         Ok(())
+    }
+}
+
+fn upgrade_rejected(reason: &'static str) {
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "upgrade",
+        operation = "receive",
+        outcome = "rejected",
+        reason,
+        "upgrade frame rejected"
+    );
+}
+
+fn upgrade_sent(event_type: &'static str) {
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "upgrade",
+        operation = "send",
+        outcome = "locally_written",
+        event_type,
+        "upgrade transition"
+    );
+}
+
+const fn upgrade_event_name(event_type: i32) -> &'static str {
+    if event_type == EventType::ClientIntroduction as i32 {
+        "client_introduction"
+    } else if event_type == EventType::ClientIntroductionAck as i32 {
+        "client_introduction_ack"
+    } else if event_type == EventType::LastWriteToPriorChannel as i32 {
+        "last_write_to_prior_channel"
+    } else if event_type == EventType::SafeToClosePriorChannel as i32 {
+        "safe_to_close_prior_channel"
+    } else {
+        "unknown"
     }
 }

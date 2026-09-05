@@ -1,6 +1,8 @@
 //! NetworkManager D-Bus adapter for hotspot and Wi-Fi Direct roles.
 
 mod bus;
+mod diagnostics;
+mod settings;
 
 use core::fmt;
 use core::net::Ipv4Addr;

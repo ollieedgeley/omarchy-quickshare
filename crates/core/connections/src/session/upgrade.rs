@@ -366,8 +366,10 @@ impl super::Connection {
     ) -> Result<Option<super::Event>, super::Error> {
         use super::{Error, Event};
         use WireEventType as EventType;
-        let event_type =
-            negotiation.event_type.ok_or(Error::UnexpectedFrame)?;
+        let event_type = negotiation.event_type.ok_or_else(|| {
+            upgrade_rejected("missing_event_type");
+            Error::UnexpectedFrame
+        })?;
         if event_type == EventType::UpgradePathRequest as i32 {
             let mediums = negotiation
                 .upgrade_path_info
@@ -380,20 +382,25 @@ impl super::Connection {
                         .collect()
                 })
                 .unwrap_or_default();
+            upgrade_observed("upgrade_path_request");
             return Ok(Some(Event::Upgrade {
                 event: UpgradeEvent::PathRequest { mediums },
             }));
         }
         if event_type == EventType::UpgradePathAvailable as i32 {
-            let info = negotiation
-                .upgrade_path_info
-                .ok_or(Error::UnexpectedFrame)?;
+            let info = negotiation.upgrade_path_info.ok_or_else(|| {
+                upgrade_rejected("missing_path_info");
+                Error::UnexpectedFrame
+            })?;
             let medium =
-                Medium::from_wire(info.medium.ok_or(Error::UnexpectedFrame)?)
-                    .ok_or(Error::UnexpectedFrame)?;
+                info.medium.and_then(Medium::from_wire).ok_or_else(|| {
+                    upgrade_rejected("unsupported_medium");
+                    Error::UnexpectedFrame
+                })?;
             let credentials = UpgradeCredentials::from_path_info(&info);
             self.upgrade = UpgradeState::Offered(medium);
             self.upgrade_host = false;
+            upgrade_observed("upgrade_path_available");
             return Ok(Some(Event::Upgrade {
                 event: UpgradeEvent::PathAvailable {
                     medium,
@@ -402,11 +409,13 @@ impl super::Connection {
             }));
         }
         if event_type == EventType::LastWriteToPriorChannel as i32 {
+            upgrade_observed("last_write_to_prior_channel");
             return Ok(Some(Event::Upgrade {
                 event: UpgradeEvent::LastWriteToPriorChannel,
             }));
         }
         if event_type == EventType::SafeToClosePriorChannel as i32 {
+            upgrade_observed("safe_to_close_prior_channel");
             return Ok(Some(Event::Upgrade {
                 event: UpgradeEvent::SafeToClosePriorChannel {
                     sta_frequency: negotiation
@@ -420,23 +429,27 @@ impl super::Connection {
                 .client_introduction
                 .and_then(|introduction| introduction.endpoint_id)
                 .unwrap_or_default();
+            upgrade_observed("client_introduction");
             return Ok(Some(Event::Upgrade {
                 event: UpgradeEvent::ClientIntroduction { endpoint_id },
             }));
         }
         if event_type == EventType::ClientIntroductionAck as i32 {
+            upgrade_observed("client_introduction_ack");
             return Ok(Some(Event::Upgrade {
                 event: UpgradeEvent::ClientIntroductionAck,
             }));
         }
         if event_type == EventType::UpgradeFailure as i32 {
-            let medium = Medium::from_wire(
-                negotiation
-                    .upgrade_path_info
-                    .and_then(|info| info.medium)
-                    .ok_or(Error::UnexpectedFrame)?,
-            )
-            .ok_or(Error::UnexpectedFrame)?;
+            let medium = negotiation
+                .upgrade_path_info
+                .and_then(|info| info.medium)
+                .and_then(Medium::from_wire)
+                .ok_or_else(|| {
+                    upgrade_rejected("unsupported_medium");
+                    Error::UnexpectedFrame
+                })?;
+            upgrade_observed("upgrade_failure");
             self.upgrade = UpgradeState::Failed {
                 attempted: medium,
                 fallback: self.medium,
@@ -446,6 +459,29 @@ impl super::Connection {
                 event: UpgradeEvent::Failure { medium },
             }));
         }
+        upgrade_rejected("unsupported_event_type");
         Err(Error::UnexpectedFrame)
     }
+}
+
+fn upgrade_observed(event_type: &'static str) {
+    tracing::trace!(
+        target: "omarchy_quickshare::protocol",
+        stage = "upgrade",
+        operation = "receive",
+        outcome = "dispatched",
+        event_type,
+        "upgrade transition"
+    );
+}
+
+fn upgrade_rejected(reason: &'static str) {
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "upgrade",
+        operation = "receive",
+        outcome = "rejected",
+        reason,
+        "upgrade frame rejected"
+    );
 }

@@ -209,16 +209,71 @@ looks like:
 Hidden `simulate` subcommands work only when the service was started with
 `--simulate` and `OMARCHY_QUICKSHARE_ALLOW_SIMULATION=1`.
 
-Development daemon:
+### Daemon diagnostics
+
+The installed release daemon supports debug logging. Use a user-service drop-in
+to enable it on the same daemon that normally handles shares:
 
 ```sh
-omarchy-quickshare daemon --log-level debug
+systemctl --user edit --drop-in=quickshare-debug.conf omarchy-quickshare.service
+```
+
+Add:
+
+```ini
+[Service]
+Environment=RUST_LOG=omarchy_quickshare=debug
+```
+
+Then reload the unit, restart it, and follow its stderr in the journal:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user restart omarchy-quickshare.service
 journalctl --user -u omarchy-quickshare.service -f
 ```
 
-`--log-level` is `error`, `warn`, `info` (default), `debug`, or `trace`.
-`RUST_LOG` overrides that choice. Logs are compact lines on stderr so the
-journal captures them.
+This changes the log level of the installed service. It does not start a second
+daemon or replace the release binary with a Rust debug build. `--log-level`
+accepts `error`, `warn`, `info` (default), `debug`, or `trace`, but `RUST_LOG`
+overrides that CLI setting. `RUST_LOG=omarchy_quickshare=debug` includes the
+`omarchy_quickshare::protocol` target.
+
+Debug logs record privacy-safe transitions through discovery, connection and
+UKEY2, paired-key exchange, introduction, consent, payload transfer, terminal
+outcome, and cleanup. A `connection_id` correlates events before a share exists;
+a `share_id` is added later. Stable fields such as `operation`, `outcome`, and
+`reason` describe failures. When available, `io_error_kind` names the local I/O
+classification and `disconnect_origin` distinguishes a local close, an explicit
+disconnection frame, stream EOF, a truncated frame, or a connection event.
+Those origins describe what the daemon observed. A proprietary peer may
+disconnect without disclosing its internal reason.
+
+`locally_written` and `staged` report local progress, not successful delivery.
+Only a terminal `completed` outcome reports completion. `trace` adds per-frame,
+chunk, and keepalive metadata when debug is not enough. Neither level logs
+keys, verification codes, identities, addresses, filenames, paths, URLs, or
+payload contents.
+
+To restore the default log level, remove the dedicated drop-in, reload, and
+restart:
+
+```sh
+rm "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/omarchy-quickshare.service.d/quickshare-debug.conf"
+systemctl --user daemon-reload
+systemctl --user restart omarchy-quickshare.service
+```
+
+For an optional foreground run, stop the user service first so only one daemon
+owns discovery and the socket. Start the service again after the foreground
+daemon exits:
+
+```sh
+systemctl --user stop omarchy-quickshare.service
+omarchy-quickshare daemon --log-level debug
+# After exiting the foreground daemon:
+systemctl --user start omarchy-quickshare.service
+```
 
 ## Config and downloads
 

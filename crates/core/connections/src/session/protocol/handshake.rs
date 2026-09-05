@@ -44,19 +44,35 @@ impl Connection {
         let medium = options.medium;
         let endpoint_id = options.id.clone();
         send_plain(&mut stream, &request(options))?;
-        write(
-            &mut stream,
-            &handshake.next_message().map_err(|_| Error::Handshake)?,
-        )?;
-        handshake
-            .receive(&read(&mut stream)?)
-            .map_err(|_| Error::Handshake)?;
-        write(
-            &mut stream,
-            &handshake.next_message().map_err(|_| Error::Handshake)?,
-        )?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "setup",
+            operation = "send",
+            outcome = "locally_written",
+            frame_type = "connection_request",
+            "setup frame sent"
+        );
+        send_ukey2(&mut stream, &mut handshake, "client_init")?;
+        receive_ukey2(&mut stream, &mut handshake, "server_init")?;
+        send_ukey2(&mut stream, &mut handshake, "client_finish")?;
         send_plain(&mut stream, &response())?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "setup",
+            operation = "send",
+            outcome = "locally_written",
+            frame_type = "connection_response",
+            "setup frame sent"
+        );
         response_data(receive_plain(&mut stream)?)?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "setup",
+            operation = "receive",
+            outcome = "completed",
+            frame_type = "connection_response",
+            "setup frame received"
+        );
         Ok(Self::new(
             Box::new(stream),
             handshake.complete().map_err(|_| Error::Handshake)?,
@@ -94,18 +110,35 @@ impl Connection {
         let medium = options.medium;
         let endpoint_id = options.id;
         request_data(receive_plain(&mut stream)?)?;
-        handshake
-            .receive(&read(&mut stream)?)
-            .map_err(|_| Error::Handshake)?;
-        write(
-            &mut stream,
-            &handshake.next_message().map_err(|_| Error::Handshake)?,
-        )?;
-        handshake
-            .receive(&read(&mut stream)?)
-            .map_err(|_| Error::Handshake)?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "setup",
+            operation = "receive",
+            outcome = "completed",
+            frame_type = "connection_request",
+            "setup frame received"
+        );
+        receive_ukey2(&mut stream, &mut handshake, "client_init")?;
+        send_ukey2(&mut stream, &mut handshake, "server_init")?;
+        receive_ukey2(&mut stream, &mut handshake, "client_finish")?;
         send_plain(&mut stream, &response())?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "setup",
+            operation = "send",
+            outcome = "locally_written",
+            frame_type = "connection_response",
+            "setup frame sent"
+        );
         response_data(receive_plain(&mut stream)?)?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "setup",
+            operation = "receive",
+            outcome = "completed",
+            frame_type = "connection_response",
+            "setup frame received"
+        );
         Ok(Self::new(
             Box::new(stream),
             handshake.complete().map_err(|_| Error::Handshake)?,
@@ -126,11 +159,37 @@ impl Connection {
     ///
     /// Returns an I/O error when the active stream cannot apply the timeout.
     pub fn set_read_timeout(&mut self, timeout: Duration) -> Result<(), Error> {
-        let deadline = Instant::now()
-            .checked_add(timeout)
-            .ok_or_else(|| io::Error::other("read deadline overflow"))?;
-        self.stream.set_read_timeout(timeout)?;
+        let deadline =
+            Instant::now().checked_add(timeout).ok_or_else(|| {
+                tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "connection",
+                    operation = "set_read_deadline",
+                    outcome = "rejected",
+                    reason = "deadline_overflow",
+                    "connection deadline rejected"
+                );
+                io::Error::other("read deadline overflow")
+            })?;
+        self.stream.set_read_timeout(timeout).inspect_err(|error| {
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "connection",
+                operation = "set_read_deadline",
+                outcome = "rejected",
+                reason = "io",
+                io_error_kind = super::io::io_error_kind(error.kind()),
+                "connection deadline rejected"
+            );
+        })?;
         self.read_deadline = Some(deadline);
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "connection",
+            operation = "set_read_deadline",
+            outcome = "completed",
+            "connection read deadline set"
+        );
         Ok(())
     }
 
@@ -159,6 +218,48 @@ impl Connection {
             verification_code,
         }
     }
+}
+
+fn send_ukey2<Stream>(
+    stream: &mut Stream,
+    handshake: &mut Handshake,
+    event_type: &'static str,
+) -> Result<(), Error>
+where
+    Stream: io::Write + ?Sized,
+{
+    let message = handshake.next_message().map_err(|_| Error::Handshake)?;
+    write(stream, &message)?;
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "ukey2",
+        operation = "send",
+        outcome = "locally_written",
+        event_type,
+        "UKEY2 step sent"
+    );
+    Ok(())
+}
+
+fn receive_ukey2<Stream>(
+    stream: &mut Stream,
+    handshake: &mut Handshake,
+    event_type: &'static str,
+) -> Result<(), Error>
+where
+    Stream: io::Read + ?Sized,
+{
+    let message = read(stream)?;
+    handshake.receive(&message).map_err(|_| Error::Handshake)?;
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "ukey2",
+        operation = "receive",
+        outcome = "completed",
+        event_type,
+        "UKEY2 step received"
+    );
+    Ok(())
 }
 
 /// Matches Nearby Connections' decimal rendering of its raw UKEY2 token.

@@ -12,6 +12,7 @@ use std::io::{Read as _, Write as _};
 use if_addrs as _;
 use mdns_sd as _;
 use quickshare_network::lan::{Listener, connect};
+use tracing as _;
 use zbus as _;
 
 #[test]

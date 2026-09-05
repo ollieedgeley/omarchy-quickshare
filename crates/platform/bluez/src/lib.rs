@@ -14,7 +14,6 @@
     clippy::big_endian_bytes,
     clippy::let_underscore_untyped,
     clippy::collapsible_if,
-    clippy::collapsible_match,
     clippy::use_self,
     clippy::doc_markdown,
     clippy::else_if_without_else,

@@ -30,3 +30,7 @@ mod config_contract;
 #[cfg(test)]
 #[path = "daemon_process/process_contract.rs"]
 mod process_contract;
+
+#[cfg(test)]
+#[path = "daemon_process/diagnostic_contract.rs"]
+mod diagnostic_contract;

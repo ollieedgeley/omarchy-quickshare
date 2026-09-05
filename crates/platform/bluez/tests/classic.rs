@@ -12,6 +12,7 @@ use core::time::Duration;
 use async_io as _;
 use futures_lite as _;
 use quickshare_connections as _;
+use tracing as _;
 use zbus as _;
 
 use quickshare_bluez::testing::FakeRadio;

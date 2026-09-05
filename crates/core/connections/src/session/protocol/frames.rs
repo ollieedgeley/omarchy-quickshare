@@ -52,6 +52,14 @@ pub(super) fn payload_header(
     name: Option<String>,
 ) -> Result<payload_transfer_frame::PayloadHeader, Error> {
     if !(0..=MAX_PAYLOAD_LENGTH).contains(&size) {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "payload",
+            operation = "validate",
+            outcome = "rejected",
+            reason = "size_out_of_bounds",
+            "payload rejected"
+        );
         return Err(Error::InvalidPayload);
     }
     let ty = match kind {
@@ -237,48 +245,136 @@ fn upgrade_negotiation(
     })
 }
 
+fn setup_frame_rejected(reason: &'static str, frame_type: &'static str) {
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "setup",
+        operation = "receive",
+        outcome = "rejected",
+        reason,
+        frame_type,
+        "setup frame rejected"
+    );
+}
+
+fn payload_rejected(reason: &'static str) {
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "payload",
+        operation = "validate",
+        outcome = "rejected",
+        reason,
+        "payload rejected"
+    );
+}
+
 pub(super) fn request_data(frame: OfflineFrame) -> Result<(), Error> {
-    let v1 = frame.v1.ok_or(Error::UnexpectedFrame)?;
+    let Some(v1) = frame.v1 else {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "setup",
+            operation = "receive",
+            outcome = "rejected",
+            reason = "missing_v1",
+            frame_type = "connection_request",
+            "setup frame rejected"
+        );
+        return Err(Error::UnexpectedFrame);
+    };
     if v1.r#type != Some(v1_frame::FrameType::ConnectionRequest as i32) {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "setup",
+            operation = "receive",
+            outcome = "rejected",
+            reason = "unexpected_frame_type",
+            frame_type = "connection_request",
+            "setup frame rejected"
+        );
         return Err(Error::UnexpectedFrame);
     }
-    v1.connection_request
-        .is_some_and(|value| value.handshake_data.is_none())
-        .then_some(())
-        .ok_or(Error::UnexpectedFrame)
+    if v1
+        .connection_request
+        .is_none_or(|value| value.handshake_data.is_some())
+    {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "setup",
+            operation = "receive",
+            outcome = "rejected",
+            reason = "invalid_request",
+            frame_type = "connection_request",
+            "setup frame rejected"
+        );
+        return Err(Error::UnexpectedFrame);
+    }
+    Ok(())
 }
 
 pub(super) fn response_data(frame: OfflineFrame) -> Result<(), Error> {
-    let v1 = frame.v1.ok_or(Error::UnexpectedFrame)?;
-    let response = v1.connection_response.ok_or(Error::UnexpectedFrame)?;
+    let Some(v1) = frame.v1 else {
+        setup_frame_rejected("missing_v1", "connection_response");
+        return Err(Error::UnexpectedFrame);
+    };
     if v1.r#type != Some(v1_frame::FrameType::ConnectionResponse as i32) {
+        setup_frame_rejected("unexpected_frame_type", "connection_response");
         return Err(Error::UnexpectedFrame);
     }
-    if response.response
-        != Some(connection_response_frame::ResponseStatus::Accept as i32)
-    {
+    let Some(response) = v1.connection_response else {
+        setup_frame_rejected("missing_response", "connection_response");
+        return Err(Error::UnexpectedFrame);
+    };
+    let Some(status) = response.response else {
+        setup_frame_rejected("missing_status", "connection_response");
+        return Err(Error::Rejected);
+    };
+    if status != connection_response_frame::ResponseStatus::Accept as i32 {
+        setup_frame_rejected("peer_rejected", "connection_response");
         return Err(Error::Rejected);
     }
-    response
-        .handshake_data
-        .is_none()
-        .then_some(())
-        .ok_or(Error::UnexpectedFrame)
+    if response.handshake_data.is_some() {
+        setup_frame_rejected(
+            "unexpected_handshake_data",
+            "connection_response",
+        );
+        return Err(Error::UnexpectedFrame);
+    }
+    Ok(())
 }
 
 pub(super) fn decoded(
     chunk: payload_transfer_frame::PayloadChunk,
 ) -> Result<(i64, Vec<u8>, bool), Error> {
     let offset = chunk.offset.unwrap_or(-1);
-    let last = chunk.flags.ok_or(Error::InvalidPayload)?
+    let Some(flags) = chunk.flags else {
+        payload_rejected("missing_flags");
+        return Err(Error::InvalidPayload);
+    };
+    let last = flags
         & payload_transfer_frame::payload_chunk::Flags::LastChunk as i32
         != 0_i32;
     let bytes = match chunk.body {
         Some(bytes) => bytes,
         None if last => Vec::new(),
-        None => return Err(Error::InvalidPayload),
+        None => {
+            payload_rejected("missing_body");
+            return Err(Error::InvalidPayload);
+        }
     };
-    if offset < 0 || bytes.len() > MAX_FRAME_LENGTH {
+    if offset < 0 {
+        payload_rejected("invalid_offset");
+        return Err(Error::InvalidPayload);
+    }
+    if bytes.len() > MAX_FRAME_LENGTH {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "payload",
+            operation = "validate",
+            outcome = "rejected",
+            reason = "chunk_too_large",
+            byte_count = bytes.len(),
+            "payload rejected"
+        );
         return Err(Error::InvalidPayload);
     }
     Ok((offset, bytes, last))

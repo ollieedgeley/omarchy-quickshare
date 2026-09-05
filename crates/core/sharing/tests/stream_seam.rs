@@ -33,6 +33,8 @@ use std::{
     os::unix::net::UnixStream,
     thread,
 };
+use tracing as _;
+use tracing_subscriber as _;
 
 const INITIATOR_RANDOM: [u8; 32] = [1; 32];
 const RESPONDER_RANDOM: [u8; 32] = [2; 32];

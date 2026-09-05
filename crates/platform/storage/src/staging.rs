@@ -67,7 +67,10 @@ impl ReceiveTarget {
                 env::var_os("HOME")
                     .map(|home| PathBuf::from(home).join("Downloads"))
             })
-            .ok_or(Error::InvalidSource)?;
+            .ok_or_else(|| {
+                staging_failure("open_target", "downloads_unavailable");
+                Error::InvalidSource
+            })?;
         Self::open(directory.join("omarchy-quickshare"))
     }
 
@@ -96,11 +99,26 @@ impl ReceiveTarget {
         Directory: AsRef<Path>,
     {
         let path = directory.as_ref();
-        fs::create_dir_all(path)?;
-        let resolved_directory = fs::canonicalize(path)?;
-        if !fs::metadata(&resolved_directory)?.is_dir() {
+        fs::create_dir_all(path).inspect_err(|error| {
+            staging_io_failure("open_target", error);
+        })?;
+        let resolved_directory =
+            fs::canonicalize(path).inspect_err(|error| {
+                staging_io_failure("open_target", error);
+            })?;
+        if !fs::metadata(&resolved_directory)
+            .inspect_err(|error| staging_io_failure("open_target", error))?
+            .is_dir()
+        {
+            staging_failure("open_target", "not_directory");
             return Err(Error::InvalidSource);
         }
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "staging",
+            operation = "open_target",
+            outcome = "success"
+        );
         Ok(Self::new(resolved_directory))
     }
 
@@ -112,11 +130,40 @@ impl ReceiveTarget {
     #[inline]
     pub fn preflight(&self, bytes: u64) -> Result<(), Error> {
         quota::preflight(&self.directory, bytes)
+            .inspect(|&()| {
+                tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "staging",
+                    operation = "preflight",
+                    outcome = "success",
+                    byte_count = bytes
+                );
+            })
+            .map_err(|failure| match failure {
+                Error::Quota => {
+                    staging_failure("preflight", "quota");
+                    Error::Quota
+                }
+                Error::Io(io_error) => {
+                    staging_io_failure("preflight", &io_error);
+                    Error::Io(io_error)
+                }
+                validation_failure @ (Error::Collision
+                | Error::Interrupted
+                | Error::InvalidName
+                | Error::InvalidSource
+                | Error::Mutation
+                | Error::SizeMismatch) => {
+                    staging_failure("preflight", "validation");
+                    validation_failure
+                }
+            })
     }
 
     /// Reserves `name` when the destination is free.
     fn reserve(&self, name: &str, destination: &Path) -> Result<(), Error> {
         if destination.exists() {
+            staging_failure("reserve", "destination_exists");
             return Err(Error::Collision);
         }
         let mut reserved =
@@ -124,6 +171,7 @@ impl ReceiveTarget {
         let inserted = reserved.insert(name.to_owned());
         drop(reserved);
         if !inserted {
+            staging_failure("reserve", "already_reserved");
             return Err(Error::Collision);
         }
         Ok(())
@@ -141,22 +189,39 @@ impl ReceiveTarget {
         name: &str,
         declared_size: u64,
     ) -> Result<StagedFile, Error> {
-        let safe_name = safe_file_name(name)?;
+        let safe_name = safe_file_name(name).inspect_err(|_| {
+            staging_failure("stage", "invalid_name");
+        })?;
         let destination = self.directory.join(safe_name);
         self.reserve(safe_name, &destination)?;
         match create_staging_file(&self.directory) {
-            Ok((file, staging)) => Ok(StagedFile {
-                committed: false,
-                declared_size,
-                destination,
-                file,
-                name: safe_name.to_owned(),
-                reserved: Arc::clone(&self.reserved),
-                staging,
-                written: 0,
-            }),
+            Ok((file, staging)) => {
+                tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "staging",
+                    operation = "stage",
+                    outcome = "success",
+                    byte_count = declared_size
+                );
+                Ok(StagedFile {
+                    committed: false,
+                    declared_size,
+                    destination,
+                    file,
+                    name: safe_name.to_owned(),
+                    reserved: Arc::clone(&self.reserved),
+                    staging,
+                    written: 0,
+                })
+            }
+            Err(Error::Io(error)) => {
+                unreserve(&self.reserved, safe_name);
+                staging_io_failure("stage", &error);
+                Err(Error::Io(error))
+            }
             Err(error) => {
                 unreserve(&self.reserved, safe_name);
+                staging_failure("stage", "create_failed");
                 Err(error)
             }
         }
@@ -171,15 +236,22 @@ impl StagedFile {
     /// Returns an error when the written size is wrong or publishing fails.
     #[inline]
     pub fn commit(mut self) -> Result<PathBuf, Error> {
-        self.file.flush()?;
-        self.file.sync_all()?;
+        self.file.flush().inspect_err(|error| {
+            staging_io_failure("flush", error);
+        })?;
+        self.file.sync_all().inspect_err(|error| {
+            staging_io_failure("sync", error);
+        })?;
         if self.written < self.declared_size {
+            staging_failure("commit", "interrupted");
             return Err(Error::Interrupted);
         }
         if self.written != self.declared_size {
+            staging_failure("commit", "size_mismatch");
             return Err(Error::SizeMismatch);
         }
         fs::hard_link(&self.staging, &self.destination).map_err(|error| {
+            staging_io_failure("publish", &error);
             if error.kind() == io::ErrorKind::AlreadyExists {
                 Error::Collision
             } else {
@@ -187,7 +259,16 @@ impl StagedFile {
             }
         })?;
         self.committed = true;
-        fs::remove_file(&self.staging)?;
+        fs::remove_file(&self.staging).inspect_err(|error| {
+            staging_io_failure("remove_staging", error);
+        })?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "staging",
+            operation = "commit",
+            outcome = "success",
+            byte_count = self.written
+        );
         Ok(self.destination.clone())
     }
 }
@@ -213,7 +294,16 @@ impl Write for StagedFile {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         reject_overflow(self.written, self.declared_size, buf.len())?;
-        let wrote = self.file.write(buf)?;
+        let wrote = self.file.write(buf).inspect_err(|error| {
+            staging_io_failure("write", error);
+        })?;
+        tracing::trace!(
+            target: "omarchy_quickshare::protocol",
+            stage = "staging",
+            operation = "write",
+            byte_offset = self.written,
+            byte_count = wrote
+        );
         self.written = add_written(self.written, wrote)?;
         Ok(wrote)
     }
@@ -221,7 +311,16 @@ impl Write for StagedFile {
     #[inline]
     fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
         reject_overflow(self.written, self.declared_size, buf.len())?;
-        self.file.write_all(buf)?;
+        self.file.write_all(buf).inspect_err(|error| {
+            staging_io_failure("write", error);
+        })?;
+        tracing::trace!(
+            target: "omarchy_quickshare::protocol",
+            stage = "staging",
+            operation = "write",
+            byte_offset = self.written,
+            byte_count = buf.len()
+        );
         self.written = add_written(self.written, buf.len())?;
         Ok(())
     }
@@ -243,7 +342,16 @@ impl Write for StagedFile {
                 )
             })?;
         reject_overflow(self.written, self.declared_size, total)?;
-        let wrote = self.file.write_vectored(bufs)?;
+        let wrote = self.file.write_vectored(bufs).inspect_err(|error| {
+            staging_io_failure("write", error);
+        })?;
+        tracing::trace!(
+            target: "omarchy_quickshare::protocol",
+            stage = "staging",
+            operation = "write",
+            byte_offset = self.written,
+            byte_count = wrote
+        );
         self.written = add_written(self.written, wrote)?;
         Ok(wrote)
     }
@@ -257,10 +365,40 @@ impl Drop for StagedFile {
     #[inline]
     fn drop(&mut self) {
         if !self.committed {
-            drop(fs::remove_file(&self.staging));
+            match fs::remove_file(&self.staging) {
+                Ok(()) => tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "staging",
+                    operation = "cleanup",
+                    outcome = "success"
+                ),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => staging_io_failure("cleanup", &error),
+            }
         }
         unreserve(&self.reserved, &self.name);
     }
+}
+/// Emits a safe inbound staging failure.
+fn staging_failure(operation: &'static str, reason: &'static str) {
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "staging",
+        operation,
+        outcome = "failure",
+        reason
+    );
+}
+
+/// Emits a safe inbound staging I/O failure.
+fn staging_io_failure(operation: &'static str, error: &io::Error) {
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "staging",
+        operation,
+        outcome = "failure",
+        io_error_kind = ?error.kind()
+    );
 }
 
 /// Creates one exclusive staging file after bounded collision retries.
@@ -280,10 +418,21 @@ fn create_staging_file(directory: &Path) -> Result<(File, PathBuf), Error> {
             .open(&staging)
         {
             Ok(file) => return Ok((file, staging)),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error.into()),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                tracing::trace!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "staging",
+                    operation = "create",
+                    outcome = "collision"
+                );
+            }
+            Err(error) => {
+                staging_io_failure("create", &error);
+                return Err(error.into());
+            }
         }
     }
+    staging_failure("create", "collision_limit");
     Err(
         io::Error::new(io::ErrorKind::AlreadyExists, "staging collision")
             .into(),
@@ -306,6 +455,7 @@ fn reject_overflow(
 ) -> io::Result<()> {
     let total = add_written(written, additional)?;
     if total > declared_size {
+        staging_failure("write", "declared_size_exceeded");
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "declared size exceeded",

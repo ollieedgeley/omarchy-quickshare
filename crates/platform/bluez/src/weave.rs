@@ -30,6 +30,46 @@ const HASH_LEN: usize = 3;
 const DATA_HASH: [u8; HASH_LEN] = [0xFC, 0x9F, 0x5E];
 const CONTROL_HASH: [u8; HASH_LEN] = [0, 0, 0];
 
+fn protocol_failure(reason: &'static str, message: &'static str) -> Error {
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "weave",
+        operation = "validate",
+        outcome = "failure",
+        reason
+    );
+    Error::protocol(message)
+}
+
+fn transport_failure(operation: &'static str, error: &Error) {
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "weave",
+        operation,
+        outcome = "failure",
+        io_error_kind = ?error.kind()
+    );
+}
+
+fn control_event(operation: &'static str, first: &mut bool) {
+    if *first {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "weave",
+            operation,
+            outcome = "received"
+        );
+        *first = false;
+    } else {
+        tracing::trace!(
+            target: "omarchy_quickshare::protocol",
+            stage = "weave",
+            operation,
+            outcome = "received"
+        );
+    }
+}
+
 /// Layer-A connection request (`80 0001 0001 01fd`).
 #[must_use]
 pub(crate) fn encode_request() -> Vec<u8> {
@@ -62,10 +102,9 @@ pub(crate) fn encode_data(payload: &[u8], max_chunk: usize) -> Vec<Vec<u8>> {
 
 /// Parses one GATT PDU into a layer-A packet.
 pub(crate) fn decode_pdu(pdu: &[u8]) -> Result<Packet, Error> {
-    let header = pdu
-        .first()
-        .copied()
-        .ok_or_else(|| Error::protocol("truncated weave layer-A header"))?;
+    let header = pdu.first().copied().ok_or_else(|| {
+        protocol_failure("empty_header", "truncated weave layer-A header")
+    })?;
     let rest = pdu.get(1..).unwrap_or(&[]);
     if header & CONTROL == 0 {
         return Ok(Packet::Data {
@@ -152,14 +191,28 @@ impl Assembler {
         last: bool,
         payload: Vec<u8>,
     ) -> Result<Option<Message>, Error> {
+        tracing::trace!(
+            target: "omarchy_quickshare::protocol",
+            stage = "weave",
+            operation = "receive_fragment",
+            first,
+            last,
+            byte_count = payload.len()
+        );
         if first {
             if self.started {
-                return Err(Error::protocol("nested weave first fragment"));
+                return Err(protocol_failure(
+                    "nested_first",
+                    "nested weave first fragment",
+                ));
             }
             self.started = true;
             self.buffer.clear();
         } else if !self.started {
-            return Err(Error::protocol("weave fragment missing first"));
+            return Err(protocol_failure(
+                "missing_first",
+                "weave fragment missing first",
+            ));
         }
         self.buffer.extend_from_slice(&payload);
         if !last {
@@ -181,14 +234,91 @@ where
     F: FnMut(&[u8]) -> Result<(), Error>,
 {
     if !*requested {
-        write_pdu(&encode_request())?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "weave",
+            operation = "send_connection_request",
+            outcome = "started"
+        );
+        if let Err(error) = write_pdu(&encode_request()) {
+            transport_failure("send_connection_request", &error);
+            return Err(error);
+        }
         *requested = true;
     }
     let max_chunk = usize::from(MAX_PACKET).saturating_sub(1);
     for pdu in encode_data(payload, max_chunk) {
-        write_pdu(&pdu)?;
+        tracing::trace!(
+            target: "omarchy_quickshare::protocol",
+            stage = "weave",
+            operation = "send_fragment",
+            byte_count = pdu.len()
+        );
+        if let Err(error) = write_pdu(&pdu) {
+            transport_failure("send_fragment", &error);
+            return Err(error);
+        }
     }
     Ok(())
+}
+
+fn read_next_pdu<R>(
+    assembler: &Assembler,
+    deadline: Instant,
+    read_pdu: &mut R,
+) -> Result<Vec<u8>, Error>
+where
+    R: FnMut(Instant) -> Result<Vec<u8>, Error>,
+{
+    match read_pdu(deadline) {
+        Err(error)
+            if error.kind() == ErrorKind::Closed && assembler.started =>
+        {
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "weave",
+                operation = "read",
+                outcome = "failure",
+                disconnect_origin = "truncated_frame"
+            );
+            Err(Error::protocol("truncated weave message at pipe close"))
+        }
+        Err(error) => {
+            if error.kind() == ErrorKind::Closed {
+                tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "weave",
+                    operation = "read",
+                    outcome = "closed",
+                    disconnect_origin = "clean_eof"
+                );
+            } else {
+                transport_failure("read", &error);
+            }
+            Err(error)
+        }
+        Ok(pdu) => Ok(pdu),
+    }
+}
+
+fn assemble_data(
+    assembler: &mut Assembler,
+    pdu: &[u8],
+) -> Result<Option<Vec<u8>>, Error> {
+    match assembler.push(pdu)? {
+        Some(Message::Data(bytes)) => Ok(Some(bytes)),
+        Some(Message::Control(bytes)) if is_disconnect(&bytes) => {
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "weave",
+                operation = "disconnect",
+                outcome = "received",
+                disconnect_origin = "explicit_frame"
+            );
+            Err(Error::closed())
+        }
+        Some(Message::Control(_)) | None => Ok(None),
+    }
 }
 
 /// Reads GATT PDUs, answers layer-A handshake, and returns one data payload.
@@ -202,32 +332,32 @@ where
     R: FnMut(Instant) -> Result<Vec<u8>, Error>,
     W: FnMut(&[u8]) -> Result<(), Error>,
 {
-    let deadline = Instant::now()
-        .checked_add(timeout)
-        .ok_or_else(Error::timeout)?;
+    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+        let error = Error::timeout();
+        transport_failure("read", &error);
+        error
+    })?;
+    let mut first_control = true;
     loop {
-        let pdu = match read_pdu(deadline) {
-            Err(error)
-                if error.kind() == ErrorKind::Closed && assembler.started =>
-            {
-                return Err(Error::protocol(
-                    "truncated weave message at pipe close",
-                ));
-            }
-            result => result?,
-        };
+        let pdu = read_next_pdu(assembler, deadline, &mut read_pdu)?;
         match decode_pdu(&pdu)? {
-            Packet::Request => write_pdu(&encode_confirm())?,
-            Packet::Confirm | Packet::Error => {}
-            Packet::Data { .. } => match assembler.push(&pdu)? {
-                Some(Message::Data(bytes)) => return Ok(bytes),
-                Some(Message::Control(bytes)) => {
-                    if is_disconnect(&bytes) {
-                        return Err(Error::closed());
-                    }
+            Packet::Request => {
+                control_event("connection_request", &mut first_control);
+                write_pdu(&encode_confirm()).inspect_err(|error| {
+                    transport_failure("send_connection_confirm", error);
+                })?;
+            }
+            Packet::Confirm => {
+                control_event("connection_confirm", &mut first_control);
+            }
+            Packet::Error => {
+                control_event("connection_error", &mut first_control);
+            }
+            Packet::Data { .. } => {
+                if let Some(bytes) = assemble_data(assembler, &pdu)? {
+                    return Ok(bytes);
                 }
-                None => {}
-            },
+            }
         }
     }
 }
@@ -236,7 +366,8 @@ fn decode_control(header: u8, rest: &[u8]) -> Result<Packet, Error> {
     match header & CMD_MASK {
         CMD_REQUEST => {
             if rest.len() != REQUEST_LEN.saturating_sub(1) {
-                return Err(Error::protocol(
+                return Err(protocol_failure(
+                    "bad_request_length",
                     "malformed weave CONNECTION_REQUEST length",
                 ));
             }
@@ -244,20 +375,27 @@ fn decode_control(header: u8, rest: &[u8]) -> Result<Packet, Error> {
         }
         CMD_CONFIRM => {
             if rest.len() != CONFIRM_LEN.saturating_sub(1) {
-                return Err(Error::protocol(
+                return Err(protocol_failure(
+                    "bad_confirm_length",
                     "malformed weave CONNECTION_CONFIRM length",
                 ));
             }
             Ok(Packet::Confirm)
         }
         CMD_ERROR => Ok(Packet::Error),
-        _ => Err(Error::protocol("unknown weave layer-A command")),
+        _ => Err(protocol_failure(
+            "unknown_command",
+            "unknown weave layer-A command",
+        )),
     }
 }
 
 fn decode_layer_b(body: &[u8]) -> Result<Message, Error> {
     if body.len() < HASH_LEN {
-        return Err(Error::protocol("malformed weave layer-B length"));
+        return Err(protocol_failure(
+            "bad_layer_b_length",
+            "malformed weave layer-B length",
+        ));
     }
     let hash = [body[0], body[1], body[2]];
     let payload = body[HASH_LEN..].to_vec();
@@ -266,7 +404,10 @@ fn decode_layer_b(body: &[u8]) -> Result<Message, Error> {
     } else if hash == CONTROL_HASH {
         Ok(Message::Control(payload))
     } else {
-        Err(Error::protocol("unknown weave layer-B type"))
+        Err(protocol_failure(
+            "unknown_layer_b_type",
+            "unknown weave layer-B type",
+        ))
     }
 }
 
@@ -308,143 +449,4 @@ fn is_disconnect(control: &[u8]) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::VecDeque;
-    use std::time::Duration;
-
-    use super::{
-        Assembler, Message, decode_pdu, encode_confirm, encode_data,
-        encode_request, recv_data,
-    };
-    use crate::radio::ErrorKind;
-
-    #[test]
-    fn request_and_confirm_match_documented_bytes() {
-        assert_eq!(
-            encode_request(),
-            [0x80, 0x00, 0x01, 0x00, 0x01, 0x01, 0xFD]
-        );
-        assert_eq!(encode_confirm(), [0x81, 0x00, 0x01, 0x01, 0xFD]);
-    }
-
-    #[test]
-    fn data_round_trip_coalesced_and_fragmented() {
-        let payload = b"hello-quick-share";
-        let coalesced = encode_data(payload, 64);
-        assert_eq!(coalesced.len(), 1);
-        let mut assembler = Assembler::new();
-        match assembler.push(&coalesced[0]).expect("coalesced") {
-            Some(Message::Data(bytes)) => assert_eq!(bytes, payload),
-            _ => panic!("expected data"),
-        }
-        let fragments = encode_data(payload, 4);
-        assert!(fragments.len() > 1);
-        let mut assembler = Assembler::new();
-        let mut decoded = None;
-        for fragment in &fragments {
-            decoded = assembler.push(fragment).expect("fragment");
-        }
-        match decoded {
-            Some(Message::Data(bytes)) => assert_eq!(bytes, payload),
-            _ => panic!("expected reassembled data"),
-        }
-    }
-    #[test]
-    fn control_pdus_do_not_extend_the_read_deadline() {
-        let timeout = Duration::from_millis(3);
-        let mut now = None;
-        let mut pdus = VecDeque::from([
-            encode_request(),
-            encode_confirm(),
-            encode_confirm(),
-            encode_data(b"too late", 64).remove(0),
-        ]);
-        let error = recv_data(
-            &mut Assembler::new(),
-            timeout,
-            |read_deadline| {
-                let now = now.get_or_insert_with(|| {
-                    read_deadline
-                        .checked_sub(timeout)
-                        .expect("deadline includes timeout")
-                });
-                if *now >= read_deadline {
-                    return Err(crate::radio::Error::timeout());
-                }
-                *now += Duration::from_millis(1);
-                Ok(pdus.pop_front().expect("queued PDU"))
-            },
-            |_| Ok(()),
-        )
-        .expect_err("control PDUs must not reset the deadline");
-
-        assert_eq!(error.kind(), ErrorKind::Timeout);
-    }
-
-    #[test]
-    fn graceful_disconnect_is_closed_not_protocol_failure() {
-        let error = recv_data(
-            &mut Assembler::new(),
-            Duration::from_secs(1),
-            |_| Ok(vec![0x0C, 0x00, 0x00, 0x00, 0x08, 0x02]),
-            |_| Ok(()),
-        )
-        .expect_err("disconnect");
-
-        assert_eq!(error.kind(), ErrorKind::Closed);
-    }
-
-    #[test]
-    fn pipe_close_is_clean_only_between_weave_messages() {
-        let boundary = recv_data(
-            &mut Assembler::new(),
-            Duration::from_secs(1),
-            |_| Err(crate::radio::Error::closed()),
-            |_| Ok(()),
-        )
-        .expect_err("boundary close");
-        assert_eq!(boundary.kind(), ErrorKind::Closed);
-
-        let mut pdus = VecDeque::from([
-            Ok(vec![0x08, 0xFC, 0x9F]),
-            Err(crate::radio::Error::closed()),
-        ]);
-        let truncated = recv_data(
-            &mut Assembler::new(),
-            Duration::from_secs(1),
-            |_| pdus.pop_front().expect("queued pipe result"),
-            |_| Ok(()),
-        )
-        .expect_err("close during fragmented weave message");
-        assert_eq!(truncated.kind(), ErrorKind::Protocol);
-    }
-
-    #[test]
-    fn malformed_lengths_and_types_fail() {
-        assert_eq!(
-            decode_pdu(&[]).expect_err("empty").kind(),
-            ErrorKind::Protocol
-        );
-        assert_eq!(
-            decode_pdu(&[0x80, 0x00]).expect_err("short request").kind(),
-            ErrorKind::Protocol
-        );
-        assert_eq!(
-            decode_pdu(&[0x83]).expect_err("bad cmd").kind(),
-            ErrorKind::Protocol
-        );
-        let mut assembler = Assembler::new();
-        let error = assembler
-            .push(&[0x0C, 0x01, 0x02, 0x03])
-            .expect_err("unknown hash");
-        assert_eq!(error.kind(), ErrorKind::Protocol);
-        let mut assembler = Assembler::new();
-        let error = assembler.push(&[0x0C, 0xFC]).expect_err("short layer B");
-        assert_eq!(error.kind(), ErrorKind::Protocol);
-        let mut assembler = Assembler::new();
-        let error = assembler
-            .push(&[0x04, 0xFC, 0x9F, 0x5E])
-            .expect_err("missing first");
-        assert_eq!(error.kind(), ErrorKind::Protocol);
-    }
-}
+mod tests;

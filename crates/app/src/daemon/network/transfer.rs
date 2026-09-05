@@ -12,7 +12,10 @@ use crate::daemon::media::{
     PeerRoute, attempt_order, connect_route, initiate_bandwidth_upgrade,
     medium_name, sharing_session,
 };
-use crate::daemon::observations::{protocol_reason, trace_paired_key_exchange};
+use crate::daemon::observations::{
+    connection_span, protocol_io_kind, protocol_reason,
+    trace_paired_key_exchange, trace_protocol, trace_storage,
+};
 use crate::daemon::outbound::{OutboundPayload, OutboundTransfer};
 
 /// Converts one worker transfer attempt into a terminal daemon event.
@@ -64,17 +67,27 @@ fn send_payload(
             if route.medium() != medium {
                 continue;
             }
+            let connection_span = connection_span(
+                "outbound",
+                medium_name(route.medium()),
+                Some(share_id),
+            );
+            let _connection_guard = connection_span.enter();
+            trace_protocol("connection", "send", "started", None, None);
             if cancellation.is_cancelled(share_id) {
-                return Err(ProtocolError::Cancelled);
+                let error = ProtocolError::Cancelled;
+                trace_connection_result("send", Err(&error));
+                return Err(error);
             }
             let connection = match connect_route(adapter, route) {
                 Ok(connection) => connection,
                 Err(error) => {
+                    trace_connection_result("connect", Err(&error));
                     last_error = Some(error);
                     continue;
                 }
             };
-            return send_on_connection(
+            let result = send_on_connection(
                 payload,
                 connection,
                 share_id,
@@ -82,6 +95,8 @@ fn send_payload(
                 cancellation,
                 manager,
             );
+            trace_connection_result("send", result.as_ref());
+            return result;
         }
     }
     Err(last_error.unwrap_or(ProtocolError::Disconnected))
@@ -128,7 +143,7 @@ fn send_on_connection(
             on_progress,
             is_cancelled,
         )
-        .inspect_err(|error| trace_payload_failure(share_id, error)),
+        .inspect_err(trace_payload_failure),
         OutboundPayload::Text(value) => {
             session
                 .send_outgoing_text(
@@ -137,7 +152,7 @@ fn send_on_connection(
                     on_progress,
                     is_cancelled,
                 )
-                .inspect_err(|error| trace_payload_failure(share_id, error))?;
+                .inspect_err(trace_payload_failure)?;
             Ok(u64::try_from(value.len()).unwrap_or(0))
         }
         OutboundPayload::Url(value) => {
@@ -148,7 +163,7 @@ fn send_on_connection(
                     on_progress,
                     is_cancelled,
                 )
-                .inspect_err(|error| trace_payload_failure(share_id, error))?;
+                .inspect_err(trace_payload_failure)?;
             Ok(u64::try_from(value.len()).unwrap_or(0))
         }
     }
@@ -172,9 +187,11 @@ where
             "file name is not UTF-8",
         ))
     })?;
-    let mut reader = source
-        .reader()
-        .map_err(|error| ProtocolError::Io(io::Error::other(error)))?;
+    let mut reader = source.reader().map_err(|error| {
+        trace_storage("open_source", "failed", Some(&error));
+        ProtocolError::Io(io::Error::other(error))
+    })?;
+    trace_storage("open_source", "completed", None);
     let size = source.len();
     session.send_outgoing_file(
         name,
@@ -187,14 +204,36 @@ where
     Ok(size)
 }
 
-fn trace_payload_failure(share_id: u64, error: &ProtocolError) {
+fn trace_payload_failure(error: &ProtocolError) {
     if matches!(error, ProtocolError::Cancelled | ProtocolError::Rejected) {
         return;
     }
-    tracing::warn!(
-        share_id,
-        stage = "payload_transfer",
-        error_class = protocol_reason(error),
-        "share failed"
+    trace_protocol(
+        "payload_transfer",
+        "send",
+        "failed",
+        Some(protocol_reason(error)),
+        protocol_io_kind(error),
     );
+}
+
+fn trace_connection_result(
+    operation: &'static str,
+    result: Result<&u64, &ProtocolError>,
+) {
+    let (outcome, reason, io_error_kind) = match result {
+        Ok(_) => ("completed", None, None),
+        Err(error) => (
+            if matches!(error, ProtocolError::Cancelled) {
+                "cancelled"
+            } else if matches!(error, ProtocolError::Rejected) {
+                "rejected"
+            } else {
+                "failed"
+            },
+            Some(protocol_reason(error)),
+            protocol_io_kind(error),
+        ),
+    };
+    trace_protocol("connection", operation, outcome, reason, io_error_kind);
 }

@@ -138,26 +138,108 @@ impl SharingSession {
     pub fn exchange_account_free_pairing(
         &mut self,
     ) -> Result<PairingStatus, PairingError> {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "pairing",
+            operation = "exchange",
+            outcome = "started",
+            "protocol_stage"
+        );
         self.send_control_frame(&frames::account_free_encryption())
             .map_err(|source| {
+                tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "pairing",
+                    operation = "send_encryption",
+                    outcome = "failed",
+                    "protocol_stage"
+                );
                 PairingError::new(PairingStep::SendEncryption, source)
             })?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "pairing",
+            operation = "send_encryption",
+            outcome = "locally_written",
+            frame_type = "paired_key_encryption",
+            "protocol_stage"
+        );
         let encryption = self.receive_bytes().map_err(|source| {
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "pairing",
+                operation = "receive_encryption",
+                outcome = "failed",
+                "protocol_stage"
+            );
             PairingError::new(PairingStep::ReceiveEncryption, source)
         })?;
         let _ = frames::decode_pairing(&encryption).map_err(|source| {
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "pairing",
+                operation = "receive_encryption",
+                outcome = "rejected",
+                "protocol_stage"
+            );
             PairingError::new(PairingStep::ReceiveEncryption, source)
         })?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "pairing",
+            operation = "receive_encryption",
+            outcome = "accepted",
+            frame_type = "paired_key_encryption",
+            "protocol_stage"
+        );
         self.send_control_frame(&frames::account_free_result())
             .map_err(|source| {
+                tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "pairing",
+                    operation = "send_result",
+                    outcome = "failed",
+                    "protocol_stage"
+                );
                 PairingError::new(PairingStep::SendResult, source)
             })?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "pairing",
+            operation = "send_result",
+            outcome = "locally_written",
+            frame_type = "paired_key_result",
+            "protocol_stage"
+        );
         let result = self.receive_bytes().map_err(|source| {
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "pairing",
+                operation = "receive_result",
+                outcome = "failed",
+                "protocol_stage"
+            );
             PairingError::new(PairingStep::ReceiveResult, source)
         })?;
-        frames::decode_pairing(&result).map_err(|source| {
+        let status = frames::decode_pairing(&result).map_err(|source| {
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "pairing",
+                operation = "receive_result",
+                outcome = "rejected",
+                "protocol_stage"
+            );
             PairingError::new(PairingStep::ReceiveResult, source)
-        })
+        })?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "pairing",
+            operation = "receive_result",
+            outcome = "accepted",
+            frame_type = "paired_key_result",
+            "protocol_stage"
+        );
+        Ok(status)
     }
 
     /// Returns the account-free paired-key result frame.
@@ -174,7 +256,43 @@ impl SharingSession {
     pub fn receive_incoming_offer(
         &mut self,
     ) -> Result<IncomingOffer, ProtocolError> {
-        Self::decode_offer(&self.receive_bytes()?)
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "introduction",
+            operation = "receive",
+            outcome = "started",
+            "protocol_stage"
+        );
+        let bytes = self.receive_bytes().inspect_err(|_error| {
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "introduction",
+                operation = "receive",
+                outcome = "failed",
+                reason = "receive",
+                "protocol_stage"
+            );
+        })?;
+        let offer = Self::decode_offer(&bytes).inspect_err(|_error| {
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "introduction",
+                operation = "receive",
+                outcome = "rejected",
+                reason = "validation",
+                "protocol_stage"
+            );
+        })?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "introduction",
+            operation = "receive",
+            outcome = "accepted",
+            frame_type = "introduction",
+            byte_count = offer.size_bytes(),
+            "protocol_stage"
+        );
+        Ok(offer)
     }
 
     /// Writes the standard accept response for the current inbound offer.
@@ -183,7 +301,7 @@ impl SharingSession {
     ///
     /// Returns an error when the response cannot be sent.
     pub fn accept_incoming_offer(&mut self) -> Result<(), ProtocolError> {
-        self.send_control_frame(&frames::accept_response())
+        self.send_consent(&frames::accept_response(), "accepted")
     }
 
     /// Writes the standard rejection response for the current inbound offer.
@@ -192,7 +310,7 @@ impl SharingSession {
     ///
     /// Returns an error when the response cannot be sent.
     pub fn reject_incoming_offer(&mut self) -> Result<(), ProtocolError> {
-        self.send_control_frame(&frames::reject_response())
+        self.send_consent(&frames::reject_response(), "rejected")
     }
 
     /// Writes the timed-out response for the current inbound offer.
@@ -201,7 +319,7 @@ impl SharingSession {
     ///
     /// Returns an error when the response cannot be sent.
     pub fn timeout_incoming_offer(&mut self) -> Result<(), ProtocolError> {
-        self.send_control_frame(&frames::timeout_response())
+        self.send_consent(&frames::timeout_response(), "timed_out")
     }
 
     /// Writes the unsupported-attachment response for the current inbound
@@ -211,7 +329,38 @@ impl SharingSession {
     ///
     /// Returns an error when the response cannot be sent.
     pub fn unsupported_incoming_offer(&mut self) -> Result<(), ProtocolError> {
-        self.send_control_frame(&frames::unsupported_response())
+        self.send_consent(&frames::unsupported_response(), "unsupported")
+    }
+
+    fn send_consent(
+        &mut self,
+        frame: &Frame,
+        reason: &'static str,
+    ) -> Result<(), ProtocolError> {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "consent",
+            operation = "send",
+            outcome = "started",
+            reason,
+            "protocol_stage"
+        );
+        let result = self.send_control_frame(frame);
+        let outcome = if result.is_ok() {
+            "locally_written"
+        } else {
+            "failed"
+        };
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "consent",
+            operation = "send",
+            outcome,
+            reason,
+            event_type = "response",
+            "protocol_stage"
+        );
+        result
     }
 
     pub(in crate::protocol) fn send_control_frame(

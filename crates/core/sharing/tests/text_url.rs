@@ -41,6 +41,8 @@ use std::{
     io::{Read as _, Write as _},
     net::TcpStream,
 };
+use tracing as _;
+use tracing_subscriber as _;
 
 fn assert_offer(
     offer: &IncomingOffer,

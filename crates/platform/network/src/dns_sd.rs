@@ -11,6 +11,16 @@ use mdns_sd::{
 
 use crate::Error;
 
+fn dns_failure(operation: &'static str) {
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "dns_sd",
+        operation,
+        outcome = "failure",
+        reason = "daemon_error"
+    );
+}
+
 /// One DNS-SD service to announce on the local network.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[expect(
@@ -85,18 +95,39 @@ impl Browser {
         let started = Instant::now();
         loop {
             let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
+                tracing::trace!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "dns_sd",
+                    operation = "resolve",
+                    outcome = "timeout"
+                );
                 return Ok(None);
             };
             match self.receiver.recv_timeout(remaining) {
                 Ok(ServiceEvent::ServiceResolved(info)) => {
+                    tracing::debug!(
+                        target: "omarchy_quickshare::protocol",
+                        stage = "dns_sd",
+                        operation = "resolve",
+                        outcome = "success"
+                    );
                     return Ok(Some(resolve_service(
                         &info,
                         &self.service_type,
                     )));
                 }
                 Ok(_) => {}
-                Err(RecvTimeoutError::Timeout) => return Ok(None),
+                Err(RecvTimeoutError::Timeout) => {
+                    tracing::trace!(
+                        target: "omarchy_quickshare::protocol",
+                        stage = "dns_sd",
+                        operation = "resolve",
+                        outcome = "timeout"
+                    );
+                    return Ok(None);
+                }
                 Err(RecvTimeoutError::Disconnected) => {
+                    dns_failure("resolve");
                     return Err(Error(String::from(
                         "mDNS discovery channel disconnected",
                     )));
@@ -114,6 +145,15 @@ impl Browser {
     pub fn stop(self) -> Result<(), Error> {
         self.daemon
             .stop_browse(&self.service_type)
+            .inspect(|&()| {
+                tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "dns_sd",
+                    operation = "stop_browse",
+                    outcome = "requested"
+                );
+            })
+            .inspect_err(|_| dns_failure("stop_browse"))
             .map_err(convert_error)
     }
 }
@@ -144,9 +184,19 @@ impl DnsSd {
             advertisement.port,
             properties.as_slice(),
         )
+        .inspect_err(|_| dns_failure("build_advertisement"))
         .map_err(convert_error)?;
         let fullname = service.get_fullname().to_owned();
-        self.daemon.register(service).map_err(convert_error)?;
+        self.daemon
+            .register(service)
+            .inspect_err(|_| dns_failure("advertise"))
+            .map_err(convert_error)?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "dns_sd",
+            operation = "advertise",
+            outcome = "success"
+        );
         Ok(Registration {
             daemon: self.daemon.clone(),
             fullname,
@@ -162,10 +212,19 @@ impl DnsSd {
     pub fn browse(&self, service_type: &str) -> Result<Browser, Error> {
         self.daemon
             .browse(service_type)
-            .map(|receiver| Browser {
-                daemon: self.daemon.clone(),
-                receiver,
-                service_type: service_type.to_owned(),
+            .inspect_err(|_| dns_failure("browse"))
+            .map(|receiver| {
+                tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "dns_sd",
+                    operation = "browse",
+                    outcome = "started"
+                );
+                Browser {
+                    daemon: self.daemon.clone(),
+                    receiver,
+                    service_type: service_type.to_owned(),
+                }
             })
             .map_err(convert_error)
     }
@@ -178,6 +237,7 @@ impl DnsSd {
     #[inline]
     pub fn new() -> Result<Self, Error> {
         ServiceDaemon::new()
+            .inspect_err(|_| dns_failure("start_daemon"))
             .map(|daemon| Self { daemon })
             .map_err(convert_error)
     }
@@ -191,7 +251,15 @@ impl DnsSd {
     pub fn shutdown(self) -> Result<(), Error> {
         self.daemon
             .shutdown()
-            .map(|_status| ())
+            .inspect_err(|_| dns_failure("shutdown_daemon"))
+            .map(|_status| {
+                tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "dns_sd",
+                    operation = "shutdown_daemon",
+                    outcome = "requested"
+                );
+            })
             .map_err(convert_error)
     }
 }
@@ -206,7 +274,15 @@ impl Registration {
     pub fn stop(self) -> Result<(), Error> {
         self.daemon
             .unregister(&self.fullname)
-            .map(|_status| ())
+            .inspect_err(|_| dns_failure("unregister"))
+            .map(|_status| {
+                tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "dns_sd",
+                    operation = "unregister",
+                    outcome = "requested"
+                );
+            })
             .map_err(convert_error)
     }
 }
@@ -274,8 +350,16 @@ impl fmt::Debug for Registration {
 /// when no non-loopback IPv4 address exists.
 #[inline]
 pub fn local_ipv4_addresses() -> Result<Vec<Ipv4Addr>, Error> {
-    let interfaces =
-        if_addrs::get_if_addrs().map_err(|error| Error(error.to_string()))?;
+    let interfaces = if_addrs::get_if_addrs().map_err(|error| {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "lan",
+            operation = "enumerate_local_addresses",
+            outcome = "failure",
+            io_error_kind = ?error.kind()
+        );
+        Error(error.to_string())
+    })?;
     let mut addresses = interfaces
         .into_iter()
         .filter_map(|interface| match interface.addr {
@@ -291,6 +375,13 @@ pub fn local_ipv4_addresses() -> Result<Vec<Ipv4Addr>, Error> {
     addresses.sort_unstable();
     addresses.dedup();
     if addresses.is_empty() {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "lan",
+            operation = "enumerate_local_addresses",
+            outcome = "failure",
+            reason = "no_usable_address"
+        );
         return Err(Error(String::from(
             "no non-loopback local IPv4 address is available",
         )));

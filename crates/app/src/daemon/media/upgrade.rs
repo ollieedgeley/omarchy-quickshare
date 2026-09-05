@@ -17,7 +17,9 @@ use quickshare_network::network_manager::{
 };
 use quickshare_sharing::ProtocolError;
 
-use crate::daemon::observations::protocol_reason;
+use crate::daemon::observations::{
+    io_error_kind, protocol_io_kind, protocol_reason,
+};
 
 use super::{attempt_order, endpoint_name, medium_name};
 
@@ -51,24 +53,44 @@ where
 {
     match upgraded {
         Ok(stream) => {
-            if connection.complete_upgrade_io(medium, stream).is_err() {
+            if let Err(error) = connection.complete_upgrade_io(medium, stream) {
+                let error = ProtocolError::Connection(error);
                 tracing::warn!(
+                    target: "omarchy_quickshare::protocol",
                     stage = "upgrade",
+                    operation = "complete",
+                    outcome = "failed",
                     medium = medium_name(medium),
-                    error_class = "disconnected",
+                    reason = crate::daemon::observations::pairing_error_class(
+                        &error,
+                    ),
+                    io_error_kind = protocol_io_kind(&error).unwrap_or("none"),
                     "upgrade failed"
                 );
                 connection.fail_upgrade(medium)?;
             } else {
                 tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
                     stage = "upgrade",
+                    operation = "complete",
+                    outcome = "completed",
                     medium = medium_name(medium),
                     "adapter stage ready"
                 );
             }
             Ok(())
         }
-        Err(_) => {
+        Err(error) => {
+            tracing::warn!(
+                target: "omarchy_quickshare::protocol",
+                stage = "upgrade",
+                operation = "complete",
+                outcome = "failed",
+                medium = medium_name(medium),
+                reason = protocol_reason(&error),
+                io_error_kind = protocol_io_kind(&error),
+                "upgrade failed"
+            );
             connection.fail_upgrade(medium)?;
             Ok(())
         }
@@ -91,7 +113,10 @@ pub(crate) fn initiate_bandwidth_upgrade(
     }
     let Some(manager) = manager else {
         tracing::warn!(
+            target: "omarchy_quickshare::protocol",
             stage = "upgrade",
+            operation = "offer",
+            outcome = "unavailable",
             available = false,
             error_class = "unavailable",
             "upgrade failed"
@@ -128,17 +153,28 @@ pub(crate) fn initiate_bandwidth_upgrade(
                         match connection.complete_upgrade_io(medium, stream) {
                             Ok(()) => {
                                 tracing::debug!(
+                                    target: "omarchy_quickshare::protocol",
                                     stage = "upgrade",
+                                    operation = "complete",
+                                    outcome = "completed",
                                     medium = medium_name(medium),
                                     "adapter stage ready"
                                 );
                                 return Ok(Some(session));
                             }
-                            Err(_) => {
+                            Err(error) => {
+                                let error = ProtocolError::Connection(error);
                                 tracing::warn!(
+                                    target: "omarchy_quickshare::protocol",
                                     stage = "upgrade",
+                                    operation = "complete",
+                                    outcome = "failed",
                                     medium = medium_name(medium),
-                                    error_class = "disconnected",
+                                    reason =
+                                        crate::daemon::observations::
+                                            pairing_error_class(&error),
+                                    io_error_kind = protocol_io_kind(&error)
+                                        .unwrap_or("none"),
                                     "upgrade failed"
                                 );
                                 connection.fail_upgrade(medium)?;
@@ -146,11 +182,21 @@ pub(crate) fn initiate_bandwidth_upgrade(
                             }
                         }
                     }
-                    Err(_) => {
+                    Err(error) => {
+                        let reason = if error.kind() == io::ErrorKind::TimedOut
+                        {
+                            "timed_out"
+                        } else {
+                            "io"
+                        };
                         tracing::warn!(
+                            target: "omarchy_quickshare::protocol",
                             stage = "upgrade",
+                            operation = "accept",
+                            outcome = "failed",
                             medium = medium_name(medium),
-                            error_class = "timed_out",
+                            reason,
+                            io_error_kind = io_error_kind(&error),
                             "upgrade failed"
                         );
                         connection.fail_upgrade(medium)?;
@@ -160,7 +206,10 @@ pub(crate) fn initiate_bandwidth_upgrade(
             }
             Err(_) => {
                 tracing::warn!(
+                    target: "omarchy_quickshare::protocol",
                     stage = "upgrade",
+                    operation = "open_medium",
+                    outcome = "failed",
                     medium = medium_name(medium),
                     error_class = "unavailable",
                     "upgrade failed"
@@ -203,9 +252,13 @@ pub(crate) fn accept_bandwidth_upgrade(
         }
         Err(error) => {
             tracing::warn!(
+                target: "omarchy_quickshare::protocol",
                 stage = "upgrade",
+                operation = "join",
+                outcome = "failed",
                 medium = medium_name(medium),
                 error_class = protocol_reason(&error),
+                io_error_kind = protocol_io_kind(&error),
                 "upgrade failed"
             );
             complete_or_fail_upgrade::<TcpStream>(

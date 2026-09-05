@@ -13,6 +13,7 @@ use async_io as _;
 use futures_lite as _;
 use quickshare_connections::ConnectionIo as _;
 use std::io::{Read, Write};
+use tracing as _;
 use zbus as _;
 
 use quickshare_bluez::testing::FakeRadio;

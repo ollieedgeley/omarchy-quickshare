@@ -45,10 +45,21 @@ struct SourceReader {
 impl Read for SourceReader {
     #[inline]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let read = self.file.read_at(buf, self.position)?;
+        let read =
+            self.file.read_at(buf, self.position).inspect_err(|error| {
+                source_io_failure("read", error);
+            })?;
+        tracing::trace!(
+            target: "omarchy_quickshare::protocol",
+            stage = "source",
+            operation = "read",
+            byte_offset = self.position,
+            byte_count = read
+        );
         let advance = u64::try_from(read).map_err(io::Error::other)?;
         self.position =
             self.position.checked_add(advance).ok_or_else(|| {
+                source_failure("offset_overflow");
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     "source offset overflow",
@@ -96,8 +107,11 @@ impl OutboundSource {
         PathLike: AsRef<Path>,
     {
         let path = source_path.as_ref();
-        let listed = fs::symlink_metadata(path)?;
+        let listed = fs::symlink_metadata(path).inspect_err(|error| {
+            source_io_failure("inspect", error);
+        })?;
         if !listed.file_type().is_file() {
+            source_failure("not_regular_file");
             return Err(Error::InvalidSource);
         }
         let file = OpenOptions::new()
@@ -105,11 +119,24 @@ impl OutboundSource {
             .custom_flags(O_NOFOLLOW)
             .open(path)
             .map_err(map_open_error)?;
-        let metadata = file.metadata()?;
-        let name = path.file_name().ok_or(Error::InvalidSource)?;
+        let metadata = file.metadata().inspect_err(|error| {
+            source_io_failure("metadata", error);
+        })?;
+        let name = path.file_name().ok_or_else(|| {
+            source_failure("missing_basename");
+            Error::InvalidSource
+        })?;
         if !metadata.is_file() {
+            source_failure("not_regular_file");
             return Err(Error::InvalidSource);
         }
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "source",
+            operation = "open",
+            outcome = "success",
+            byte_count = metadata.len()
+        );
         Ok(Self {
             device: metadata.dev(),
             file,
@@ -127,27 +154,44 @@ impl OutboundSource {
     #[inline]
     pub fn reader(&self) -> Result<impl Read, Error> {
         self.reject_mutation()?;
-        Ok(SourceReader {
-            file: self.file.try_clone()?,
-            position: 0,
-        })
+        let file = self.file.try_clone().inspect_err(|error| {
+            source_io_failure("clone", error);
+        })?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "source",
+            operation = "reader",
+            outcome = "success",
+            byte_count = self.length
+        );
+        Ok(SourceReader { file, position: 0 })
     }
 
     /// Rejects length, inode, or path replacement after acceptance.
     fn reject_mutation(&self) -> Result<(), Error> {
-        let fd_meta = self.file.metadata()?;
+        let fd_meta = self.file.metadata().inspect_err(|error| {
+            source_io_failure("validate_descriptor", error);
+        })?;
         if fd_meta.len() != self.length
             || fd_meta.dev() != self.device
             || fd_meta.ino() != self.inode
         {
+            source_failure("descriptor_mutated");
             return Err(Error::Mutation);
         }
-        let path_meta = fs::symlink_metadata(&self.path)?;
-        if path_meta.file_type().is_symlink()
-            || path_meta.len() != self.length
+        let path_meta =
+            fs::symlink_metadata(&self.path).inspect_err(|error| {
+                source_io_failure("validate_path", error);
+            })?;
+        if path_meta.file_type().is_symlink() {
+            source_failure("source_replaced_by_symlink");
+            return Err(Error::Mutation);
+        }
+        if path_meta.len() != self.length
             || path_meta.dev() != self.device
             || path_meta.ino() != self.inode
         {
+            source_failure("path_replaced_or_mutated");
             return Err(Error::Mutation);
         }
         Ok(())
@@ -160,9 +204,32 @@ impl OutboundSource {
     reason = "isolates ELOOP mapping for platform behavior and testability"
 )]
 fn map_open_error(error: io::Error) -> Error {
+    source_io_failure("open", &error);
     if error.raw_os_error() == Some(ELOOP) {
+        source_failure("symlink");
         Error::InvalidSource
     } else {
         error.into()
     }
+}
+/// Emits a safe outbound source validation failure.
+fn source_failure(reason: &'static str) {
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "source",
+        operation = "validate",
+        outcome = "failure",
+        reason
+    );
+}
+
+/// Emits a safe outbound source I/O failure.
+fn source_io_failure(operation: &'static str, error: &io::Error) {
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "source",
+        operation,
+        outcome = "failure",
+        io_error_kind = ?error.kind()
+    );
 }

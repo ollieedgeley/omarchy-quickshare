@@ -14,6 +14,31 @@ use crate::weave::{Assembler, recv_data, send_data};
 
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
+fn adapter_failure(
+    medium: &'static str,
+    operation: &'static str,
+    error: &Error,
+) {
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "medium_io",
+        medium,
+        operation,
+        outcome = "failure",
+        io_error_kind = ?error.kind()
+    );
+}
+
+fn selected_medium(medium: &'static str) {
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "medium",
+        operation = "select",
+        outcome = "selected",
+        medium
+    );
+}
+
 /// A bounded authenticated byte stream independent of BlueZ medium.
 #[derive(Debug)]
 pub struct BluetoothIo {
@@ -31,6 +56,8 @@ enum IoInner {
         pipe: DbusBytePipe,
         /// Unconsumed bytes from the last kernel read.
         leftover: Mutex<Vec<u8>>,
+        /// Selected raw Bluetooth medium.
+        medium: &'static str,
     },
     /// GATT weave with layer A/B framing before Connections.
     Weave {
@@ -48,10 +75,15 @@ enum IoInner {
 impl BluetoothIo {
     /// Wraps a production Classic socket.
     pub(crate) fn classic(socket: ClassicSocket) -> Result<Self, Error> {
+        let pipe = socket.into_dbus_pipe().inspect_err(|error| {
+            adapter_failure("bluetooth_classic", "open", error);
+        })?;
+        selected_medium("bluetooth_classic");
         Ok(Self {
             inner: IoInner::Raw {
-                pipe: socket.into_dbus_pipe()?,
+                pipe,
                 leftover: Mutex::new(Vec::new()),
+                medium: "bluetooth_classic",
             },
             read_timeout: DEFAULT_READ_TIMEOUT,
         })
@@ -59,10 +91,15 @@ impl BluetoothIo {
 
     /// Wraps a production L2CAP channel.
     pub(crate) fn l2cap(channel: L2capChannel) -> Result<Self, Error> {
+        let pipe = channel.into_dbus_pipe().inspect_err(|error| {
+            adapter_failure("bluetooth_l2cap", "open", error);
+        })?;
+        selected_medium("bluetooth_l2cap");
         Ok(Self {
             inner: IoInner::Raw {
-                pipe: channel.into_dbus_pipe()?,
+                pipe,
                 leftover: Mutex::new(Vec::new()),
+                medium: "bluetooth_l2cap",
             },
             read_timeout: DEFAULT_READ_TIMEOUT,
         })
@@ -70,9 +107,13 @@ impl BluetoothIo {
 
     /// Wraps a production GATT weave socket with layer A/B framing.
     pub(crate) fn weave(socket: WeaveSocket) -> Result<Self, Error> {
+        let pipe = socket
+            .into_dbus_pipe()
+            .inspect_err(|error| adapter_failure("ble", "open", error))?;
+        selected_medium("ble");
         Ok(Self {
             inner: IoInner::Weave {
-                pipe: socket.into_dbus_pipe()?,
+                pipe,
                 assembler: Mutex::new(Assembler::new()),
                 leftover: Mutex::new(Vec::new()),
                 requested: Mutex::new(false),
@@ -88,11 +129,29 @@ impl BluetoothIo {
     /// Returns an I/O error when the write half cannot be shut down.
     #[inline]
     pub fn shutdown_write(&mut self) -> io::Result<()> {
-        match &self.inner {
-            IoInner::Raw { pipe, .. } | IoInner::Weave { pipe, .. } => {
-                pipe.shutdown_write().map_err(io::Error::other)
+        let result = match &self.inner {
+            IoInner::Raw { pipe, medium, .. } => {
+                pipe.shutdown_write().map_err(|error| {
+                    adapter_failure(medium, "shutdown_write", &error);
+                    io::Error::other(error)
+                })
             }
+            IoInner::Weave { pipe, .. } => {
+                pipe.shutdown_write().map_err(|error| {
+                    adapter_failure("ble", "shutdown_write", &error);
+                    io::Error::other(error)
+                })
+            }
+        };
+        if result.is_ok() {
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "medium_io",
+                operation = "shutdown_write",
+                outcome = "success"
+            );
         }
+        result
     }
 }
 
@@ -114,9 +173,34 @@ impl Read for BluetoothIo {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let timeout = self.read_timeout;
         match &self.inner {
-            IoInner::Raw { pipe, leftover } => {
-                read_buffered(leftover, buf, || read_result(pipe.recv(timeout)))
-            }
+            IoInner::Raw {
+                pipe,
+                leftover,
+                medium,
+            } => read_buffered(leftover, buf, || {
+                let result = pipe.recv(timeout);
+                match &result {
+                    Ok(bytes) => tracing::trace!(
+                        target: "omarchy_quickshare::protocol",
+                        stage = "medium_io",
+                        medium,
+                        operation = "read",
+                        byte_count = bytes.len()
+                    ),
+                    Err(error) if error.kind() == ErrorKind::Closed => {
+                        tracing::debug!(
+                            target: "omarchy_quickshare::protocol",
+                            stage = "medium_io",
+                            medium,
+                            operation = "read",
+                            outcome = "closed",
+                            disconnect_origin = "stream_eof"
+                        );
+                    }
+                    Err(error) => adapter_failure(medium, "read", error),
+                }
+                read_result(result)
+            }),
             IoInner::Weave {
                 pipe,
                 assembler,
@@ -131,14 +215,32 @@ impl Write for BluetoothIo {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match &self.inner {
-            IoInner::Raw { pipe, .. } => {
-                pipe.send(buf).map_err(io::Error::other)?;
+            IoInner::Raw { pipe, medium, .. } => {
+                pipe.send(buf).map_err(|error| {
+                    adapter_failure(medium, "write", &error);
+                    io::Error::other(error)
+                })?;
+                tracing::trace!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "medium_io",
+                    medium,
+                    operation = "write",
+                    byte_count = buf.len()
+                );
                 Ok(buf.len())
             }
             IoInner::Weave {
                 pipe, requested, ..
             } => {
                 let mut requested = requested.lock().map_err(|_| {
+                    tracing::debug!(
+                        target: "omarchy_quickshare::protocol",
+                        stage = "medium_io",
+                        medium = "ble",
+                        operation = "write",
+                        outcome = "failure",
+                        reason = "lock_poisoned"
+                    );
                     io::Error::other("weave request lock poisoned")
                 })?;
                 send_data(buf, &mut requested, |pdu| pipe.send(pdu))

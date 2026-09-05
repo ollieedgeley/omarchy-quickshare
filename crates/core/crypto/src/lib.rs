@@ -72,6 +72,8 @@ use rand_core::{CryptoRng, RngCore};
 use sha2 as _;
 use sha2::{Digest as _, Sha256, Sha512};
 
+#[macro_use]
+mod diagnostics;
 mod primitives;
 mod secure_channel;
 mod types;
@@ -221,12 +223,21 @@ impl Handshake {
     ///
     /// Returns an error when called outside the next required handshake state.
     pub fn next_message(&mut self) -> Result<Vec<u8>, HandshakeError> {
-        match (self.role, self.state) {
-            (Role::Initiator, State::Start) => self.client_init(),
-            (Role::Responder, State::WaitForPeer) => self.server_init(),
-            (Role::Initiator, State::SendFinish) => self.client_finish(),
-            _ => Err(HandshakeError::InvalidState),
-        }
+        let role = self.role;
+        let (event_type, result) = match (self.role, self.state) {
+            (Role::Initiator, State::Start) => {
+                ("client_init", self.client_init())
+            }
+            (Role::Responder, State::WaitForPeer) => {
+                ("server_init", self.server_init())
+            }
+            (Role::Initiator, State::SendFinish) => {
+                ("client_finish", self.client_finish())
+            }
+            _ => ("unexpected", Err(HandshakeError::InvalidState)),
+        };
+        ukey2_diagnostic!("prepare", role, event_type, &result);
+        result
     }
 
     /// Accepts the next UKEY2 message from the peer.
@@ -235,16 +246,21 @@ impl Handshake {
     ///
     /// Returns an error for a malformed or invalid peer message in this state.
     pub fn receive(&mut self, bytes: &[u8]) -> Result<(), HandshakeError> {
-        match (self.role, self.state) {
-            (Role::Responder, State::Start) => self.receive_client_init(bytes),
+        let role = self.role;
+        let (event_type, result) = match (self.role, self.state) {
+            (Role::Responder, State::Start) => {
+                ("client_init", self.receive_client_init(bytes))
+            }
             (Role::Initiator, State::WaitForPeer) => {
-                self.receive_server_init(bytes)
+                ("server_init", self.receive_server_init(bytes))
             }
             (Role::Responder, State::WaitForPeer) => {
-                self.receive_client_finish(bytes)
+                ("client_finish", self.receive_client_finish(bytes))
             }
-            _ => Err(HandshakeError::InvalidState),
-        }
+            _ => ("unexpected", Err(HandshakeError::InvalidState)),
+        };
+        ukey2_diagnostic!("receive", role, event_type, &result);
+        result
     }
 
     /// Derives the peer-verification token and directional D2D channel.
@@ -253,37 +269,42 @@ impl Handshake {
     ///
     /// Returns an error unless the full UKEY2 exchange completed successfully.
     pub fn complete(self) -> Result<CompletedHandshake, HandshakeError> {
-        if self.state != State::Complete {
-            return Err(HandshakeError::InvalidState);
-        }
-        let client_init =
-            self.client_init.ok_or(HandshakeError::InvalidState)?;
-        let server_init =
-            self.server_init.ok_or(HandshakeError::InvalidState)?;
-        let peer_key = self.peer_key.ok_or(HandshakeError::InvalidState)?;
-        let shared = diffie_hellman(
-            self.secret.to_nonzero_scalar(),
-            peer_key.as_affine(),
-        );
-        let shared = Sha256::digest(shared.raw_secret_bytes());
-        let transcript = [client_init, server_init].concat();
-        let authentication_token =
-            derive::<KEY_LENGTH>(&shared, AUTH_SALT, &transcript)
+        let role = self.role;
+        let result = (|| {
+            if self.state != State::Complete {
+                return Err(HandshakeError::InvalidState);
+            }
+            let client_init =
+                self.client_init.ok_or(HandshakeError::InvalidState)?;
+            let server_init =
+                self.server_init.ok_or(HandshakeError::InvalidState)?;
+            let peer_key = self.peer_key.ok_or(HandshakeError::InvalidState)?;
+            let shared = diffie_hellman(
+                self.secret.to_nonzero_scalar(),
+                peer_key.as_affine(),
+            );
+            let shared = Sha256::digest(shared.raw_secret_bytes());
+            let transcript = [client_init, server_init].concat();
+            let authentication_token =
+                derive::<KEY_LENGTH>(&shared, AUTH_SALT, &transcript)
+                    .map_err(|_| HandshakeError::KeyAgreement)?;
+            let master = derive::<KEY_LENGTH>(&shared, NEXT_SALT, &transcript)
                 .map_err(|_| HandshakeError::KeyAgreement)?;
-        let master = derive::<KEY_LENGTH>(&shared, NEXT_SALT, &transcript)
-            .map_err(|_| HandshakeError::KeyAgreement)?;
-        let client = d2d_key(&master, b"client")
-            .map_err(|_| HandshakeError::KeyAgreement)?;
-        let server = d2d_key(&master, b"server")
-            .map_err(|_| HandshakeError::KeyAgreement)?;
-        let (send, receive) = match self.role {
-            Role::Initiator => (client, server),
-            Role::Responder => (server, client),
-        };
-        Ok(CompletedHandshake {
-            authentication_token,
-            channel: SecureChannel::new(send, receive),
-        })
+            let client = d2d_key(&master, b"client")
+                .map_err(|_| HandshakeError::KeyAgreement)?;
+            let server = d2d_key(&master, b"server")
+                .map_err(|_| HandshakeError::KeyAgreement)?;
+            let (send, receive) = match self.role {
+                Role::Initiator => (client, server),
+                Role::Responder => (server, client),
+            };
+            Ok(CompletedHandshake {
+                authentication_token,
+                channel: SecureChannel::new(send, receive),
+            })
+        })();
+        ukey2_diagnostic!("complete", role, "handshake", &result);
+        result
     }
 
     fn client_init(&mut self) -> Result<Vec<u8>, HandshakeError> {

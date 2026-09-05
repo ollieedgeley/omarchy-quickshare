@@ -20,6 +20,8 @@ use quickshare_network::{
 };
 use quickshare_sharing::{EndpointInfo, MdnsInstance};
 
+use crate::daemon::observations::{io_error_kind, trace_protocol};
+
 /// Maximum wait before processing another worker command.
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// Time between mDNS browse restarts while discovery remains requested.
@@ -158,6 +160,7 @@ pub(super) fn run_worker(
     if let Some(active_browser) = browser.take() {
         let _result = active_browser.stop();
     }
+    trace_protocol("lifecycle", "worker_cleanup", "completed", None, None);
 }
 
 /// Applies one nonblocking worker command and reports channel availability.
@@ -188,6 +191,7 @@ fn handle_command(
                 let _result = listener.stop();
             }
             core::mem::take(visibility).close();
+            trace_protocol("visibility", "close", "completed", None, None);
             true
         }
         NetworkCommand::Discover => {
@@ -196,6 +200,7 @@ fn handle_command(
             core::mem::take(discovery).close();
             *discovery =
                 start_discovery(refresh_adapter(bluetooth), DISCOVERY_LEASE);
+            trace_protocol("discovery", "start", "completed", None, None);
             true
         }
         NetworkCommand::OpenVisibility => {
@@ -203,6 +208,13 @@ fn handle_command(
                 match open_listener(dns_sd) {
                     Ok(listener) => *inbound = Some(listener),
                     Err(error) => {
+                        trace_protocol(
+                            "visibility",
+                            "open",
+                            "failed",
+                            Some("io"),
+                            Some(io_error_kind(&error)),
+                        );
                         return events
                             .send(NetworkEvent::InboundFailed {
                                 reason: error.to_string(),
@@ -214,25 +226,31 @@ fn handle_command(
             }
             core::mem::take(visibility).close();
             *visibility = open_visibility(refresh_adapter(bluetooth));
+            trace_protocol("visibility", "open", "completed", None, None);
             true
         }
-        NetworkCommand::SendShare { share_id, transfer } => events
-            .send(outbound_event(
-                share_id,
-                &transfer,
-                events,
-                cancellation,
-                bluetooth.as_ref(),
-                manager,
-            ))
-            .is_ok(),
+        NetworkCommand::SendShare { share_id, transfer } => {
+            trace_protocol("local_control", "send", "started", None, None);
+            events
+                .send(outbound_event(
+                    share_id,
+                    &transfer,
+                    events,
+                    cancellation,
+                    bluetooth.as_ref(),
+                    manager,
+                ))
+                .is_ok()
+        }
         NetworkCommand::StopDiscovery => {
             *discovering = false;
             if let Some(active_browser) = browser.take() {
                 let _result = active_browser.stop();
             }
             core::mem::take(discovery).close();
-            emit_peer_lost(seen, events)
+            let available = emit_peer_lost(seen, events);
+            trace_protocol("discovery", "stop", "completed", None, None);
+            available
         }
     }
 }

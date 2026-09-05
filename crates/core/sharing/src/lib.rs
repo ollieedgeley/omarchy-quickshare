@@ -90,6 +90,8 @@
 
 #[cfg(test)]
 use quickshare_crypto as _;
+#[cfg(test)]
+use tracing_subscriber as _;
 
 /// Attachment values accepted by a share.
 mod attachment;

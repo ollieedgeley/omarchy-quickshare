@@ -21,9 +21,26 @@ impl Listener {
     #[inline]
     pub fn accept(&self) -> io::Result<Option<TcpStream>> {
         match self.listener.accept() {
-            Ok((stream, _address)) => Ok(Some(stream)),
+            Ok((stream, _address)) => {
+                tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "lan",
+                    operation = "accept",
+                    outcome = "success"
+                );
+                Ok(Some(stream))
+            }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
-            Err(error) => Err(error),
+            Err(error) => {
+                tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "lan",
+                    operation = "accept",
+                    outcome = "failure",
+                    io_error_kind = ?error.kind()
+                );
+                Err(error)
+            }
         }
     }
 
@@ -44,9 +61,43 @@ impl Listener {
     /// Returns an error when the socket cannot bind or become nonblocking.
     #[inline]
     pub fn bind(port: u16) -> io::Result<Self> {
-        let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))?;
-        listener.set_nonblocking(true)?;
-        let bound_port = listener.local_addr()?.port();
+        let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))
+            .inspect_err(|error| {
+                tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "lan",
+                    operation = "bind",
+                    outcome = "failure",
+                    io_error_kind = ?error.kind()
+                );
+            })?;
+        listener.set_nonblocking(true).inspect_err(|error| {
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "lan",
+                operation = "set_nonblocking",
+                outcome = "failure",
+                io_error_kind = ?error.kind()
+            );
+        })?;
+        let bound_port = listener
+            .local_addr()
+            .inspect_err(|error| {
+                tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "lan",
+                    operation = "read_local_address",
+                    outcome = "failure",
+                    io_error_kind = ?error.kind()
+                );
+            })?
+            .port();
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "lan",
+            operation = "bind",
+            outcome = "success"
+        );
         Ok(Self {
             listener,
             port: bound_port,
@@ -72,6 +123,13 @@ impl Listener {
         advertisement: &Advertisement,
     ) -> io::Result<PublishedLanListener> {
         if advertisement.port != self.port {
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "dns_sd",
+                operation = "publish",
+                outcome = "failure",
+                reason = "port_mismatch"
+            );
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "advertisement port does not match the bound listener",
@@ -79,6 +137,12 @@ impl Listener {
         }
         let registration =
             dns_sd.advertise(advertisement).map_err(io::Error::other)?;
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "dns_sd",
+            operation = "publish",
+            outcome = "success"
+        );
         Ok(PublishedLanListener {
             listener: self,
             registration: Some(registration),
@@ -125,9 +189,16 @@ impl PublishedLanListener {
 
     /// Withdraws the registration at most once.
     fn unregister(&mut self) -> io::Result<()> {
-        self.registration.take().map_or(Ok(()), |registration| {
+        let result = self.registration.take().map_or(Ok(()), |registration| {
             registration.stop().map_err(io::Error::other)
-        })
+        });
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "dns_sd",
+            operation = "unregister",
+            outcome = if result.is_ok() { "requested" } else { "failure" }
+        );
+        result
     }
 }
 
@@ -150,4 +221,21 @@ impl Drop for PublishedLanListener {
 #[inline]
 pub fn connect(route: SocketAddrV4) -> io::Result<TcpStream> {
     TcpStream::connect(route)
+        .inspect(|_| {
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "lan",
+                operation = "connect",
+                outcome = "success"
+            );
+        })
+        .inspect_err(|error| {
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "lan",
+                operation = "connect",
+                outcome = "failure",
+                io_error_kind = ?error.kind()
+            );
+        })
 }

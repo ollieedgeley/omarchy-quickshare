@@ -15,6 +15,7 @@
     clippy::used_underscore_binding,
     reason = "Private D-Bus fakes are integration-test support"
 )]
+use tracing as _;
 
 /// Private D-Bus NetworkManager fake.
 #[cfg(test)]

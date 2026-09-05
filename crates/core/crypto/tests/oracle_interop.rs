@@ -10,6 +10,7 @@ use quickshare_crypto as _;
 use quickshare_wire as _;
 use rand_core as _;
 use sha2 as _;
+use tracing as _;
 
 #[cfg(quickshare_oracle_reference)]
 #[expect(

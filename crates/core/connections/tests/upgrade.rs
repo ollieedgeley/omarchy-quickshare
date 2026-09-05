@@ -22,6 +22,7 @@ use std::{
     net::{TcpListener, TcpStream},
     thread,
 };
+use tracing as _;
 
 const INITIATOR_RANDOM: [u8; 32] = [1; 32];
 const RESPONDER_RANDOM: [u8; 32] = [2; 32];

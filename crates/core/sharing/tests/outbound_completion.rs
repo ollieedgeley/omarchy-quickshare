@@ -31,10 +31,57 @@ use serde as _;
 use std::{
     io::{self, Cursor, Read, Write},
     os::unix::net::UnixStream,
-    sync::mpsc::{self, Sender, sync_channel},
+    sync::{
+        Mutex, PoisonError,
+        mpsc::{self, Sender, sync_channel},
+    },
     thread::{self, JoinHandle},
 };
 
+/// Verifies that payload diagnostics distinguish routing from rejection.
+macro_rules! assert_payload_diagnostics {
+    ($diagnostics:expr, $private_sentinel:expr) => {{
+        let diagnostics = $diagnostics;
+        let skipped = diagnostics
+            .lines()
+            .find(|line| {
+                line.contains("stage=\"control\"")
+                    && line.contains("operation=\"demux\"")
+            })
+            .expect("control demux diagnostic");
+        assert!(
+            skipped.contains("outcome=\"skipped\""),
+            "missing skipped outcome: {skipped}",
+        );
+        assert!(
+            skipped.contains("event_type=\"response\""),
+            "missing response event: {skipped}",
+        );
+        let rejected = diagnostics
+            .lines()
+            .find(|line| {
+                line.contains("stage=\"validation\"")
+                    && line.contains("operation=\"payload\"")
+            })
+            .expect("payload validation diagnostic");
+        assert!(
+            rejected.contains("outcome=\"rejected\""),
+            "missing rejected outcome: {rejected}",
+        );
+        assert!(
+            rejected.contains("reason=\"id_mismatch\""),
+            "missing mismatch reason: {rejected}",
+        );
+        assert!(
+            rejected.contains("id_matches_expected=false"),
+            "missing mismatch flag: {rejected}",
+        );
+        assert!(
+            !diagnostics.contains($private_sentinel),
+            "diagnostics leaked the private filename: {diagnostics}",
+        );
+    }};
+}
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const INITIATOR_RANDOM: [u8; 32] = [1; 32];
 const RESPONDER_RANDOM: [u8; 32] = [2; 32];
@@ -109,6 +156,34 @@ impl quickshare_connections::ConnectionIo for TimeoutIo {
 
     fn shutdown_write(&mut self) -> io::Result<()> {
         self.inner.shutdown(std::net::Shutdown::Write)
+    }
+}
+
+#[derive(Clone, Default)]
+struct LogOutput(Arc<Mutex<Vec<u8>>>);
+
+struct LogWriter(Arc<Mutex<Vec<u8>>>);
+
+impl Write for LogWriter {
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+}
+
+impl LogOutput {
+    fn contents(&self) -> String {
+        String::from_utf8(
+            self.0.lock().expect("lock diagnostic output").clone(),
+        )
+        .expect("UTF-8 diagnostics")
     }
 }
 
@@ -290,6 +365,10 @@ fn receive_one_byte_file(
 }
 
 fn send_file_introduction(connection: &mut Connection) {
+    send_named_file_introduction(connection, "note.txt");
+}
+
+fn send_named_file_introduction(connection: &mut Connection, name: &str) {
     let introduction = Frame {
         version: Some(1_i32),
         v1: Some(V1Frame {
@@ -297,7 +376,7 @@ fn send_file_introduction(connection: &mut Connection) {
             introduction: Some(IntroductionFrame {
                 file_metadata: vec![FileMetadata {
                     id: Some(4),
-                    name: Some(String::from("note.txt")),
+                    name: Some(String::from(name)),
                     r#type: Some(i32::from(file_metadata::Type::Document)),
                     payload_id: Some(3),
                     size: Some(1),
@@ -477,6 +556,53 @@ fn file_chunks_ignore_an_unrelated_sharing_control() {
         ),
         [1],
     );
+    sender.join().expect("sender completes");
+}
+
+#[test]
+fn diagnostics_distinguish_skipped_control_from_wrong_payload_id() {
+    const PRIVATE_SENTINEL: &str = "private-sentinel.txt";
+
+    let (release_sender, release_receiver) = mpsc::channel();
+    let (mut session, sender) = paired_raw_peer(move |mut connection| {
+        send_named_file_introduction(&mut connection, PRIVATE_SENTINEL);
+        connection
+            .send_sharing_frame(5, &accept_response())
+            .expect("send unrelated control");
+        connection
+            .send_file_header(9, 1, Some(String::from(PRIVATE_SENTINEL)))
+            .expect("send wrong payload identifier");
+        connection
+            .send_file_chunk(9, 0, &[1], false)
+            .expect("send wrong payload data");
+        release_receiver.recv().expect("release peer");
+    });
+    let offer = session.receive_incoming_offer().expect("receive offer");
+    session.accept_incoming_offer().expect("accept offer");
+    let output = LogOutput::default();
+    let writer = output.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            "omarchy_quickshare=debug",
+        ))
+        .without_time()
+        .with_target(true)
+        .with_writer(move || LogWriter(Arc::clone(&writer.0)))
+        .finish();
+
+    let error = tracing::subscriber::with_default(subscriber, || {
+        session
+            .receive_incoming_file(&offer, &mut Vec::new(), |_| {}, || false)
+            .expect_err("wrong payload identifier")
+    });
+
+    assert!(
+        matches!(error, ProtocolError::InvalidPayload),
+        "unexpected error kind: {error}",
+    );
+    let diagnostics = output.contents();
+    assert_payload_diagnostics!(diagnostics.as_str(), PRIVATE_SENTINEL);
+    release_sender.send(()).expect("release peer");
     sender.join().expect("sender completes");
 }
 

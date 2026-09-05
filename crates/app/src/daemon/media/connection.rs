@@ -105,8 +105,6 @@ pub(crate) struct PeerSighting {
 
 /// Opens an initiator Connections relationship over any byte stream.
 ///
-/// # Errors
-///
 /// Returns an error when the handshake or framing fails.
 pub(crate) fn connect_connection<Stream>(
     stream: Stream,
@@ -457,6 +455,9 @@ fn trace_handshake<T>(
     match result {
         Ok(value) => {
             tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                outcome = "completed",
+                operation = "handshake",
                 stage = "handshake",
                 medium = medium_name(medium),
                 "adapter stage ready"
@@ -465,6 +466,9 @@ fn trace_handshake<T>(
         }
         Err(error) => {
             tracing::warn!(
+                target: "omarchy_quickshare::protocol",
+                outcome = "failed",
+                operation = "handshake",
                 stage = "handshake",
                 medium = medium_name(medium),
                 error_class = protocol_reason(&error),

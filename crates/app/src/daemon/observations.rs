@@ -1,6 +1,10 @@
 //! Daemon-owned share observations for control JSON.
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
+use std::io;
+
+use tracing::{Span, field};
 
 use quickshare_sharing::{PairingError, PairingStatus, ProtocolError};
 use quickshare_storage::Error as StorageError;
@@ -15,6 +19,90 @@ pub(super) const WIFI_DIRECT: &str = "wifi_direct";
 pub(super) const BLE: &str = "ble";
 /// Bluetooth Classic medium name.
 pub(super) const BLUETOOTH: &str = "bluetooth";
+
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Opens one process-local chronology before the protocol handshake starts.
+pub(super) fn connection_span(
+    direction: &'static str,
+    initial_medium: &'static str,
+    share_id: Option<u64>,
+) -> Span {
+    let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
+    let span = tracing::debug_span!(
+        target: "omarchy_quickshare::protocol",
+        "connection",
+        connection_id,
+        direction,
+        initial_medium,
+        share_id = field::Empty
+    );
+    if let Some(share_id) = share_id {
+        let _recorded = span.record("share_id", share_id);
+    }
+    span
+}
+
+/// Records the stable local share identifier once inbound consent supplies it.
+pub(super) fn record_share_id(span: &Span, share_id: u64) {
+    let _recorded = span.record("share_id", share_id);
+}
+
+/// Maps an operating-system I/O failure to a privacy-safe stable class.
+#[must_use]
+pub(super) fn io_error_kind(error: &io::Error) -> &'static str {
+    match error.kind() {
+        io::ErrorKind::NotFound => "not_found",
+        io::ErrorKind::PermissionDenied => "permission_denied",
+        io::ErrorKind::ConnectionRefused => "connection_refused",
+        io::ErrorKind::ConnectionReset => "connection_reset",
+        io::ErrorKind::ConnectionAborted => "connection_aborted",
+        io::ErrorKind::NotConnected => "not_connected",
+        io::ErrorKind::AddrInUse => "address_in_use",
+        io::ErrorKind::AddrNotAvailable => "address_unavailable",
+        io::ErrorKind::BrokenPipe => "broken_pipe",
+        io::ErrorKind::AlreadyExists => "already_exists",
+        io::ErrorKind::WouldBlock => "would_block",
+        io::ErrorKind::InvalidInput => "invalid_input",
+        io::ErrorKind::InvalidData => "invalid_data",
+        io::ErrorKind::TimedOut => "timed_out",
+        io::ErrorKind::WriteZero => "write_zero",
+        io::ErrorKind::UnexpectedEof => "unexpected_eof",
+        io::ErrorKind::OutOfMemory => "out_of_memory",
+        _ => "other",
+    }
+}
+
+/// Returns the underlying I/O class when a protocol error preserves it.
+#[must_use]
+pub(super) fn protocol_io_kind(error: &ProtocolError) -> Option<&'static str> {
+    match error {
+        ProtocolError::Io(source) => Some(io_error_kind(source)),
+        ProtocolError::Connection(quickshare_connections::Error::Io(
+            source,
+        )) => Some(io_error_kind(source)),
+        _ => None,
+    }
+}
+
+/// Emits one safe protocol-orchestration result inside the active chronology.
+pub(super) fn trace_protocol(
+    stage: &'static str,
+    operation: &'static str,
+    outcome: &'static str,
+    reason: Option<&str>,
+    io_error_kind: Option<&str>,
+) {
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage,
+        operation,
+        outcome,
+        reason = reason.unwrap_or("none"),
+        io_error_kind = io_error_kind.unwrap_or("none"),
+        "protocol stage"
+    );
+}
 
 /// Estimates remaining seconds from observed throughput.
 #[must_use]
@@ -99,6 +187,7 @@ pub(super) fn trace_paired_key_exchange(
 ) {
     match result {
         Ok(_) => tracing::debug!(
+            target: "omarchy_quickshare::protocol",
             share_id,
             stage = "paired_key",
             direction,
@@ -107,6 +196,7 @@ pub(super) fn trace_paired_key_exchange(
             "paired-key exchange completed"
         ),
         Err(error) => tracing::warn!(
+            target: "omarchy_quickshare::protocol",
             share_id,
             stage = "paired_key",
             direction,
@@ -133,6 +223,28 @@ pub(super) const fn storage_reason(error: &StorageError) -> &'static str {
         StorageError::Io(_) => "io",
         _ => "failed",
     }
+}
+
+/// Emits one privacy-safe storage orchestration boundary.
+pub(super) fn trace_storage(
+    operation: &'static str,
+    outcome: &'static str,
+    error: Option<&StorageError>,
+) {
+    let reason = error.map(storage_reason);
+    let io_error_kind = error.and_then(|error| match error {
+        StorageError::Io(source) => Some(io_error_kind(source)),
+        _ => None,
+    });
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol",
+        stage = "storage",
+        operation,
+        outcome,
+        reason = reason.unwrap_or("none"),
+        io_error_kind = io_error_kind.unwrap_or("none"),
+        "storage stage"
+    );
 }
 
 /// Returns recovery guidance for a public terminal reason.
