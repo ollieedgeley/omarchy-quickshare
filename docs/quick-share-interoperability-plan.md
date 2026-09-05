@@ -99,6 +99,15 @@ Connections interfaces instead of leaking into the plugin or platform adapters.
 | 9. Payload transfer        | Sends referenced `BYTES`, `FILE`, or `STREAM` payloads after acceptance.                                                                                                                                                                                                                                                | Receives the payloads, reports progress, and validates completion.                                                                                                                                  | Google Connections payload schema and Sharing sessions.                                                                                                                                             |
 | 10. Terminal outcome       | Reports completion, cancellation, or failure and cleans up.                                                                                                                                                                                                                                                             | Reports the same outcome and commits or removes received data.                                                                                                                                      | Google Connections payload callbacks and Sharing session state. There is not necessarily a separate Sharing "success frame" after every payload.                                                    |
 
+This table is not an exhaustive list of frames allowed between stages.
+The pinned Google receiver starts reading control frames before local consent:
+[`ReadyForTransfer`](https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/sharing/incoming_share_session.cc#L264-L291)
+installs the incoming frame callback before reporting local confirmation.
+[`OnIncomingSessionFrameRead`](https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/sharing/nearby_sharing_service_impl.cc#L2599-L2646)
+discards a Sharing `RESPONSE` and continues reading; it does not interpret that
+frame's status as local consent. The Rust receiver follows that rule while
+retaining explicit local acceptance, cancellation, and early-payload rejection.
+
 The high-level sequence is:
 
 ```mermaid

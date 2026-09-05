@@ -17,7 +17,6 @@ extern crate alloc;
 #[path = "common/pairing.rs"]
 mod pairing;
 #[expect(
-    clippy::single_call_fn,
     unreachable_pub,
     reason = "Shared fixtures are reused across integration-test crates"
 )]
@@ -400,7 +399,143 @@ fn diagnostic_subscriber(output: LogOutput) -> impl tracing::Subscriber {
         .finish()
 }
 
-fn pending_consent_rejection(
+fn poll_until_peer_acknowledges(
+    session: &mut SharingSession,
+    acknowledged: &mpsc::Receiver<()>,
+) -> Result<(), ProtocolError> {
+    let started = Instant::now();
+    loop {
+        match acknowledged.try_recv() {
+            Ok(()) => return Ok(()),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err(ProtocolError::Disconnected);
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        if started.elapsed() >= IO_TIMEOUT {
+            return Err(ProtocolError::TimedOut);
+        }
+        session.poll_pending_consent_control()?;
+        thread::yield_now();
+    }
+}
+
+fn send_response_before_consent(
+    connection: &mut Connection,
+    acknowledged: &mpsc::Sender<()>,
+    response: &[u8],
+) {
+    connection
+        .send_bytes(
+            4,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../tests/fixtures/sharing/google-v1/",
+                "incoming/introductions/file.bin"
+            )),
+        )
+        .expect("send Google introduction");
+    connection
+        .send_bytes(5, response)
+        .expect("send Google response before local consent");
+    connection
+        .send_keepalive(42)
+        .expect("send response barrier");
+    // The next encrypted event must be the ACK, not implicit consent.
+    assert_eq!(
+        connection.receive().expect("receive response barrier ACK"),
+        Event::KeepAlive {
+            ack: true,
+            sequence: 42,
+        },
+        "peer response must be consumed without transmitting local consent"
+    );
+    acknowledged.send(()).expect("report consumed response");
+}
+
+#[test]
+fn pending_consent_consumes_google_response_before_explicit_file_acceptance() {
+    const FILE_BYTES: &[u8; 12] = b"hello world\n";
+    let (acknowledged_sender, acknowledged) = mpsc::channel();
+    let (initiator_stream, responder_stream) = bounded_stream_pair();
+    let peer = spawn_raw_peer(responder_stream, move |mut connection| {
+        send_response_before_consent(
+            &mut connection,
+            &acknowledged_sender,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../tests/fixtures/sharing/google-v1/",
+                "incoming/responses/accept.bin"
+            )),
+        );
+        let decision = receive_bytes(&mut connection, "explicit local consent");
+        assert_eq!(
+            SharingSession::decode_response(&decision).expect("decode consent"),
+            connection_response_frame::Status::Accept
+        );
+        connection
+            .send_file_header(201, 12, Some(String::from("fixture-file.bin")))
+            .expect("declare accepted payload");
+        connection
+            .send_file_chunk(201, 0, FILE_BYTES, false)
+            .expect("send accepted bytes");
+        connection
+            .send_file_chunk(201, 12, &[], true)
+            .expect("finish accepted payload");
+    });
+    let mut session = connect_paired_initiator(initiator_stream);
+    let mut received = Vec::new();
+    let result = (|| {
+        let offer = session.receive_incoming_offer()?;
+        poll_until_peer_acknowledges(&mut session, &acknowledged)?;
+        session.accept_incoming_offer()?;
+        session.receive_incoming_file(&offer, &mut received, |_| {}, || false)
+    })();
+    // Closing releases a peer blocked on ACK or consent after failure.
+    drop(session);
+    let joined = peer.join();
+    result.expect(
+        "response preserves pending consent and accepted file transfer",
+    );
+    joined.expect("peer completes");
+    assert_eq!(received, FILE_BYTES);
+}
+
+#[test]
+fn pending_consent_google_response_preserves_explicit_local_rejection() {
+    let (acknowledged_sender, acknowledged) = mpsc::channel();
+    let (initiator_stream, responder_stream) = bounded_stream_pair();
+    let peer = spawn_raw_peer(responder_stream, move |mut connection| {
+        send_response_before_consent(
+            &mut connection,
+            &acknowledged_sender,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../tests/fixtures/sharing/google-v1/",
+                "incoming/responses/reject.bin"
+            )),
+        );
+        let decision =
+            receive_bytes(&mut connection, "explicit local rejection");
+        assert_eq!(
+            SharingSession::decode_response(&decision)
+                .expect("decode rejection"),
+            connection_response_frame::Status::Reject
+        );
+    });
+    let mut session = connect_paired_initiator(initiator_stream);
+    let result = (|| {
+        let _offer = session.receive_incoming_offer()?;
+        poll_until_peer_acknowledges(&mut session, &acknowledged)?;
+        session.reject_incoming_offer()
+    })();
+    drop(session);
+    let joined = peer.join();
+    result.expect("response preserves explicit local rejection");
+    joined.expect("peer observes rejection");
+}
+
+fn pending_consent_error(
     send_event: impl FnOnce(&mut Connection) + Send + 'static,
 ) -> (ProtocolError, String) {
     let (ready_sender, ready_receiver) = mpsc::channel();
@@ -448,7 +583,7 @@ fn pending_consent_rejection(
     released.expect("release peer");
     joined.expect("peer completes");
     (
-        result.expect_err("unexpected event while consent is pending"),
+        result.expect_err("terminal event while consent is pending"),
         output.contents(),
     )
 }
@@ -477,11 +612,50 @@ fn assert_pending_consent_diagnostics<'diagnostics>(
 }
 
 #[test]
-fn pending_consent_diagnostics_classify_rejected_sharing_bytes() {
-    let (error, diagnostics) = pending_consent_rejection(|connection| {
+fn pending_consent_response_does_not_hide_peer_cancellation() {
+    let (error, _diagnostics) = pending_consent_error(|connection| {
         connection
-            .send_sharing_frame(5, &accept_response())
-            .expect("send unexpected Sharing response");
+            .send_bytes(
+                5,
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../tests/fixtures/sharing/google-v1/",
+                    "incoming/responses/accept.bin"
+                )),
+            )
+            .expect("send Google response before local consent");
+        connection
+            .send_bytes(
+                6,
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../tests/fixtures/sharing/google-v1/",
+                    "incoming/responses/cancel.bin"
+                )),
+            )
+            .expect("cancel pending offer");
+    });
+    assert!(matches!(error, ProtocolError::Cancelled));
+}
+
+#[test]
+fn pending_consent_rejects_wrong_version_response() {
+    let (error, _diagnostics) = pending_consent_error(|connection| {
+        let mut response = accept_response();
+        response.version = Some(2_i32);
+        connection
+            .send_sharing_frame(5, &response)
+            .expect("send wrong-version response");
+    });
+    assert!(matches!(error, ProtocolError::InvalidPayload));
+}
+
+#[test]
+fn pending_consent_diagnostics_classify_rejected_sharing_bytes() {
+    let (error, diagnostics) = pending_consent_error(|connection| {
+        connection
+            .send_sharing_frame(5, &account_free_encryption())
+            .expect("send unexpected pairing encryption");
     });
     assert!(matches!(error, ProtocolError::InvalidPayload));
     let rejected = assert_pending_consent_diagnostics(
@@ -489,7 +663,7 @@ fn pending_consent_diagnostics_classify_rejected_sharing_bytes() {
         "event_type=\"bytes\"",
     );
     assert!(
-        rejected.contains("frame_type=\"response\""),
+        rejected.contains("frame_type=\"paired_key_encryption\""),
         "missing Sharing frame type: {rejected}",
     );
 }
@@ -498,7 +672,7 @@ fn pending_consent_diagnostics_classify_rejected_sharing_bytes() {
 fn pending_consent_diagnostics_classify_file_without_private_filename() {
     const PRIVATE_SENTINEL: &str = "pending-consent-private-sentinel.txt";
 
-    let (error, diagnostics) = pending_consent_rejection(|connection| {
+    let (error, diagnostics) = pending_consent_error(|connection| {
         connection
             .send_file_header(201, 12, Some(String::from(PRIVATE_SENTINEL)))
             .expect("send file before local consent");

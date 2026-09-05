@@ -61,6 +61,21 @@ impl SharingSession {
                 if frame_type == "cancel" {
                     return Err(ProtocolError::Cancelled);
                 }
+                if frame_type == "response" {
+                    // Like Google's incoming session, discard peer responses;
+                    // only the local user can accept this incoming offer.
+                    tracing::debug!(
+                        target: "omarchy_quickshare::protocol",
+                        stage = "control",
+                        operation = "pending_consent",
+                        outcome = "skipped",
+                        reason = "out_of_phase",
+                        event_type = "bytes",
+                        frame_type,
+                        "protocol_stage"
+                    );
+                    return Ok(());
+                }
                 ("bytes", Some(frame_type), None)
             }
             Event::PayloadError { .. } => ("payload_error", None, None),
