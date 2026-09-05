@@ -17,9 +17,10 @@
 mod common;
 
 use base64 as _;
+use common::pairing::{INITIATOR_RANDOM, INITIATOR_SECRET};
 use common::{
-    INITIATOR_RANDOM, INITIATOR_SECRET, bind_loopback, connect_stream,
-    decode_google_offer, google_v1, paired_loopback, spawn_peer,
+    bind_loopback, connect_stream, decode_google_offer, google_v1,
+    paired_loopback, spawn_peer,
 };
 use prost::Message as _;
 use quickshare_connections::{Connection, ConnectionOptions, Event};

@@ -2,8 +2,6 @@
 
 #![expect(
     clippy::absolute_paths,
-    clippy::as_conversions,
-    clippy::default_numeric_fallback,
     clippy::expect_used,
     clippy::missing_assert_message,
     clippy::missing_trait_methods,
@@ -15,17 +13,32 @@
     reason = "Integration tests name std I/O types at the crate boundary"
 )]
 
+#[expect(
+    unreachable_pub,
+    reason = "Shared constants are exported only through private test modules"
+)]
+#[path = "common/pairing.rs"]
+mod pairing;
+#[expect(
+    clippy::single_call_fn,
+    unreachable_pub,
+    reason = "Shared fixtures are reused across integration-test crates"
+)]
+#[path = "common/stream.rs"]
+mod stream;
+
 use base64 as _;
 use core::{cell::Cell, time::Duration};
+use pairing::{
+    INITIATOR_RANDOM, INITIATOR_SECRET, RESPONDER_RANDOM, RESPONDER_SECRET,
+};
 use prost as _;
-use quickshare_connections::{Connection, ConnectionOptions, Event};
+use quickshare_connections::{Connection, ConnectionOptions, Event, Medium};
 use quickshare_crypto::Handshake;
 use quickshare_sharing::{
     OfferKind, PairingStatus, PairingStep, ProtocolError, SharingSession,
 };
-use quickshare_wire::sharing::{
-    Frame, PairedKeyEncryptionFrame, V1Frame, v1_frame,
-};
+use quickshare_wire::sharing::connection_response_frame;
 use rand_core as _;
 use serde as _;
 use std::{
@@ -34,13 +47,10 @@ use std::{
     sync::mpsc,
     thread,
 };
+use stream::{account_free_encryption, connect_paired_initiator};
 use tracing as _;
 use tracing_subscriber as _;
 
-const INITIATOR_RANDOM: [u8; 32] = [1; 32];
-const RESPONDER_RANDOM: [u8; 32] = [2; 32];
-const INITIATOR_SECRET: [u8; 32] = [3; 32];
-const RESPONDER_SECRET: [u8; 32] = [4; 32];
 const MULTI_FRAME_FILE_SIZE: usize = 0x0010_0001;
 
 struct AcceptedReader<'accepted> {
@@ -129,24 +139,7 @@ fn paired_key_payload_ids_are_not_reused_by_introduction() {
                 other => panic!("expected encryption bytes, got {other:?}"),
             };
         connection
-            .send_sharing_frame(
-                1,
-                &Frame {
-                    version: Some(1),
-                    v1: Some(V1Frame {
-                        r#type: Some(
-                            v1_frame::FrameType::PairedKeyEncryption as i32,
-                        ),
-                        paired_key_encryption: Some(PairedKeyEncryptionFrame {
-                            signed_data: Some(vec![0; 72]),
-                            secret_id_hash: Some(vec![0; 6]),
-                            optional_signed_data: None,
-                            qr_code_handshake_data: None,
-                        }),
-                        ..Default::default()
-                    }),
-                },
-            )
+            .send_sharing_frame(1, &account_free_encryption())
             .expect("send account-free encryption");
         let result_id = match connection
             .receive()
@@ -166,14 +159,7 @@ fn paired_key_payload_ids_are_not_reused_by_introduction() {
         (encryption_id, result_id, introduction_id)
     });
 
-    let connection = Connection::connect_io(
-        initiator_stream,
-        Handshake::initiator(INITIATOR_RANDOM, INITIATOR_SECRET),
-        ConnectionOptions::new("local", "Omarchy"),
-    )
-    .expect("establish local session");
-    let mut session = SharingSession::new(connection);
-    let _pairing = session.exchange_account_free_pairing().expect("pair");
+    let mut session = connect_paired_initiator(initiator_stream);
     let _closed = session
         .send_outgoing_text("hello from omarchy", || {}, |_| {}, || false)
         .expect_err("peer closed after introduction");
@@ -387,4 +373,107 @@ fn unix_pair_text_rejection_reaches_the_outbound_sender() {
         .expect_err("peer rejection");
     assert!(matches!(error, ProtocolError::Rejected));
     receiver.join().expect("receiver completes");
+}
+
+#[test]
+fn pending_consent_survives_upgrade_failure_before_file_acceptance() {
+    const FILE_BYTES: &[u8; 12] = b"hello world\n";
+    let (initiator_stream, responder_stream) =
+        UnixStream::pair().expect("unix pair");
+    for stream in [&initiator_stream, &responder_stream] {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("bound peer reads");
+        stream
+            .set_write_timeout(Some(Duration::from_secs(1)))
+            .expect("bound peer writes");
+    }
+    let (ready_sender, ready) = mpsc::channel();
+    let (polled_sender, polled) = mpsc::channel::<bool>();
+    let peer = thread::spawn(move || {
+        let mut connection = Connection::connect_io(
+            initiator_stream,
+            Handshake::initiator(INITIATOR_RANDOM, INITIATOR_SECRET),
+            ConnectionOptions::new("remote", "Remote"),
+        )
+        .expect("establish encrypted peer");
+        connection
+            .send_bytes(
+                1,
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../tests/fixtures/sharing/google-v1/",
+                    "incoming/introductions/file.bin"
+                )),
+            )
+            .expect("send Google introduction");
+        connection
+            .fail_upgrade(Medium::WifiHotspot)
+            .expect("report failed upgrade");
+        ready_sender.send(()).expect("report ready control");
+        if !polled
+            .recv_timeout(Duration::from_secs(1))
+            .expect("receiver polled upgrade failure")
+        {
+            return;
+        }
+        assert!(
+            connection
+                .poll_event()
+                .expect("check pending consent")
+                .is_none()
+        );
+        ready_sender
+            .send(())
+            .expect("confirm no implicit acceptance");
+        let Event::Bytes { bytes, .. } =
+            connection.receive().expect("receive local decision")
+        else {
+            panic!("expected Sharing consent response");
+        };
+        assert_eq!(
+            SharingSession::decode_response(&bytes).expect("decode decision"),
+            connection_response_frame::Status::Accept
+        );
+        connection
+            .send_file_header(201, 12, Some(String::from("fixture-file.bin")))
+            .expect("declare accepted payload");
+        connection
+            .send_file_chunk(201, 0, FILE_BYTES, false)
+            .expect("send accepted bytes");
+        connection
+            .send_file_chunk(201, 12, &[], true)
+            .expect("finish accepted payload");
+    });
+    let connection = Connection::accept_io(
+        responder_stream,
+        Handshake::responder(RESPONDER_RANDOM, RESPONDER_SECRET),
+        ConnectionOptions::new("local", "Omarchy"),
+    )
+    .expect("establish encrypted receiver");
+    let mut session = SharingSession::new(connection);
+    let offer = session.receive_incoming_offer().expect("receive offer");
+    ready
+        .recv_timeout(Duration::from_secs(1))
+        .expect("upgrade failure is ready");
+    let pending = session.poll_pending_consent_control();
+    polled_sender
+        .send(pending.is_ok())
+        .expect("report completed poll");
+    if let Err(error) = pending {
+        peer.join().expect("release peer after failed poll");
+        panic!("failed upgrade must preserve pending consent: {error}");
+    }
+    ready
+        .recv_timeout(Duration::from_secs(1))
+        .expect("peer observed no implicit acceptance");
+    session
+        .accept_incoming_offer()
+        .expect("explicitly accept offer");
+    let mut received = Vec::new();
+    session
+        .receive_incoming_file(&offer, &mut received, |_| {}, || false)
+        .expect("receive accepted file on original connection");
+    peer.join().expect("peer completes");
+    assert_eq!(received, FILE_BYTES);
 }

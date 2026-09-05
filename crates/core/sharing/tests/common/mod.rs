@@ -12,6 +12,12 @@
     reason = "Shared integration-test setup favors a compact scenario API"
 )]
 
+pub mod pairing;
+
+use pairing::{
+    INITIATOR_RANDOM, INITIATOR_SECRET, RESPONDER_RANDOM, RESPONDER_SECRET,
+};
+
 use quickshare_connections::{Connection, ConnectionOptions};
 use quickshare_crypto::Handshake;
 use quickshare_sharing::{IncomingOffer, SharingSession};
@@ -19,11 +25,6 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     thread::{self, JoinHandle},
 };
-
-pub const INITIATOR_RANDOM: [u8; 32] = [1; 32];
-pub const RESPONDER_RANDOM: [u8; 32] = [2; 32];
-pub const INITIATOR_SECRET: [u8; 32] = [3; 32];
-pub const RESPONDER_SECRET: [u8; 32] = [4; 32];
 
 pub fn bind_loopback() -> (TcpListener, SocketAddr) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");

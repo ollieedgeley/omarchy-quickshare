@@ -1,7 +1,7 @@
 use super::SharingSession;
 use crate::protocol::{ProtocolError, frames};
 use core::time::Duration;
-use quickshare_connections::{Error as ConnectionError, Event};
+use quickshare_connections::{Error as ConnectionError, Event, UpgradeEvent};
 use std::io;
 
 impl SharingSession {
@@ -50,7 +50,10 @@ impl SharingSession {
             return Ok(());
         };
         match event {
-            Event::KeepAlive { .. } => Ok(()),
+            Event::KeepAlive { .. }
+            | Event::Upgrade {
+                event: UpgradeEvent::Failure { .. },
+            } => Ok(()),
             Event::Disconnected => Err(ProtocolError::Disconnected),
             Event::PayloadCancelled { .. } => Err(ProtocolError::Cancelled),
             Event::Bytes { bytes, .. }
