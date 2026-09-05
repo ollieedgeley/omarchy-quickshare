@@ -1,144 +1,391 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { pipelineForFile } from "../support/edited-file-pipeline.js";
+
 const BOUND = 2048;
 const TIMEOUT_MS = 60000;
-const INTERNAL_URI_RE = /^[a-z][a-z0-9+.-]*:\/\//iu;
+const PRIVATE_DIRECTORY_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
+const INTERNAL_URI_RE = /^[a-z][a-z0-9+.-]*:/iu;
+const MARKDOWN_RULE_RE = /\bMD\d{3}\b/gu;
 
 function bounded(input) {
-  if (!input) {
-    return "";
+  const text = String(input || "");
+  if (text.length > BOUND) {
+    return `${text.slice(0, BOUND)}\n... (truncated)`;
   }
-  const str = String(input);
-  if (str.length > BOUND) {
-    return `${str.slice(0, BOUND)}\n... (truncated)`;
-  }
-  return str;
+  return text;
 }
 
 function extractCandidates(event) {
-  const set = new Set();
+  const candidates = new Set();
   if (event.toolName === "write") {
-    const pathCandidate =
+    const candidate =
       event.details?.resolvedPath || event.details?.path || event.input?.path;
-    if (pathCandidate) {
-      set.add(pathCandidate);
+    if (candidate) {
+      candidates.add(candidate);
     }
   } else if (event.toolName === "edit") {
     if (event.details?.path) {
-      set.add(event.details.path);
+      candidates.add(event.details.path);
     }
-    const perFileResults = event.details?.perFileResults || [];
-    for (const perFileResult of perFileResults) {
-      if (perFileResult?.path) {
-        set.add(perFileResult.path);
+    for (const result of event.details?.perFileResults || []) {
+      if (result?.path) {
+        candidates.add(result.path);
       }
     }
   }
-  return [...set];
+  return [...candidates];
 }
 
-function isInternalUri(candidatePath) {
+function contained(base, candidate) {
+  const relative = path.relative(base, candidate);
   return (
-    typeof candidatePath === "string" && INTERNAL_URI_RE.test(candidatePath)
+    relative !== ".." &&
+    !relative.startsWith("../") &&
+    !path.isAbsolute(relative)
   );
 }
 
-function resolveCandidate(candidate, base) {
-  if (isInternalUri(candidate)) {
-    return null;
-  }
-  let absolutePath = candidate;
+function addValidTarget(targets, base, candidate) {
+  let lexical = candidate;
   if (!path.isAbsolute(candidate)) {
-    absolutePath = path.resolve(base, candidate);
+    lexical = path.resolve(base, candidate);
   }
-  const relativePath = path.relative(base, absolutePath);
-  if (
-    relativePath === ".." ||
-    relativePath.startsWith("../") ||
-    path.isAbsolute(relativePath) ||
-    !fs.existsSync(absolutePath)
-  ) {
-    return null;
+  if (!contained(base, lexical)) {
+    return;
   }
   try {
-    if (fs.statSync(absolutePath).isFile()) {
-      return absolutePath;
+    const real = fs.realpathSync(lexical);
+    if (contained(base, real) && fs.statSync(real).isFile()) {
+      targets.add(real);
     }
   } catch {
-    return null;
+    // A failed, missing, or non-file tool target is not an edited file.
   }
-  return null;
 }
 
 function resolveValidTargets(candidates, cwd) {
-  const base = path.resolve(cwd || process.cwd());
-  const resolved = candidates.map((candidate) =>
-    resolveCandidate(candidate, base),
-  );
-  return [...new Set(resolved.filter(Boolean))];
+  const base = fs.realpathSync(path.resolve(cwd || process.cwd()));
+  const targets = new Set();
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && !INTERNAL_URI_RE.test(candidate)) {
+      addValidTarget(targets, base, candidate);
+    }
+  }
+  return { base, targets: [...targets] };
 }
 
-function commandsForFile(file, cwd) {
-  const extension = path.extname(file).toLowerCase();
-  const nodeBin = path.join(cwd, "node_modules/.bin");
-  const prettier = path.join(nodeBin, "prettier");
-  const eslint = path.join(nodeBin, "eslint");
-  const markdownlint = path.join(nodeBin, "markdownlint-cli2");
-  const ruff = path.join(cwd, ".cache/tools/ruff-0.16.5/ruff");
-
-  if (extension === ".rs") {
-    return [
-      { command: "rustfmt", args: ["--edition", "2024", "--check", file] },
-    ];
+function errorMessage(error) {
+  if (error instanceof Error) {
+    return error.message;
   }
-
-  const isJavaScript = [".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx"].includes(
-    extension,
-  );
-  if (isJavaScript) {
-    return [
-      { command: prettier, args: ["--check", file] },
-      {
-        command: eslint,
-        args: ["--max-warnings", "0", "--no-warn-ignored", file],
-      },
-    ];
-  }
-
-  if (extension === ".py" || extension === ".pyi") {
-    return [
-      { command: ruff, args: ["format", "--check", file] },
-      { command: ruff, args: ["check", file] },
-    ];
-  }
-
-  if (extension === ".md" || extension === ".markdown") {
-    return [
-      { command: prettier, args: ["--check", file] },
-      { command: markdownlint, args: [file] },
-    ];
-  }
-
-  const isData = [".json", ".jsonc", ".yaml", ".yml"].includes(extension);
-  if (isData) {
-    return [{ command: prettier, args: ["--check", file] }];
-  }
-
-  return [];
+  return String(error);
 }
 
-async function firstFailedCheck(pi, checks, state) {
-  const { cwd, index = 0 } = state;
-  if (index >= checks.length) {
+function executionFailure(step, error, result) {
+  const output = `${result?.stdout ?? ""}\n${result?.stderr ?? ""}`.trim();
+  let diagnostic = `${step.name} could not run: ${errorMessage(error)}`;
+  if (output) {
+    diagnostic += `\n${output}`;
+  }
+  return {
+    diagnostic: bounded(diagnostic),
+    kind: "execution",
+    rule: null,
+    step,
+  };
+}
+
+async function execute(pi, step, cwd) {
+  try {
+    const result = await pi.exec(step.command, step.args, {
+      cwd,
+      timeout: TIMEOUT_MS,
+    });
+    if (!result || !Number.isInteger(result.code)) {
+      return executionFailure(step, "tool returned no exit status");
+    }
+    return { result, step };
+  } catch (error) {
+    return executionFailure(step, error);
+  }
+}
+
+function machineMessages(name, output) {
+  const parsed = JSON.parse(output);
+  if (name !== "eslint") {
+    return parsed;
+  }
+  return parsed.flatMap((entry) => entry.messages || []);
+}
+
+function machineRule(message) {
+  if (message.ruleId !== null && typeof message.ruleId !== "undefined") {
+    return message.ruleId;
+  }
+  return message.code ?? null;
+}
+
+function machineDiagnostic(name, message, file) {
+  const location = message.location?.row ?? message.line;
+  const column = message.location?.column ?? message.column;
+  const rule = machineRule(message);
+  let ruleText = "";
+  if (rule) {
+    ruleText = ` [${rule}]`;
+  }
+  const place = `${file}:${location ?? "?"}:${column ?? "?"}`;
+  return `${place} ${name}${ruleText} ${message.message}`;
+}
+
+function parseMachineLint(name, output, file) {
+  try {
+    const messages = machineMessages(name, output);
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return null;
+    }
+    return {
+      diagnostic: messages
+        .map((message) => machineDiagnostic(name, message, file))
+        .join("\n"),
+      rules: messages.map(machineRule),
+    };
+  } catch {
     return null;
   }
-  const { command, args } = checks.at(index);
-  const result = await pi.exec(command, args, { cwd, timeout: TIMEOUT_MS });
-  if (result.code !== 0) {
-    return { command, result };
+}
+
+function lintDetails(step, output, file) {
+  if (step.name === "markdownlint-cli2") {
+    const rules = output.match(MARKDOWN_RULE_RE);
+    if (rules?.length) {
+      return { diagnostic: output, rules };
+    }
+    return null;
   }
-  return firstFailedCheck(pi, checks, { cwd, index: index + 1 });
+  return parseMachineLint(step.name, output, file);
+}
+
+function unresolvedFailure(step, result, file) {
+  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
+  if (step.kind === "format") {
+    return {
+      diagnostic: bounded(
+        `${step.name} found unresolved format errors:\n${output}`,
+      ),
+      kind: "format",
+      rule: null,
+      step,
+    };
+  }
+  let lintOutput = result.stdout ?? "";
+  if (step.name === "markdownlint-cli2") {
+    lintOutput = output;
+  }
+  const details = lintDetails(step, lintOutput, file);
+  if (!details) {
+    return {
+      diagnostic: bounded(
+        `${step.name} returned unreadable lint output:\n${output}`,
+      ),
+      kind: "unclassified",
+      rule: null,
+      step,
+    };
+  }
+  return {
+    diagnostic: bounded(
+      `${step.name} found unresolved lint errors:\n${details.diagnostic}`,
+    ),
+    kind: "lint",
+    rules: details.rules,
+    step,
+  };
+}
+
+function recordsForFailure(failure, language, timestamp) {
+  const rules = failure.rules ?? [failure.rule];
+  const counts = new Map();
+  for (const rule of rules) {
+    counts.set(rule, (counts.get(rule) ?? 0) + 1);
+  }
+  return [...counts].map(([rule, count]) => ({
+    count,
+    kind: failure.kind,
+    language,
+    rule,
+    timestamp,
+    tool: failure.step.name,
+  }));
+}
+
+function secureDirectory(directory, base) {
+  if (!fs.existsSync(directory)) {
+    fs.mkdirSync(directory, { mode: PRIVATE_DIRECTORY_MODE });
+  }
+  const status = fs.lstatSync(directory);
+  const real = fs.realpathSync(directory);
+  if (
+    !status.isDirectory() ||
+    status.isSymbolicLink() ||
+    !contained(base, real)
+  ) {
+    throw new Error(`refusing unsafe failure-log directory: ${directory}`);
+  }
+}
+
+function appendFailureRecords(base, records) {
+  const cache = path.join(base, ".cache");
+  const directory = path.join(cache, "omp");
+  secureDirectory(cache, base);
+  secureDirectory(directory, base);
+  const log = path.join(directory, "post-edit-failures.jsonl");
+  const flags =
+    fs.constants.O_APPEND +
+    fs.constants.O_CREAT +
+    fs.constants.O_WRONLY +
+    fs.constants.O_NOFOLLOW;
+  const descriptor = fs.openSync(log, flags, PRIVATE_FILE_MODE);
+  try {
+    const status = fs.fstatSync(descriptor);
+    if (!status.isFile()) {
+      throw new Error("failure log is not a regular file");
+    }
+    fs.fchmodSync(descriptor, PRIVATE_FILE_MODE);
+    const batch = `${records
+      .map((record) => JSON.stringify(record))
+      .join("\n")}\n`;
+    fs.writeSync(descriptor, batch);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function rereadNotice(files, base) {
+  let subject = "these files";
+  if (files.length === 1) {
+    subject = "this file";
+  }
+  const paths = files.map((file) => path.relative(base, file)).join(", ");
+  const instruction =
+    `Re-read ${subject} before any anchored edit; post-edit autofix made ` +
+    "previous snapshot anchors stale.";
+  return `${instruction} Changed: ${paths}`;
+}
+
+function recordOutcome(state, step, outcome) {
+  if (outcome.kind === "execution") {
+    state.failures.push(outcome);
+    state.brokenTools.add(step.name);
+  } else if (outcome.result.code > 1 && step.kind !== "format") {
+    state.failures.push(
+      executionFailure(
+        step,
+        `tool exited with status ${outcome.result.code}`,
+        outcome.result,
+      ),
+    );
+    state.brokenTools.add(step.name);
+  } else if (!state.fix && outcome.result.code !== 0) {
+    state.failures.push(unresolvedFailure(step, outcome.result, state.file));
+  }
+}
+
+async function runSteps(state) {
+  if (state.index >= state.steps.length) {
+    return;
+  }
+  const step = state.steps[state.index];
+  state.index += 1;
+  if (!state.fix && state.brokenTools.has(step.name)) {
+    await runSteps(state);
+    return;
+  }
+  const outcome = await execute(state.pi, step, state.base);
+  recordOutcome(state, step, outcome);
+  await runSteps(state);
+}
+
+async function processFile(pi, file, base) {
+  const pipeline = pipelineForFile(file, base);
+  if (!pipeline) {
+    return { changed: false, failures: [], language: null };
+  }
+  const before = fs.readFileSync(file);
+  const state = {
+    base,
+    brokenTools: new Set(),
+    failures: [],
+    file: path.relative(base, file),
+    fix: true,
+    index: 0,
+    pi,
+  };
+  state.steps = pipeline.fixes;
+  await runSteps(state);
+  state.fix = false;
+  state.index = 0;
+  state.steps = pipeline.checks;
+  await runSteps(state);
+  return {
+    changed: !before.equals(fs.readFileSync(file)),
+    failures: state.failures,
+    language: pipeline.language,
+  };
+}
+
+async function processTargets(state) {
+  if (state.index >= state.targets.length) {
+    return;
+  }
+  const file = state.targets[state.index];
+  state.index += 1;
+  const result = await processFile(state.pi, file, state.base);
+  if (result.changed) {
+    state.changed.push(file);
+  }
+  state.failures.push(...result.failures);
+  for (const failure of result.failures) {
+    const records = recordsForFailure(
+      failure,
+      result.language,
+      state.timestamp,
+    );
+    state.records.push(...records);
+  }
+  await processTargets(state);
+}
+
+function rereadIfChanged(changed, base) {
+  if (changed.length) {
+    return rereadNotice(changed, base);
+  }
+  return "";
+}
+
+function replacement(event, text, isError) {
+  return {
+    content: [...(event.content || []), { type: "text", text: bounded(text) }],
+    details: event.details,
+    isError,
+  };
+}
+
+function finalResult(event, state) {
+  const notice = rereadIfChanged(state.changed, state.base);
+  if (state.failures.length) {
+    const diagnostics = state.failures
+      .map((failure) => failure.diagnostic)
+      .join("\n\n");
+    const text = [notice, diagnostics].filter(Boolean).join("\n\n");
+    return replacement(event, text, true);
+  }
+  if (notice) {
+    return replacement(event, notice, false);
+  }
+  return globalThis.undefined;
 }
 
 export async function handleToolResult(pi, event, ctx) {
@@ -146,26 +393,33 @@ export async function handleToolResult(pi, event, ctx) {
     event.isError ||
     (event.toolName !== "write" && event.toolName !== "edit")
   ) {
-    return Promise.resolve();
+    return globalThis.undefined;
   }
-
-  const candidates = extractCandidates(event);
-  const cwd = ctx?.cwd || process.cwd();
-  const targets = resolveValidTargets(candidates, cwd);
-  const checks = targets.flatMap((file) => commandsForFile(file, cwd));
-  const failure = await firstFailedCheck(pi, checks, { cwd });
-  if (!failure) {
-    return Promise.resolve();
-  }
-  const standardOutput = failure.result.stdout ?? "";
-  const standardError = failure.result.stderr ?? "";
-  const outputText = `${standardOutput}\n${standardError}`;
-  const text = bounded(`Check failed (${failure.command}):\n${outputText}`);
-  return {
-    content: [...(event.content || []), { type: "text", text }],
-    details: event.details,
-    isError: true,
+  const state = {
+    base: "",
+    changed: [],
+    failures: [],
+    index: 0,
+    pi,
+    records: [],
+    targets: [],
+    timestamp: new Date().toISOString(),
   };
+  try {
+    const resolved = resolveValidTargets(extractCandidates(event), ctx?.cwd);
+    state.base = resolved.base;
+    state.targets = resolved.targets;
+    await processTargets(state);
+    if (state.records.length) {
+      appendFailureRecords(state.base, state.records);
+    }
+    return finalResult(event, state);
+  } catch (error) {
+    const notice = rereadIfChanged(state.changed, state.base);
+    const diagnostic = `Post-edit hook failed closed: ${errorMessage(error)}`;
+    const text = [notice, diagnostic].filter(Boolean).join("\n\n");
+    return replacement(event, text, true);
+  }
 }
 
 export default function checkEditedFiles(pi) {

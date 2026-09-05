@@ -78,7 +78,28 @@ Normal development must not use `--no-verify`. It bypasses the project's only au
 
 ## OMP per-edit policy
 
-`lsp.formatOnWrite` is disabled. The post-edit hook runs check-only exact-file formatting and lint feedback and returns a tool error on failure; it never rewrites files after OMP snapshots.
+`lsp.formatOnWrite` remains disabled. Restart the OMP session after changing
+the hook so OMP loads the updated project extension. The post-edit hook safely
+fixes and then checks only the existing, regular, in-repository files changed
+by that `write` or `edit` result. It runs one bounded exact-file pass: rustfmt
+for Rust; ESLint then Prettier for JavaScript and TypeScript; Ruff lint then
+Ruff format for Python; markdownlint then Prettier for Markdown; and Prettier
+for JSON, JSONC, and YAML. Rust formatting stays file-scoped and does not run
+Cargo or Clippy. Git hooks remain check-only.
+
+Green results let the agent continue. Remaining errors return a tool error
+for the agent to fix.
+
+If a fix changes bytes, the result tells the agent to re-read those files
+because earlier snapshot anchors are stale. Final exact-file checks collect
+all remaining applicable errors. Missing tools, execution failures, timeouts,
+and failure-log write errors fail closed. Only final unresolved outcomes
+append private JSONL records to the ignored
+`.cache/omp/post-edit-failures.jsonl`. Each record contains `timestamp`,
+`language`, `tool`, `rule`, `count`, and `kind`; it contains no paths, source,
+messages, commands, or tool output. The counts record each observation,
+including repeated observations, rather than claiming a count of unique
+defects.
 
 ## Staged snapshot
 
