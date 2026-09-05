@@ -44,6 +44,7 @@ use std::{
     os::unix::net::UnixStream,
     sync::{Mutex, PoisonError, mpsc},
     thread::{self, JoinHandle},
+    time::Instant,
 };
 use stream::{account_free_encryption, connect_paired_initiator};
 
@@ -369,15 +370,7 @@ fn diagnostics_distinguish_skipped_control_from_wrong_payload_id() {
     let offer = session.receive_incoming_offer().expect("receive offer");
     session.accept_incoming_offer().expect("accept offer");
     let output = LogOutput::default();
-    let writer = output.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(
-            "omarchy_quickshare::protocol=debug",
-        ))
-        .without_time()
-        .with_target(true)
-        .with_writer(move || LogWriter(Arc::clone(&writer.0)))
-        .finish();
+    let subscriber = diagnostic_subscriber(output.clone());
 
     let result = tracing::subscriber::with_default(subscriber, || {
         session.receive_incoming_file(&offer, &mut Vec::new(), |_| {}, || false)
@@ -394,6 +387,134 @@ fn diagnostics_distinguish_skipped_control_from_wrong_payload_id() {
     );
     let diagnostics = output.contents();
     assert_payload_diagnostics!(diagnostics.as_str(), PRIVATE_SENTINEL);
+}
+
+fn diagnostic_subscriber(output: LogOutput) -> impl tracing::Subscriber {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            "omarchy_quickshare::protocol=debug",
+        ))
+        .without_time()
+        .with_target(true)
+        .with_writer(move || LogWriter(Arc::clone(&output.0)))
+        .finish()
+}
+
+fn pending_consent_rejection(
+    send_event: impl FnOnce(&mut Connection) + Send + 'static,
+) -> (ProtocolError, String) {
+    let (ready_sender, ready_receiver) = mpsc::channel();
+    let (release_sender, release_receiver) = mpsc::channel();
+    let (initiator_stream, responder_stream) = bounded_stream_pair();
+    let peer = spawn_raw_peer(responder_stream, move |mut connection| {
+        let _peer_diagnostics = tracing::subscriber::set_default(
+            tracing::subscriber::NoSubscriber::default(),
+        );
+        connection
+            .send_bytes(
+                4,
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../tests/fixtures/sharing/google-v1/",
+                    "incoming/introductions/file.bin"
+                )),
+            )
+            .expect("send Google introduction");
+        send_event(&mut connection);
+        ready_sender.send(()).expect("report ready event");
+        release_receiver
+            .recv_timeout(IO_TIMEOUT)
+            .expect("release peer");
+    });
+    let mut session = connect_paired_initiator(initiator_stream);
+    let _offer = session.receive_incoming_offer().expect("receive offer");
+    ready_receiver
+        .recv_timeout(IO_TIMEOUT)
+        .expect("pending consent event is ready");
+    let output = LogOutput::default();
+    let subscriber = diagnostic_subscriber(output.clone());
+    let result = tracing::subscriber::with_default(subscriber, || {
+        let started = Instant::now();
+        loop {
+            let polled = session.poll_pending_consent_control();
+            if polled.is_err() || started.elapsed() >= Duration::from_secs(1) {
+                break polled;
+            }
+            thread::yield_now();
+        }
+    });
+    let released = release_sender.send(());
+    let joined = peer.join();
+    released.expect("release peer");
+    joined.expect("peer completes");
+    (
+        result.expect_err("unexpected event while consent is pending"),
+        output.contents(),
+    )
+}
+
+fn assert_pending_consent_diagnostics<'diagnostics>(
+    diagnostics: &'diagnostics str,
+    event_type: &str,
+) -> &'diagnostics str {
+    let rejected = diagnostics
+        .lines()
+        .find(|line| {
+            line.contains("stage=\"control\"")
+                && line.contains("operation=\"pending_consent\"")
+        })
+        .expect("missing pending-consent rejection diagnostic");
+    for field in [
+        "DEBUG",
+        "omarchy_quickshare::protocol",
+        "outcome=\"rejected\"",
+        "reason=\"unexpected_event\"",
+        event_type,
+    ] {
+        assert!(rejected.contains(field), "missing {field}: {rejected}");
+    }
+    rejected
+}
+
+#[test]
+fn pending_consent_diagnostics_classify_rejected_sharing_bytes() {
+    let (error, diagnostics) = pending_consent_rejection(|connection| {
+        connection
+            .send_sharing_frame(5, &accept_response())
+            .expect("send unexpected Sharing response");
+    });
+    assert!(matches!(error, ProtocolError::InvalidPayload));
+    let rejected = assert_pending_consent_diagnostics(
+        &diagnostics,
+        "event_type=\"bytes\"",
+    );
+    assert!(
+        rejected.contains("frame_type=\"response\""),
+        "missing Sharing frame type: {rejected}",
+    );
+}
+
+#[test]
+fn pending_consent_diagnostics_classify_file_without_private_filename() {
+    const PRIVATE_SENTINEL: &str = "pending-consent-private-sentinel.txt";
+
+    let (error, diagnostics) = pending_consent_rejection(|connection| {
+        connection
+            .send_file_header(201, 12, Some(String::from(PRIVATE_SENTINEL)))
+            .expect("send file before local consent");
+        connection
+            .send_file_chunk(201, 0, &[1], false)
+            .expect("transmit file header with first data chunk");
+    });
+    assert!(matches!(error, ProtocolError::InvalidPayload));
+    let _rejected = assert_pending_consent_diagnostics(
+        &diagnostics,
+        "event_type=\"file_header\"",
+    );
+    assert!(
+        !diagnostics.contains(PRIVATE_SENTINEL),
+        "diagnostics leaked the private filename: {diagnostics}",
+    );
 }
 
 #[test]

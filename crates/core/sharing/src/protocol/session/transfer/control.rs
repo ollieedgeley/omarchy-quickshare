@@ -49,25 +49,59 @@ impl SharingSession {
         let Some(event) = self.connection.poll_event()? else {
             return Ok(());
         };
-        match event {
-            Event::KeepAlive { .. }
-            | Event::Upgrade {
-                event: UpgradeEvent::Failure { .. },
-            } => Ok(()),
-            Event::Disconnected => Err(ProtocolError::Disconnected),
-            Event::PayloadCancelled { .. } => Err(ProtocolError::Cancelled),
-            Event::Bytes { bytes, .. }
-                if frames::control_event_type(&bytes) == Some("cancel") =>
-            {
-                Err(ProtocolError::Cancelled)
+        let (event_type, frame_type, upgrade_type) = match event {
+            Event::KeepAlive { .. } => return Ok(()),
+            Event::Disconnected => return Err(ProtocolError::Disconnected),
+            Event::PayloadCancelled { .. } => {
+                return Err(ProtocolError::Cancelled);
             }
-            Event::PayloadError { .. }
-            | Event::Bytes { .. }
-            | Event::FileHeader { .. }
-            | Event::FileChunk { .. }
-            | Event::Upgrade { .. }
-            | _ => Err(ProtocolError::InvalidPayload),
-        }
+            Event::Bytes { bytes, .. } => {
+                let frame_type =
+                    frames::control_event_type(&bytes).unwrap_or("unknown");
+                if frame_type == "cancel" {
+                    return Err(ProtocolError::Cancelled);
+                }
+                ("bytes", Some(frame_type), None)
+            }
+            Event::PayloadError { .. } => ("payload_error", None, None),
+            Event::FileHeader { .. } => ("file_header", None, None),
+            Event::FileChunk { .. } => ("file_chunk", None, None),
+            Event::Upgrade {
+                event: upgrade_event,
+            } => {
+                let upgrade_type = match upgrade_event {
+                    UpgradeEvent::PathRequest { .. } => "path_request",
+                    UpgradeEvent::PathAvailable { .. } => "path_available",
+                    UpgradeEvent::LastWriteToPriorChannel => {
+                        "last_write_to_prior_channel"
+                    }
+                    UpgradeEvent::SafeToClosePriorChannel { .. } => {
+                        "safe_to_close_prior_channel"
+                    }
+                    UpgradeEvent::ClientIntroduction { .. } => {
+                        "client_introduction"
+                    }
+                    UpgradeEvent::ClientIntroductionAck => {
+                        "client_introduction_ack"
+                    }
+                    UpgradeEvent::Failure { .. } => return Ok(()),
+                };
+                ("upgrade", None, Some(upgrade_type))
+            }
+            _ => ("unknown", None, None),
+        };
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "control",
+            operation = "pending_consent",
+            outcome = "rejected",
+            reason = "unexpected_event",
+            event_type,
+            frame_type,
+            upgrade_type,
+            "protocol_stage"
+        );
+        Err(ProtocolError::InvalidPayload)
     }
 
     pub(in crate::protocol) fn next_transfer_event_for(
