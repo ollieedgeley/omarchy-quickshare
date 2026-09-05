@@ -1,3 +1,4 @@
+import { isUtf8 } from "node:buffer";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -106,7 +107,11 @@ function repositoryFiles() {
 }
 
 function physicalLines(path) {
-  const source = readFileSync(path, "utf8");
+  const bytes = readFileSync(path);
+  if (bytes.includes(0) || !isUtf8(bytes)) {
+    return null;
+  }
+  const source = bytes.toString("utf8");
   if (!source) {
     return 0;
   }
@@ -180,7 +185,7 @@ export function lineBudgetFailures(files) {
       if (existsSync(absolute) && statSync(absolute).isFile()) {
         const limit = lineLimit(path);
         const lines = physicalLines(absolute);
-        if (lines > limit) {
+        if (lines !== null && lines > limit) {
           failures.push(`${path}: ${lines} lines (limit ${limit})`);
         }
       }

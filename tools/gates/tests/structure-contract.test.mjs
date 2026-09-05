@@ -11,6 +11,7 @@ import {
   functionSpanFailures,
   generatedProvenanceFailures,
   isGenerated,
+  lineBudgetFailures,
   lineLimit,
   structureScope,
 } from "../structure.mjs";
@@ -170,6 +171,32 @@ test("generated wire bindings require declared pinned provenance", () => {
 test("production and agent files retain the 500-line budget", () => {
   assert.equal(lineLimit("crates/protocol/src/wire.rs"), PROJECT_LINE_LIMIT);
   assert.equal(lineLimit("AGENTS.md"), PROJECT_LINE_LIMIT);
+});
+
+test("line budgets exempt binary assets but still bound authored text", () => {
+  const directory = mkdtempSync(join(ROOT, "structure-lines-"));
+  const relative = directory.slice(ROOT.length + 1);
+  const binaryPath = join(relative, "asset.bin");
+  const textPath = join(relative, "authored");
+  try {
+    writeFileSync(
+      join(ROOT, binaryPath),
+      Buffer.concat([
+        Buffer.from([0]),
+        Buffer.alloc(PROJECT_LINE_LIMIT + 1, "\n"),
+      ]),
+    );
+    writeFileSync(
+      join(ROOT, textPath),
+      "authored\n".repeat(PROJECT_LINE_LIMIT + 1),
+    );
+
+    assert.deepEqual(lineBudgetFailures([binaryPath, textPath]), [
+      `${textPath}: 501 lines (limit 500)`,
+    ]);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
 });
 
 test("code lines have an 80-column physical limit", () => {
