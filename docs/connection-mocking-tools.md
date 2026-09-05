@@ -323,8 +323,8 @@ After local payload state retires, valid late ACK, cancel, and error controls ar
 
 The old-image Google-derived `FILE` retry decoded `BANDWIDTH_UPGRADE_RETRY` 12 before `unexpected_frame_type`; the exact fresh inbound 20-byte URL plus Retry 12 and keepalive is green in 26.64 seconds.
 Fresh outbound-content is green in 48.7 seconds: TEXT completed in 21.3 seconds, then both peers completed the exact 20-byte URL with Retry 12 and keepalive in 22.3 seconds. Immediate closure may race the ACK write and complete through pinned [`EndpointManager`](https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/connections/implementation/endpoint_manager.cc#L174-L327) removal and `OnDisconnected`; a held-open raw peer requires the exact keepalive acknowledgement. Independent Core tests cover both timings.
-Cancellation and peer loss each have one 60-second LAN child per direction and stop before consent or data. Real inbound peer loss is green in 38.56 seconds and proves socket EOF through Core polling, Sharing, and app state; advertisement loss remains nonterminal.
-The full current-image ten-child LAN rerun is pending. These drivers do not cover in-flight LAN faults or partial storage cleanup, and none proves stock Android behavior.
+On commit `f489346`, the rebuilt current image passed all ten LAN children as 12 Node tests in 559.98 seconds including provisioning; each child took 25.85 to 49.28 seconds. The matrix covers both roles for FILE, TEXT, exact 20-byte URL plus Retry 12, rejection, cancellation, true socket-EOF failure, and Retry 12 plus FILE.
+The bounded post-completion drain accepts EOF or reset close while preserving protocol, cryptographic, cancellation, and other I/O failures; its deterministic reset regression is green. The ten-check Quick Shell plugin release gate is also green. Advertisement loss remains nonterminal, and none of these checks proves stock Android behavior.
 
 Rust loopbacks, raw peers, Google Sharing fixtures, the Google-derived Linux
 peer, virtual radios, and the public Android Connections probe each cover only

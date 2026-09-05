@@ -195,12 +195,19 @@ The current reproducible evidence is:
   ordering, frame and body budgets, disconnect, and upgrade failure;
 - an authenticated daemon regression preserves
   `connection_unexpected_frame` rather than collapsing it to `disconnected`;
-- the Google-derived Linux peer has transferred a 1,048,577-byte file in both
-  directions with matching integrity and chronology.
-- application and tooling structure gates are green;
-- the real inbound peer-loss gate is green in 38.56 seconds, proving socket EOF
-  through Core polling, Sharing, and app state. It does not simulate discovery
-  loss; advertisement loss remains nonterminal.
+- on commit `f489346`, `make test-rust-lan` rebuilt the current image and all
+  ten child gates passed as 12 Node tests. They cover both roles for FILE,
+  TEXT, the exact 20-byte URL with Retry 12, rejection, cancellation, true
+  socket-EOF failure, and Retry 12 interleaved with FILE;
+- child durations were 25.85 to 49.28 seconds. The 559.98-second aggregate
+  includes provisioning and does not relax the 60-second child limit;
+- the ten-check plugin release gate is green through Quick Shell states and
+  controls;
+- application and tooling structure gates are green. The corrected lifecycle
+  is also green across 190 affected-package tests and 27 contract tests;
+- real peer loss proves socket EOF through Core polling, Sharing, and app state
+  in both roles. It does not simulate discovery loss; advertisement loss
+  remains nonterminal.
 
 The old-image Google-derived `FILE` retry decoded frame 12 before
 `unexpected_frame_type`. The old-image inbound-content gate then completed TEXT
@@ -218,8 +225,11 @@ The pinned reference turns an
 [discards the endpoint on `IO_ERROR`](https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/connections/implementation/endpoint_manager.cc#L174-L205),
 then [cleans processors and calls `OnDisconnected`](https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/connections/implementation/endpoint_manager.cc#L808-L824).
 Sharing releases pending completion on that callback. A held-open raw peer
-instead requires the exact keepalive acknowledgement. Independent Core tests
-cover both timings. None of this proves Android parity.
+instead requires the exact keepalive acknowledgement. The bounded
+post-completion drain accepts EOF or reset closure while preserving protocol,
+cryptographic, cancellation, and other I/O failures. Independent Core tests
+cover both timings, and the deterministic reset regression is green. None of
+this proves Android parity.
 
 ## Physical-device evidence and limits
 
@@ -277,11 +287,9 @@ A physical transfer is green only when discovery, paired-key verification,
 matching code, introduction, consent, exact payload, terminal result, and
 cleanup are observed. Seeing a peer or reaching a consent screen is not enough.
 
-The immediate factual gates are the full current-image ten-child LAN rerun, a
-fully green fresh-image reference suite, a physical rerun of the inbound URL
-case, and the physical matrix above. Until those results exist, the documented
-capability remains account-free reference interoperability rather than stock
-Android compatibility.
+The automated reference matrix is green. A physical rerun of the inbound URL
+case and the physical matrix above remain required before stock Android
+compatibility claims.
 
 ## Primary sources
 
