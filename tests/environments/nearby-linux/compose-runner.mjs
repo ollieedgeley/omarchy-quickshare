@@ -62,6 +62,18 @@ function delay(milliseconds) {
   });
 }
 
+async function raceTimeout(completed, milliseconds, timeoutValue) {
+  let timer = null;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(resolve, milliseconds, timeoutValue);
+  });
+  try {
+    return await Promise.race([completed, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function markerPath() {
   return `${COMMAND_DIRECTORY}/${randomUUID()}.pid`;
 }
@@ -192,10 +204,11 @@ async function stopClient(child, completed, stopMs) {
     return;
   }
   child.kill("SIGINT");
-  const clientStopped = await Promise.race([
+  const clientStopped = await raceTimeout(
     completed.then(() => true),
-    delay(stopMs).then(() => false),
-  ]);
+    stopMs,
+    false,
+  );
   if (!clientStopped) {
     child.kill("SIGKILL");
     await completed;
@@ -227,10 +240,11 @@ async function waitForMarker(options, input) {
   if (await markerExists(options, input)) {
     return true;
   }
-  const ended = await Promise.race([
+  const ended = await raceTimeout(
     input.completed.then(() => true),
-    delay(STOP_POLL_MS).then(() => false),
-  ]);
+    STOP_POLL_MS,
+    false,
+  );
   if (ended || Date.now() >= input.deadline) {
     return false;
   }
@@ -278,10 +292,7 @@ async function stopOwnedProcess(options, input) {
 
 async function waitFor({ completed, logs, options, stopChild }) {
   const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_MS;
-  const result = await Promise.race([
-    completed,
-    delay(timeoutMs).then(() => null),
-  ]);
+  const result = await raceTimeout(completed, timeoutMs, null);
   if (!result) {
     await stopChild();
     recordFailure({ ...options, logs }, { kind: "timeout" });
