@@ -72,7 +72,7 @@
     }
   ],
   "generator": {
-    "environmentFingerprint": "7831eecb413bb2bd31a39166389ef3921d31524952bac72df00f03d12910f931",
+    "environmentFingerprint": "f127b1e0c14a39d6bad5cd560f93c00e302eed663423ff75b36262ef0a2d8fd9",
     "target": "//tools/quickshare_fixture_generator:sharing_fixture_generator"
   },
   "schema": 1,
