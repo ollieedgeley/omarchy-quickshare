@@ -278,6 +278,9 @@ fn simulate_request(action: &SimulateCommand) -> io::Result<RequestEnvelope> {
         SimulateCommand::PeerSeen { peer_id, name } => {
             RequestEnvelope::simulate_peer_seen(peer_id, name)
         }
+        SimulateCommand::Complete { share_id } => {
+            RequestEnvelope::simulate_complete(*share_id)
+        }
         SimulateCommand::Progress {
             share_id,
             transferred_bytes,
@@ -378,8 +381,17 @@ where
     if let Some(code) = active.verification_code() {
         writeln!(output, "verification_code={code}")?;
     }
-    if let Some((reason, recovery)) = terminal_guidance(active.phase()) {
+    let fallback = terminal_guidance(active.phase());
+    if let Some(reason) = active
+        .terminal_reason()
+        .or_else(|| fallback.map(|(reason, _)| reason))
+    {
         writeln!(output, "terminal_reason={reason}")?;
+    }
+    if let Some(recovery) = active
+        .recovery_guidance()
+        .or_else(|| fallback.map(|(_, recovery)| recovery))
+    {
         writeln!(output, "recovery_guidance={recovery}")?;
     }
     Ok(())

@@ -948,6 +948,7 @@ dependencies = [
  "async-io",
  "futures-lite",
  "quickshare-connections",
+ "rustix",
  "tracing",
  "zbus",
 ]
@@ -960,6 +961,7 @@ dependencies = [
  "quickshare-crypto",
  "quickshare-wire",
  "rand_core",
+ "rustix",
  "tracing",
 ]
 

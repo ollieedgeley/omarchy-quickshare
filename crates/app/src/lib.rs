@@ -80,6 +80,9 @@ pub mod config;
 /// Local endpoint lifecycle and queue ownership.
 pub mod daemon;
 
+#[cfg(test)]
+use prost as _;
+
 use quickshare_network as _;
 
 pub use cli::{run, run_from_environment};

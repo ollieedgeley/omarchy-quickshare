@@ -1,4 +1,4 @@
-use super::{FILE_PAYLOAD_ID, SharingSession};
+use super::SharingSession;
 use crate::protocol::{IncomingOffer, ProtocolError, frames, offer};
 use std::io::{Read, Write};
 
@@ -180,6 +180,6 @@ impl SharingSession {
                 "protocol_stage"
             );
         })?;
-        self.wait_for_outgoing_completion(FILE_PAYLOAD_ID, &mut is_cancelled)
+        self.stop_if_cancelled(&mut is_cancelled)
     }
 }

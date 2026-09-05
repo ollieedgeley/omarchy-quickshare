@@ -72,7 +72,7 @@ impl ShareSnapshot {
         self.medium.as_deref()
     }
 
-    /// Records monotonic transfer progress and completion.
+    /// Records monotonic transfer progress without deciding completion.
     pub(crate) fn record_progress(&mut self, transferred_bytes: u64) -> bool {
         if self.phase != Phase::Transferring
             || transferred_bytes < self.transferred_bytes
@@ -81,9 +81,6 @@ impl ShareSnapshot {
             return false;
         }
         self.transferred_bytes = transferred_bytes;
-        if transferred_bytes == self.total_bytes {
-            self.set_phase(Phase::Completed);
-        }
         true
     }
 

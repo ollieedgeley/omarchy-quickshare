@@ -18,6 +18,7 @@ use quickshare_connections::{
 use quickshare_crypto::Handshake;
 use quickshare_wire as _;
 use rand_core as _;
+use rustix as _;
 use std::{
     net::{TcpListener, TcpStream},
     thread,

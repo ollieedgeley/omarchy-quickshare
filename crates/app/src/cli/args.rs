@@ -288,6 +288,12 @@ pub(super) enum SimulateCommand {
         #[arg(value_name = "NAME")]
         name: String,
     },
+    /// Finalize one fully transferred share.
+    Complete {
+        /// Share identifier.
+        #[arg(value_name = "SHARE_ID")]
+        share_id: u64,
+    },
     /// Record transfer progress for one share.
     Progress {
         /// Share identifier.

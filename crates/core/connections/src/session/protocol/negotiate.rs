@@ -1,12 +1,13 @@
 use super::super::{
-    Connection, ConnectionIo, Error, Event, Medium, UpgradeCredentials,
-    UpgradeState,
+    Connection, ConnectionIo, Error, Event, MAX_FRAME_LENGTH, Medium,
+    UpgradeCredentials, UpgradeEvent, UpgradeState,
 };
 use super::frames::{
     client_introduction, client_introduction_ack, last_write_to_prior_channel,
     safe_to_close_prior_channel, upgrade_failure, upgrade_path_available,
     upgrade_path_request,
 };
+use super::io::{receive_plain, send_plain};
 use quickshare_wire::connections::{
     OfflineFrame, bandwidth_upgrade_negotiation_frame::EventType, v1_frame,
 };
@@ -150,18 +151,18 @@ impl Connection {
         &mut self,
         new_stream: &mut dyn ConnectionIo,
     ) -> Result<(), Error> {
-        self.expect_upgrade(new_stream, EventType::ClientIntroduction as i32)?;
-        self.send_on(new_stream, &client_introduction_ack())?;
+        Self::expect_plain_upgrade(
+            new_stream,
+            EventType::ClientIntroduction as i32,
+        )?;
+        send_plain(new_stream, &client_introduction_ack())?;
         upgrade_sent("client_introduction_ack");
         self.send(&last_write_to_prior_channel())?;
         upgrade_sent("last_write_to_prior_channel");
         self.expect_current_upgrade(EventType::LastWriteToPriorChannel as i32)?;
-        self.send_on(new_stream, &safe_to_close_prior_channel())?;
+        self.send(&safe_to_close_prior_channel())?;
         upgrade_sent("safe_to_close_prior_channel");
-        self.expect_upgrade(
-            new_stream,
-            EventType::SafeToClosePriorChannel as i32,
-        )
+        self.expect_current_upgrade(EventType::SafeToClosePriorChannel as i32)
     }
 
     fn complete_upgrade_as_client(
@@ -169,20 +170,17 @@ impl Connection {
         new_stream: &mut dyn ConnectionIo,
     ) -> Result<(), Error> {
         let endpoint_id = self.endpoint_id.clone();
-        self.send_on(new_stream, &client_introduction(&endpoint_id))?;
+        send_plain(new_stream, &client_introduction(&endpoint_id))?;
         upgrade_sent("client_introduction");
-        self.expect_upgrade(
+        Self::expect_plain_upgrade(
             new_stream,
             EventType::ClientIntroductionAck as i32,
         )?;
-        self.expect_current_upgrade(EventType::LastWriteToPriorChannel as i32)?;
         self.send(&last_write_to_prior_channel())?;
         upgrade_sent("last_write_to_prior_channel");
-        self.expect_upgrade(
-            new_stream,
-            EventType::SafeToClosePriorChannel as i32,
-        )?;
-        self.send_on(new_stream, &safe_to_close_prior_channel())?;
+        self.expect_current_upgrade(EventType::LastWriteToPriorChannel as i32)?;
+        self.expect_current_upgrade(EventType::SafeToClosePriorChannel as i32)?;
+        self.send(&safe_to_close_prior_channel())?;
         upgrade_sent("safe_to_close_prior_channel");
         Ok(())
     }
@@ -210,17 +208,46 @@ impl Connection {
         Ok(())
     }
 
-    fn expect_upgrade(
-        &mut self,
+    fn expect_plain_upgrade(
         stream: &mut dyn ConnectionIo,
         event_type: i32,
     ) -> Result<(), Error> {
-        let frame = self.recv_on(stream)?;
+        let frame = receive_plain(stream)?;
         Self::upgrade_event_type(frame, event_type)
     }
     fn expect_current_upgrade(&mut self, event_type: i32) -> Result<(), Error> {
-        let frame = self.recv()?;
-        Self::upgrade_event_type(frame, event_type)
+        const MAX_QUEUED_FRAMES: usize = 64;
+        let mut queued_frames = 0_usize;
+        let mut queued_bytes = 0_usize;
+        loop {
+            let frame = self.recv()?;
+            if is_upgrade_event_type(&frame, event_type) {
+                return Self::upgrade_event_type(frame, event_type);
+            }
+            queued_frames = queued_frames.saturating_add(1);
+            queued_bytes =
+                queued_bytes.saturating_add(payload_body_len(&frame));
+            if queued_frames > MAX_QUEUED_FRAMES
+                || queued_bytes > MAX_FRAME_LENGTH
+            {
+                upgrade_rejected("interleaved_frame_budget");
+                return Err(Error::InvalidPayload);
+            }
+            let insertion = self.pending_events.len();
+            match self.event(frame)? {
+                Some(Event::Disconnected) => return Err(Error::Rejected),
+                Some(
+                    event @ Event::Upgrade {
+                        event: UpgradeEvent::Failure { .. },
+                    },
+                ) => {
+                    self.pending_events.insert(insertion, event);
+                    return Err(Error::Rejected);
+                }
+                Some(event) => self.pending_events.insert(insertion, event),
+                None => {}
+            }
+        }
     }
     fn upgrade_event_type(
         frame: OfflineFrame,
@@ -256,6 +283,26 @@ impl Connection {
         );
         Ok(())
     }
+}
+
+fn payload_body_len(frame: &OfflineFrame) -> usize {
+    frame
+        .v1
+        .as_ref()
+        .and_then(|v1| v1.payload_transfer.as_ref())
+        .and_then(|transfer| transfer.payload_chunk.as_ref())
+        .and_then(|chunk| chunk.body.as_ref())
+        .map_or(0, Vec::len)
+}
+
+fn is_upgrade_event_type(frame: &OfflineFrame, event_type: i32) -> bool {
+    frame.v1.as_ref().is_some_and(|v1| {
+        v1.r#type
+            == Some(v1_frame::FrameType::BandwidthUpgradeNegotiation as i32)
+            && v1.bandwidth_upgrade_negotiation.as_ref().is_some_and(
+                |negotiation| negotiation.event_type == Some(event_type),
+            )
+    })
 }
 
 fn upgrade_rejected(reason: &'static str) {

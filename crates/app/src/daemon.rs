@@ -247,6 +247,7 @@ impl Daemon {
             | Request::SimulatePeerLost { .. }
             | Request::SimulatePeerReject { .. }
             | Request::SimulatePeerSeen { .. }
+            | Request::SimulateComplete { .. }
             | Request::SimulateProgress { .. }
             | _ => Ok(self.simulation_response(request)),
         }
@@ -421,51 +422,6 @@ impl Daemon {
         endpoint.sharing.observe_peer("pixel-8", "Ollie's Pixel");
         endpoint.sharing.observe_peer("galaxy-tab", "Galaxy Tab");
         endpoint
-    }
-
-    /// Applies one simulator request and reports whether state changed.
-    #[expect(
-        clippy::pattern_type_mismatch,
-        clippy::wildcard_enum_match_arm,
-        reason = "Borrowed non-exhaustive requests require an unhandled case"
-    )]
-    fn simulation_applied(&mut self, request: &Request) -> bool {
-        match request {
-            Request::SimulateDiscoveryTimeout => {
-                self.sharing.discovery_timed_out()
-            }
-            Request::SimulateFail { share_id } => self.sharing.fail(*share_id),
-            Request::SimulateIncomingFile { name, size_bytes } => self
-                .sharing
-                .offer_inbound(Attachment::file(name, *size_bytes), "pixel-8")
-                .is_some(),
-            Request::SimulateIncomingText { text } => self
-                .sharing
-                .offer_inbound(Attachment::text(text), "pixel-8")
-                .is_some(),
-            Request::SimulateIncomingUrl { url } => self
-                .sharing
-                .offer_inbound(Attachment::url(url), "pixel-8")
-                .is_some(),
-            Request::SimulatePeerAccept { share_id } => {
-                self.sharing.accept_by_peer(*share_id)
-            }
-            Request::SimulatePeerLost { peer_id } => {
-                self.sharing.remove_peer(peer_id)
-            }
-            Request::SimulatePeerReject { share_id } => {
-                self.sharing.reject_by_peer(*share_id)
-            }
-            Request::SimulatePeerSeen { name, peer_id } => {
-                self.sharing.observe_peer(peer_id, name);
-                true
-            }
-            Request::SimulateProgress {
-                share_id,
-                transferred_bytes,
-            } => self.sharing.record_progress(*share_id, *transferred_bytes),
-            _ => false,
-        }
     }
 
     /// Applies a deterministic peer event when simulation is enabled.

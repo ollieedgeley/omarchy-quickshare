@@ -1,5 +1,6 @@
 //! Outbound session and transfer event mapping.
 
+use core::time::Duration;
 use std::{io, sync::mpsc::Sender};
 
 use quickshare_bluez::Adapter;
@@ -13,10 +14,12 @@ use crate::daemon::media::{
     medium_name, sharing_session,
 };
 use crate::daemon::observations::{
-    connection_span, protocol_io_kind, protocol_reason,
-    trace_paired_key_exchange, trace_protocol, trace_storage,
+    connection_span, protocol_io_kind, trace_paired_key_exchange,
+    trace_protocol, trace_storage,
 };
 use crate::daemon::outbound::{OutboundPayload, OutboundTransfer};
+
+const OUTGOING_DISCONNECTION_DELAY: Duration = Duration::from_secs(60);
 
 /// Converts one worker transfer attempt into a terminal daemon event.
 pub(super) fn outbound_event(
@@ -44,7 +47,7 @@ pub(super) fn outbound_event(
             NetworkEvent::OutboundRejected { share_id }
         }
         Err(error) => NetworkEvent::OutboundFailed {
-            reason: String::from(protocol_reason(&error)),
+            reason: String::from(error.reason()),
             share_id,
         },
     };
@@ -135,7 +138,7 @@ fn send_on_connection(
         emit_progress(events, medium, share_id, transferred_bytes);
     };
     let is_cancelled = || cancellation.is_cancelled(share_id);
-    match payload {
+    let bytes = match payload {
         OutboundPayload::File(source) => send_file(
             &mut session,
             source,
@@ -166,7 +169,21 @@ fn send_on_connection(
                 .inspect_err(trace_payload_failure)?;
             Ok(u64::try_from(value.len()).unwrap_or(0))
         }
-    }
+    }?;
+    session
+        .drain_post_transfer_control(OUTGOING_DISCONNECTION_DELAY, || {
+            cancellation.is_cancelled(share_id)
+        })
+        .inspect_err(|error| {
+            trace_protocol(
+                "post_transfer_control",
+                "drain",
+                "failed",
+                Some(error.reason()),
+                protocol_io_kind(error),
+            );
+        })?;
+    Ok(bytes)
 }
 
 fn send_file<Accepted, Progress, Cancelled>(
@@ -212,7 +229,7 @@ fn trace_payload_failure(error: &ProtocolError) {
         "payload_transfer",
         "send",
         "failed",
-        Some(protocol_reason(error)),
+        Some(error.reason()),
         protocol_io_kind(error),
     );
 }
@@ -231,7 +248,7 @@ fn trace_connection_result(
             } else {
                 "failed"
             },
-            Some(protocol_reason(error)),
+            Some(error.reason()),
             protocol_io_kind(error),
         ),
     };

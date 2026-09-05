@@ -162,9 +162,49 @@ impl quickshare_connections::ConnectionIo for BluetoothIo {
     }
 
     #[inline]
-    fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
-        self.read_timeout = timeout;
+    fn read_ready(&self) -> io::Result<bool> {
+        match &self.inner {
+            IoInner::Raw { pipe, leftover, .. }
+            | IoInner::Weave { pipe, leftover, .. } => {
+                buffered_or_pipe_ready(leftover, pipe)
+            }
+        }
+    }
+
+    #[inline]
+    fn set_read_timeout(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> io::Result<()> {
+        self.read_timeout = timeout.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Bluetooth read timeout cannot be disabled",
+            )
+        })?;
         Ok(())
+    }
+
+    #[inline]
+    fn read_timeout(&self) -> io::Result<Option<Duration>> {
+        Ok(Some(self.read_timeout))
+    }
+
+    #[inline]
+    fn set_write_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        let result = match &self.inner {
+            IoInner::Raw { pipe, medium, .. } => {
+                pipe.set_write_timeout(timeout).inspect_err(|error| {
+                    adapter_failure(medium, "set_write_timeout", error);
+                })
+            }
+            IoInner::Weave { pipe, .. } => {
+                pipe.set_write_timeout(timeout).inspect_err(|error| {
+                    adapter_failure("ble", "set_write_timeout", error);
+                })
+            }
+        };
+        write_result(result)
     }
 }
 
@@ -216,44 +256,79 @@ impl Write for BluetoothIo {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match &self.inner {
             IoInner::Raw { pipe, medium, .. } => {
-                pipe.send(buf).map_err(|error| {
-                    adapter_failure(medium, "write", &error);
-                    io::Error::other(error)
-                })?;
+                let result = pipe.write(buf);
+                if let Err(error) = &result {
+                    adapter_failure(medium, "write", error);
+                }
+                let count = write_result(result)?;
                 tracing::trace!(
                     target: "omarchy_quickshare::protocol",
                     stage = "medium_io",
                     medium,
                     operation = "write",
-                    byte_count = buf.len()
+                    byte_count = count
                 );
-                Ok(buf.len())
+                Ok(count)
             }
             IoInner::Weave {
                 pipe, requested, ..
-            } => {
-                let mut requested = requested.lock().map_err(|_| {
-                    tracing::debug!(
-                        target: "omarchy_quickshare::protocol",
-                        stage = "medium_io",
-                        medium = "ble",
-                        operation = "write",
-                        outcome = "failure",
-                        reason = "lock_poisoned"
-                    );
-                    io::Error::other("weave request lock poisoned")
-                })?;
-                send_data(buf, &mut requested, |pdu| pipe.send(pdu))
-                    .map_err(io::Error::other)?;
-                Ok(buf.len())
-            }
+            } => write_weave(pipe, requested, buf),
         }
     }
 
     #[inline]
     fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+        let result = match &self.inner {
+            IoInner::Raw { pipe, medium, .. } => {
+                pipe.flush().inspect_err(|error| {
+                    adapter_failure(medium, "flush", error);
+                })
+            }
+            IoInner::Weave { pipe, .. } => pipe.flush().inspect_err(|error| {
+                adapter_failure("ble", "flush", error);
+            }),
+        };
+        write_result(result)
     }
+}
+
+fn write_weave(
+    pipe: &DbusBytePipe,
+    requested: &Mutex<bool>,
+    buf: &[u8],
+) -> io::Result<usize> {
+    let mut requested = requested.lock().map_err(|_| {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol",
+            stage = "medium_io",
+            medium = "ble",
+            operation = "write",
+            outcome = "failure",
+            reason = "lock_poisoned"
+        );
+        io::Error::other("weave request lock poisoned")
+    })?;
+    let request_pending = !*requested;
+    let mut sent_pdu = false;
+    let mut sent_data = false;
+    write_result(send_data(buf, &mut requested, |pdu| {
+        let is_data = !request_pending || sent_pdu;
+        let result = pipe.send(pdu);
+        if result.is_ok() {
+            sent_data |= is_data;
+            sent_pdu = true;
+        }
+        match result {
+            Err(error) if sent_data && error.kind() == ErrorKind::Timeout => {
+                Err(Error::bus(concat!(
+                    "weave payload write timed out ",
+                    "after a committed PDU"
+                )))
+            }
+            outcome => outcome,
+        }
+    }))?;
+    Ok(buf.len())
 }
 
 impl ClassicSocket {
@@ -290,6 +365,20 @@ impl WeaveSocket {
     pub fn into_io(self) -> Result<BluetoothIo, Error> {
         BluetoothIo::weave(self)
     }
+}
+
+fn buffered_or_pipe_ready(
+    leftover: &Mutex<Vec<u8>>,
+    pipe: &DbusBytePipe,
+) -> io::Result<bool> {
+    if !leftover
+        .lock()
+        .map_err(|_| io::Error::other("stream leftover lock poisoned"))?
+        .is_empty()
+    {
+        return Ok(true);
+    }
+    pipe.read_ready().map_err(io::Error::other)
 }
 
 fn read_buffered(
@@ -338,6 +427,15 @@ fn read_weave(
 fn read_result(result: Result<Vec<u8>, Error>) -> io::Result<Vec<u8>> {
     match result {
         Err(error) if error.kind() == ErrorKind::Closed => Ok(Vec::new()),
+        outcome => outcome.map_err(io::Error::other),
+    }
+}
+
+fn write_result<T>(result: Result<T, Error>) -> io::Result<T> {
+    match result {
+        Err(error) if error.kind() == ErrorKind::Timeout => {
+            Err(io::Error::new(io::ErrorKind::TimedOut, error))
+        }
         outcome => outcome.map_err(io::Error::other),
     }
 }

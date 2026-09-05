@@ -15,6 +15,7 @@
     clippy::used_underscore_binding,
     reason = "Private D-Bus fakes are integration-test support"
 )]
+use rustix as _;
 use tracing as _;
 
 /// Private D-Bus BlueZ fake.

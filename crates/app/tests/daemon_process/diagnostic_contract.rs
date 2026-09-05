@@ -11,6 +11,7 @@ use alloc::format;
 use core::sync::atomic::{AtomicU64, Ordering};
 use quickshare_connections::{Connection, ConnectionOptions, Error, Event};
 use quickshare_crypto::Handshake;
+use quickshare_sharing::ProtocolError;
 use std::{
     env::temp_dir,
     fs::{File, remove_file},
@@ -32,7 +33,7 @@ const PRIVATE_SENTINEL: &str = "private-peer-and-content-sentinel";
 const RESPONDER_RANDOM: [u8; 32] = [2; 32];
 const RESPONDER_SECRET: [u8; 32] = [4; 32];
 const TRACE_TARGET: &str = "TRACE omarchy_quickshare::protocol:";
-const UNSUPPORTED_FRAME_COUNT: usize = 4;
+const UNSUPPORTED_FRAME_COUNT: usize = 3;
 
 static NEXT_CAPTURE: AtomicU64 = AtomicU64::new(0);
 
@@ -380,7 +381,6 @@ fn send_unsupported_frames(mut stream: UnixStream) {
         &[0x08, 0x01, 0x12, 0x06, 0x08, 0x02, 0x1a, 0x02, 0x18, 0x01];
     const REQUEST: &[u8] = &[0x08, 0x01, 0x12, 0x04, 0x08, 0x01, 0x12, 0x00];
     const FRAMES: &[&[u8]] = &[
-        &[0x08, 0x01, 0x12, 0x02, 0x08, 0x08],
         &[0x08, 0x01, 0x12, 0x02, 0x08, 0x63],
         &[0x08, 0x01, 0x12, 0x00],
         &[0x08, 0x01, 0x12, 0x02, 0x08, 0x00],
@@ -456,21 +456,19 @@ fn rejected_encrypted_frames_report_received_discriminators() {
         )
         .expect("establish receiver encryption");
         for () in [(); UNSUPPORTED_FRAME_COUNT] {
-            assert!(
-                matches!(connection.receive(), Err(Error::UnexpectedFrame)),
-                "unsupported frame changed its public error"
+            let source = connection
+                .receive()
+                .expect_err("unsupported frame changed its public error");
+            assert!(matches!(source, Error::UnexpectedFrame));
+            assert_eq!(
+                ProtocolError::from(source).reason(),
+                "connection_unexpected_frame"
             );
         }
     });
     sender.join().expect("sender completes");
 
     let observations = read_capture(reader);
-    assert_dispatch_frame(
-        &observations,
-        true,
-        Some(8_i32),
-        "AUTHENTICATION_MESSAGE",
-    );
     assert_dispatch_frame(&observations, true, Some(99_i32), "unrecognized");
     assert_dispatch_frame(&observations, false, None, "missing");
     assert_dispatch_frame(

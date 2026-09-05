@@ -45,6 +45,22 @@ impl Coordinator {
         cancelled
     }
 
+    /// Completes a fully transferred active share after its owner finalizes it.
+    #[inline]
+    pub fn complete(&mut self, share_id: u64) -> bool {
+        let Some(active) = self.snapshot.active_share_mut() else {
+            return false;
+        };
+        if active.id().get() != share_id
+            || active.phase() != Phase::Transferring
+            || active.transferred_bytes() != active.total_bytes()
+        {
+            return false;
+        }
+        active.set_phase(Phase::Completed);
+        true
+    }
+
     /// Closes inbound discoverability.
     #[inline]
     pub const fn close_visibility(&mut self) {

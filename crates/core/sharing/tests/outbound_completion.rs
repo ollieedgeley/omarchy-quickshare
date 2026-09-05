@@ -11,16 +11,13 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
-use core::{
-    sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
-};
+use core::time::Duration;
 
 use base64 as _;
 use prost as _;
 use quickshare_connections::{Connection, ConnectionOptions, Event};
 use quickshare_crypto::Handshake;
-use quickshare_sharing::{OfferKind, ProtocolError, SharingSession};
+use quickshare_sharing::{ProtocolError, SharingSession};
 use quickshare_wire::sharing::{
     ConnectionResponseFrame, FileMetadata, Frame, IntroductionFrame,
     PairedKeyEncryptionFrame, V1Frame, connection_response_frame,
@@ -29,12 +26,9 @@ use quickshare_wire::sharing::{
 use rand_core as _;
 use serde as _;
 use std::{
-    io::{self, Cursor, Read, Write},
+    io::{self, Cursor, Write},
     os::unix::net::UnixStream,
-    sync::{
-        Mutex, PoisonError,
-        mpsc::{self, Sender, sync_channel},
-    },
+    sync::{Mutex, PoisonError, mpsc},
     thread::{self, JoinHandle},
 };
 
@@ -87,77 +81,6 @@ const INITIATOR_RANDOM: [u8; 32] = [1; 32];
 const RESPONDER_RANDOM: [u8; 32] = [2; 32];
 const INITIATOR_SECRET: [u8; 32] = [3; 32];
 const RESPONDER_SECRET: [u8; 32] = [4; 32];
-
-struct NotifyingIo {
-    deadline_set: Sender<()>,
-    inner: UnixStream,
-}
-
-impl Read for NotifyingIo {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.inner.read(buf)
-    }
-}
-
-impl Write for NotifyingIo {
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
-
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.inner.write(buf)
-    }
-}
-
-impl quickshare_connections::ConnectionIo for NotifyingIo {
-    fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
-        self.inner.set_read_timeout(Some(timeout))?;
-        let _sent = self.deadline_set.send(());
-        Ok(())
-    }
-
-    fn shutdown_write(&mut self) -> io::Result<()> {
-        self.inner.shutdown(std::net::Shutdown::Write)
-    }
-}
-
-struct TimeoutIo {
-    inner: UnixStream,
-    read_timeout: bool,
-}
-
-impl Read for TimeoutIo {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.read_timeout {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "completion deadline",
-            ));
-        }
-        self.inner.read(buf)
-    }
-}
-
-impl Write for TimeoutIo {
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
-
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.inner.write(buf)
-    }
-}
-
-impl quickshare_connections::ConnectionIo for TimeoutIo {
-    fn set_read_timeout(&mut self, _timeout: Duration) -> io::Result<()> {
-        self.read_timeout = true;
-        Ok(())
-    }
-
-    fn shutdown_write(&mut self) -> io::Result<()> {
-        self.inner.shutdown(std::net::Shutdown::Write)
-    }
-}
 
 #[derive(Clone, Default)]
 struct LogOutput(Arc<Mutex<Vec<u8>>>);
@@ -216,47 +139,14 @@ where
     session
 }
 
-fn paired_session<T>(
-    peer: impl FnOnce(SharingSession) -> T + Send + 'static,
-) -> (SharingSession, JoinHandle<T>)
-where
-    T: Send + 'static,
-{
-    let (initiator_stream, responder_stream) = bounded_stream_pair();
-    let responder = thread::spawn(move || {
-        let connection = Connection::accept_io(
-            responder_stream,
-            Handshake::responder(RESPONDER_RANDOM, RESPONDER_SECRET),
-            ConnectionOptions::new("remote", "Remote"),
-        )
-        .expect("establish peer session");
-        let mut session = SharingSession::new(connection);
-        let _pairing = session.exchange_account_free_pairing().expect("pair");
-        peer(session)
-    });
-    (connect_initiator(initiator_stream), responder)
-}
-
-fn paired_raw_peer<T>(
-    peer: impl FnOnce(Connection) -> T + Send + 'static,
-) -> (SharingSession, JoinHandle<T>)
-where
-    T: Send + 'static,
-{
-    let (initiator_stream, responder_stream) = bounded_stream_pair();
-    paired_raw_peer_with(initiator_stream, responder_stream, peer)
-}
-
-fn paired_raw_peer_with<Stream, T>(
-    initiator_stream: Stream,
+fn spawn_raw_peer<T>(
     responder_stream: UnixStream,
     peer: impl FnOnce(Connection) -> T + Send + 'static,
-) -> (SharingSession, JoinHandle<T>)
+) -> JoinHandle<T>
 where
-    Stream: quickshare_connections::ConnectionIo + 'static,
     T: Send + 'static,
 {
-    let responder = thread::spawn(move || {
+    thread::spawn(move || {
         let mut connection = Connection::accept_io(
             responder_stream,
             Handshake::responder(RESPONDER_RANDOM, RESPONDER_SECRET),
@@ -287,8 +177,7 @@ where
             .send_sharing_frame(2, &SharingSession::account_free_result())
             .expect("send pairing result");
         peer(connection)
-    });
-    (connect_initiator(initiator_stream), responder)
+    })
 }
 
 fn receive_bytes(connection: &mut Connection, label: &str) -> Vec<u8> {
@@ -304,51 +193,6 @@ fn receive_bytes(connection: &mut Connection, label: &str) -> Vec<u8> {
         | _ => None,
     }
     .expect(label)
-}
-
-fn accept_outgoing_file(connection: &mut Connection) {
-    let _introduction = receive_bytes(connection, "introduction");
-    connection
-        .send_sharing_frame(4, &accept_response())
-        .expect("accept offer");
-    assert!(
-        matches!(
-            connection.receive().expect("file header"),
-            Event::FileHeader { .. }
-        ),
-        "expected file header",
-    );
-    assert!(
-        matches!(
-            connection.receive().expect("file data"),
-            Event::FileChunk { is_last: false, .. }
-        ),
-        "expected nonterminal file data",
-    );
-    assert!(
-        matches!(
-            connection.receive().expect("terminal chunk"),
-            Event::FileChunk { is_last: true, .. }
-        ),
-        "expected terminal file chunk",
-    );
-}
-
-fn send_one_byte_file<Cancelled>(
-    session: &mut SharingSession,
-    is_cancelled: Cancelled,
-) -> Result<(), ProtocolError>
-where
-    Cancelled: Fn() -> bool,
-{
-    session.send_outgoing_file(
-        "note.txt",
-        1,
-        &mut Cursor::new([1_u8]),
-        || {},
-        |_| {},
-        is_cancelled,
-    )
 }
 
 fn receive_one_byte_file(
@@ -411,106 +255,55 @@ fn accept_response() -> Frame {
 }
 
 #[test]
-fn file_cancellation_after_final_bytes_prevents_completion() {
-    let (mut session, receiver) = paired_session(|mut session| {
-        let offer = session.receive_incoming_offer().expect("receive offer");
-        assert_eq!(offer.kind(), OfferKind::File);
-        session.accept_incoming_offer().expect("accept offer");
-        session
-            .receive_incoming_file(&offer, &mut Vec::new(), |_| {}, || false)
-            .expect("receive file");
-        let error = session
-            .receive_incoming_file(&offer, &mut Vec::new(), |_| {}, || true)
-            .expect_err("cancel completed payload");
-        assert!(matches!(error, ProtocolError::Cancelled));
-    });
-
-    let error = send_one_byte_file(&mut session, || false)
-        .expect_err("receiver cancellation must prevent completion");
-
-    assert!(matches!(error, ProtocolError::Cancelled));
-    receiver.join().expect("receiver completes");
-}
-
-#[test]
-fn url_cancellation_after_final_bytes_prevents_completion() {
-    let (cancel_sent, cancel_received) = sync_channel(0);
-    let (mut session, receiver) = paired_session(move |mut session| {
-        let offer = session.receive_incoming_offer().expect("receive offer");
-        assert_eq!(offer.kind(), OfferKind::Url);
-        session.accept_incoming_offer().expect("accept offer");
-        assert_eq!(
-            session
-                .receive_incoming_url(&offer, |_| {}, || false)
-                .expect("receive URL"),
-            "https://omarchy.local"
-        );
-        let error = session
-            .receive_incoming_url(&offer, |_| {}, || true)
-            .expect_err("cancel completed payload");
-        assert!(matches!(error, ProtocolError::Cancelled));
-        cancel_sent.send(()).expect("report cancellation sent");
-    });
-
-    let error = session
-        .send_outgoing_url(
-            "https://omarchy.local",
-            || {},
-            |_| cancel_received.recv().expect("receiver cancellation"),
-            || false,
-        )
-        .expect_err("receiver cancellation must prevent completion");
-
-    assert!(matches!(error, ProtocolError::Cancelled));
-    receiver.join().expect("receiver completes");
-}
-
-#[test]
-fn file_payload_ends_with_an_empty_terminal_chunk() {
-    let (mut session, receiver) = paired_raw_peer(|mut connection| {
-        let introduction = receive_bytes(&mut connection, "introduction");
-        let offer = SharingSession::decode_offer(&introduction)
-            .expect("decode introduction");
+fn unnegotiated_file_completes_while_receiver_connection_remains_open() {
+    let (release_sender, release_receiver) = mpsc::channel();
+    let (initiator_stream, responder_stream) = bounded_stream_pair();
+    let receiver = spawn_raw_peer(responder_stream, move |mut connection| {
+        let _introduction = receive_bytes(&mut connection, "introduction");
         connection
             .send_sharing_frame(4, &accept_response())
             .expect("accept offer");
-        assert_eq!(
-            connection.receive().expect("file header"),
-            Event::FileHeader {
-                id: offer.payload_id(),
-                total_size: 1,
-                name: Some(String::from("note.txt")),
-            }
-        );
-        assert_eq!(
-            connection.receive().expect("file data"),
-            Event::FileChunk {
-                id: offer.payload_id(),
-                offset: 0,
-                bytes: vec![1],
-                is_last: false,
-            }
-        );
+        let _header = connection.receive().expect("file header");
+        let _data = connection.receive().expect("file data");
         assert_eq!(
             connection.receive().expect("terminal chunk"),
             Event::FileChunk {
-                id: offer.payload_id(),
+                id: 3,
                 offset: 1,
                 bytes: Vec::new(),
                 is_last: true,
             }
         );
-        connection.disconnect().expect("disconnect receiver");
+        release_receiver.recv().expect("release peer");
     });
-
-    send_one_byte_file(&mut session, || false)
-        .expect("complete file after receiver disconnect");
+    let mut session = connect_initiator(initiator_stream);
+    let (completion_sender, completion_receiver) = mpsc::channel();
+    let sender = thread::spawn(move || {
+        let result = session.send_outgoing_file(
+            "note.txt",
+            1,
+            &mut Cursor::new([1_u8]),
+            || {},
+            |_| {},
+            || false,
+        );
+        completion_sender
+            .send(result)
+            .expect("report sender completion");
+    });
+    let completion = completion_receiver.recv_timeout(Duration::from_secs(1));
+    release_sender.send(()).expect("release peer");
+    sender.join().expect("sender completes");
     receiver.join().expect("receiver completes");
+    completion
+        .expect("sender completes before peer disconnects")
+        .expect("complete unnegotiated file");
 }
 
 #[test]
 fn file_header_ignores_an_unrelated_sharing_control() {
-    let (mut session, sender) = paired_raw_peer(|mut connection| {
+    let (initiator_stream, responder_stream) = bounded_stream_pair();
+    let sender = spawn_raw_peer(responder_stream, |mut connection| {
         send_file_introduction(&mut connection);
         connection
             .send_sharing_frame(5, &accept_response())
@@ -522,6 +315,7 @@ fn file_header_ignores_an_unrelated_sharing_control() {
             .send_file_chunk(3, 0, &[1], true)
             .expect("send file");
     });
+    let mut session = connect_initiator(initiator_stream);
     assert_eq!(
         receive_one_byte_file(
             &mut session,
@@ -534,7 +328,8 @@ fn file_header_ignores_an_unrelated_sharing_control() {
 
 #[test]
 fn file_chunks_ignore_an_unrelated_sharing_control() {
-    let (mut session, sender) = paired_raw_peer(|mut connection| {
+    let (initiator_stream, responder_stream) = bounded_stream_pair();
+    let sender = spawn_raw_peer(responder_stream, |mut connection| {
         send_file_introduction(&mut connection);
         connection
             .send_file_header(3, 1, Some(String::from("note.txt")))
@@ -549,6 +344,7 @@ fn file_chunks_ignore_an_unrelated_sharing_control() {
             .send_file_chunk(3, 1, &[], true)
             .expect("finish file");
     });
+    let mut session = connect_initiator(initiator_stream);
     assert_eq!(
         receive_one_byte_file(
             &mut session,
@@ -564,7 +360,8 @@ fn diagnostics_distinguish_skipped_control_from_wrong_payload_id() {
     const PRIVATE_SENTINEL: &str = "private-sentinel.txt";
 
     let (release_sender, release_receiver) = mpsc::channel();
-    let (mut session, sender) = paired_raw_peer(move |mut connection| {
+    let (initiator_stream, responder_stream) = bounded_stream_pair();
+    let sender = spawn_raw_peer(responder_stream, move |mut connection| {
         send_named_file_introduction(&mut connection, PRIVATE_SENTINEL);
         connection
             .send_sharing_frame(5, &accept_response())
@@ -577,13 +374,14 @@ fn diagnostics_distinguish_skipped_control_from_wrong_payload_id() {
             .expect("send wrong payload data");
         release_receiver.recv().expect("release peer");
     });
+    let mut session = connect_initiator(initiator_stream);
     let offer = session.receive_incoming_offer().expect("receive offer");
     session.accept_incoming_offer().expect("accept offer");
     let output = LogOutput::default();
     let writer = output.clone();
     let subscriber = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(
-            "omarchy_quickshare=debug",
+            "omarchy_quickshare::protocol=debug",
         ))
         .without_time()
         .with_target(true)
@@ -607,75 +405,40 @@ fn diagnostics_distinguish_skipped_control_from_wrong_payload_id() {
 }
 
 #[test]
-fn outgoing_completion_ignores_an_unrelated_sharing_control() {
-    let (mut session, receiver) = paired_raw_peer(|mut connection| {
-        accept_outgoing_file(&mut connection);
+fn post_transfer_drain_keeps_url_connection_alive_for_peer_control() {
+    let (initiator_stream, responder_stream) = bounded_stream_pair();
+    let peer = spawn_raw_peer(responder_stream, |mut connection| {
+        let introduction = receive_bytes(&mut connection, "URL introduction");
+        let offer = SharingSession::decode_offer(&introduction)
+            .expect("decode URL offer");
+        assert_eq!(offer.kind(), quickshare_sharing::OfferKind::Url);
+        assert_eq!(offer.size_bytes(), 21);
         connection
-            .send_sharing_frame(5, &accept_response())
-            .expect("send unrelated control");
-        connection.disconnect().expect("disconnect receiver");
+            .send_sharing_frame(4, &accept_response())
+            .expect("accept URL");
+        assert_eq!(
+            receive_bytes(&mut connection, "URL payload"),
+            b"https://omarchy.local"
+        );
+        connection.send_keepalive(42).expect("send late keepalive");
+        assert_eq!(
+            connection
+                .receive()
+                .expect("receive keepalive acknowledgement"),
+            Event::KeepAlive {
+                ack: true,
+                sequence: 42,
+            }
+        );
+        connection.disconnect().expect("disconnect peer");
     });
+    let mut session = connect_initiator(initiator_stream);
 
-    send_one_byte_file(&mut session, || false)
-        .expect("complete after receiver disconnect");
-    receiver.join().expect("receiver completes");
-}
-
-#[test]
-fn outgoing_completion_has_a_fixed_deadline() {
-    let (initiator_stream, responder_stream) = bounded_stream_pair();
-    let timeout_io = TimeoutIo {
-        inner: initiator_stream,
-        read_timeout: false,
-    };
-    let (release_sender, release_receiver) = mpsc::channel();
-    let (mut session, receiver) = paired_raw_peer_with(
-        timeout_io,
-        responder_stream,
-        move |mut connection| {
-            accept_outgoing_file(&mut connection);
-            release_receiver.recv().expect("release receiver");
-        },
-    );
-
-    let error = send_one_byte_file(&mut session, || false)
-        .expect_err("completion deadline");
-
-    assert!(matches!(
-        &error,
-        ProtocolError::Connection(quickshare_connections::Error::Io(
-            inner_error,
-        )) if inner_error.kind() == io::ErrorKind::TimedOut
-    ));
-    release_sender.send(()).expect("release receiver");
-    receiver.join().expect("receiver completes");
-}
-
-#[test]
-fn receiver_disconnect_does_not_override_local_cancellation() {
-    let (initiator_stream, responder_stream) = bounded_stream_pair();
-    let (deadline_set, deadline_observed) = mpsc::channel();
-    let notifying_io = NotifyingIo {
-        inner: initiator_stream,
-        deadline_set,
-    };
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let peer_cancelled = Arc::clone(&cancelled);
-    let (mut session, receiver) = paired_raw_peer_with(
-        notifying_io,
-        responder_stream,
-        move |mut connection| {
-            accept_outgoing_file(&mut connection);
-            deadline_observed.recv().expect("completion wait started");
-            peer_cancelled.store(true, Ordering::Release);
-            connection.disconnect().expect("disconnect receiver");
-        },
-    );
-
-    let error =
-        send_one_byte_file(&mut session, || cancelled.load(Ordering::Acquire))
-            .expect_err("local cancellation wins");
-
-    assert!(matches!(error, ProtocolError::Cancelled));
-    receiver.join().expect("receiver completes");
+    session
+        .send_outgoing_url("https://omarchy.local", || {}, |_| {}, || false)
+        .expect("write URL locally");
+    session
+        .drain_post_transfer_control(Duration::from_secs(1), || false)
+        .expect("drain late peer control");
+    peer.join().expect("peer completes");
 }

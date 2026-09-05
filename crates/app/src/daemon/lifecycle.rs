@@ -8,8 +8,9 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use quickshare_control::request::Request;
 use quickshare_sharing::{
-    DiscoveryState, PeerSnapshot, Phase, VisibilityState,
+    Attachment, DiscoveryState, PeerSnapshot, Phase, VisibilityState,
 };
 use quickshare_storage::OutboundSource;
 
@@ -77,7 +78,7 @@ impl Daemon {
                 })?;
             trace_protocol("source", "archive", "completed", None, None);
             let source = open_source(&archive_path)?;
-            let attachment = quickshare_sharing::Attachment::file(
+            let attachment = Attachment::file(
                 &source.name().to_string_lossy(),
                 source.len(),
             );
@@ -88,10 +89,8 @@ impl Daemon {
             return Ok(share_id);
         }
         let source = open_source(path)?;
-        let attachment = quickshare_sharing::Attachment::file(
-            &source.name().to_string_lossy(),
-            source.len(),
-        );
+        let attachment =
+            Attachment::file(&source.name().to_string_lossy(), source.len());
         let share_id = self.queue_attachment_for(attachment, peer_id.is_some());
         self.outbound.remember_file(share_id, source);
         Ok(share_id)
@@ -217,6 +216,66 @@ impl Daemon {
         self.outbound.finish(share_id);
         self.transfer_started_at = None;
         Ok(())
+    }
+    /// Applies one simulator request and reports whether state changed.
+    #[expect(
+        clippy::pattern_type_mismatch,
+        clippy::wildcard_enum_match_arm,
+        reason = "Borrowed non-exhaustive requests require an unhandled case"
+    )]
+    pub(super) fn simulation_applied(&mut self, request: &Request) -> bool {
+        match request {
+            Request::SimulateDiscoveryTimeout => {
+                self.sharing.discovery_timed_out()
+            }
+            Request::SimulateFail { share_id } => {
+                let failed = self.sharing.fail(*share_id);
+                if failed {
+                    let reason = "simulated_failure";
+                    let _observed = self.sharing.record_observation(
+                        *share_id,
+                        None,
+                        None,
+                        Some(reason),
+                        Some(recovery_guidance(reason)),
+                    );
+                }
+                failed
+            }
+            Request::SimulateIncomingFile { name, size_bytes } => self
+                .sharing
+                .offer_inbound(Attachment::file(name, *size_bytes), "pixel-8")
+                .is_some(),
+            Request::SimulateIncomingText { text } => self
+                .sharing
+                .offer_inbound(Attachment::text(text), "pixel-8")
+                .is_some(),
+            Request::SimulateIncomingUrl { url } => self
+                .sharing
+                .offer_inbound(Attachment::url(url), "pixel-8")
+                .is_some(),
+            Request::SimulatePeerAccept { share_id } => {
+                self.sharing.accept_by_peer(*share_id)
+            }
+            Request::SimulatePeerLost { peer_id } => {
+                self.sharing.remove_peer(peer_id)
+            }
+            Request::SimulatePeerReject { share_id } => {
+                self.sharing.reject_by_peer(*share_id)
+            }
+            Request::SimulatePeerSeen { name, peer_id } => {
+                self.sharing.observe_peer(peer_id, name);
+                true
+            }
+            Request::SimulateComplete { share_id } => {
+                self.sharing.complete(*share_id)
+            }
+            Request::SimulateProgress {
+                share_id,
+                transferred_bytes,
+            } => self.sharing.record_progress(*share_id, *transferred_bytes),
+            _ => false,
+        }
     }
 }
 

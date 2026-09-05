@@ -112,6 +112,40 @@ pub enum ProtocolError {
     Unsupported,
 }
 
+impl ProtocolError {
+    /// Returns the stable privacy-safe failure class exposed to local clients.
+    #[must_use]
+    pub const fn reason(&self) -> &'static str {
+        match self {
+            Self::Connection(source) => match source {
+                ConnectionError::Io(_) => "connection_io",
+                ConnectionError::Wire(_) => "connection_wire",
+                ConnectionError::FrameTooLarge => "connection_frame_too_large",
+                ConnectionError::UnexpectedFrame => {
+                    "connection_unexpected_frame"
+                }
+                ConnectionError::Rejected => "connection_rejected",
+                ConnectionError::Handshake => "connection_handshake",
+                ConnectionError::Crypto => "connection_crypto",
+                ConnectionError::InvalidPayload => "connection_invalid_payload",
+                _ => "connection_unknown",
+            },
+            Self::Decode(_) => "sharing_decode",
+            Self::Io(_) => "sharing_io",
+            Self::Cancelled => "cancelled",
+            Self::InvalidAdvertisement => "invalid_advertisement",
+            Self::InvalidMdnsInstance => "invalid_mdns_instance",
+            Self::InvalidFrame => "invalid_frame",
+            Self::InvalidOffer(_) => "invalid_offer",
+            Self::Rejected => "rejected",
+            Self::InvalidPayload => "invalid_payload",
+            Self::Disconnected => "disconnected",
+            Self::TimedOut => "timed_out",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
 impl fmt::Display for ProtocolError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

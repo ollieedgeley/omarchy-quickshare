@@ -14,7 +14,8 @@ use super::{
 use prost::Message as _;
 use quickshare_wire::{
     connections::{
-        KeepAliveFrame, OfflineFrame, PayloadTransferFrame,
+        BandwidthUpgradeNegotiationFrame, KeepAliveFrame, OfflineFrame,
+        PayloadTransferFrame, V1Frame,
         payload_transfer_frame::{
             self, control_message::EventType as ControlEvent,
         },
@@ -76,6 +77,7 @@ impl Connection {
         self.outgoing_file = Some(OutgoingFile {
             id,
             header: payload_header(id, PayloadKind::File, size, name)?,
+            started: false,
         });
         payload_debug_progress("send", "started", "file", size);
         Ok(())
@@ -99,7 +101,16 @@ impl Connection {
             payload_rejected("send", "id_mismatch");
             return Err(Error::InvalidPayload);
         }
-        self.data(file.header.clone(), offset, bytes, last)?;
+        if file.started {
+            self.poll_outgoing_control(id)?;
+        }
+        let header = self
+            .outgoing_file
+            .as_ref()
+            .ok_or(Error::InvalidPayload)?
+            .header
+            .clone();
+        self.data(header, offset, bytes, last)?;
         payload_chunk_sent(offset, bytes.len());
         if last {
             self.outgoing_file = None;
@@ -110,7 +121,12 @@ impl Connection {
                 offset,
                 bytes.len(),
             );
+            return Ok(());
         }
+        self.outgoing_file
+            .as_mut()
+            .ok_or(Error::InvalidPayload)?
+            .started = true;
         Ok(())
     }
     /// Sends a keepalive request with `sequence`.
@@ -185,7 +201,7 @@ impl Connection {
         }
         self.send(&data(header, offset, bytes, last))
     }
-    fn payload(
+    pub(super) fn payload(
         &mut self,
         transfer: PayloadTransferFrame,
     ) -> Result<Option<Event>, Error> {
@@ -251,10 +267,29 @@ impl Connection {
             payload_rejected("receive", "missing_offset");
             Error::InvalidPayload
         })?;
+        let total_size = header.total_size.ok_or_else(|| {
+            payload_rejected("receive", "missing_total_size");
+            Error::InvalidPayload
+        })?;
+        if offset < 0
+            || total_size < -1
+            || (total_size != -1 && offset > total_size)
+        {
+            payload_rejected("receive", "invalid_control_offset");
+            return Err(Error::InvalidPayload);
+        }
         let wire_event = control.event.ok_or_else(|| {
             payload_rejected("receive", "missing_control_event");
             Error::UnexpectedFrame
         })?;
+        self.payload_control_event(id, offset, wire_event)
+    }
+    fn payload_control_event(
+        &mut self,
+        id: i64,
+        offset: i64,
+        wire_event: i32,
+    ) -> Result<Option<Event>, Error> {
         let event = if wire_event == ControlEvent::PayloadError as i32 {
             payload_control_dispatched("payload_error", offset);
             Event::PayloadError { id, offset }
@@ -276,12 +311,10 @@ impl Connection {
         self.clear_payload(id);
         Ok(Some(event))
     }
+
     fn clear_payload(&mut self, id: i64) {
         drop(self.incoming_bytes.remove(&id));
-        let _ = self.payloads.remove(&id);
-        if self.incoming_file == Some(id) {
-            self.incoming_file = None;
-        }
+        let _ = self.incoming_files.remove(&id);
     }
 
     fn bytes_payload(
@@ -332,7 +365,10 @@ impl Connection {
         self.finish_bytes_payload(id)
     }
 
-    fn event(&mut self, frame: OfflineFrame) -> Result<Option<Event>, Error> {
+    pub(super) fn event(
+        &mut self,
+        frame: OfflineFrame,
+    ) -> Result<Option<Event>, Error> {
         let v1 = frame.v1.ok_or_else(|| {
             tracing::debug!(
                 target: "omarchy_quickshare::protocol",
@@ -344,6 +380,10 @@ impl Connection {
             );
             Error::UnexpectedFrame
         })?;
+        self.v1_event(v1)
+    }
+
+    fn v1_event(&mut self, v1: V1Frame) -> Result<Option<Event>, Error> {
         match v1.r#type {
             Some(value)
                 if value == v1_frame::FrameType::Disconnection as i32 =>
@@ -368,12 +408,21 @@ impl Connection {
                     == v1_frame::FrameType::BandwidthUpgradeNegotiation
                         as i32 =>
             {
-                let negotiation =
-                    v1.bandwidth_upgrade_negotiation.ok_or_else(|| {
-                        upgrade_frame_rejected("missing_negotiation");
-                        Error::UnexpectedFrame
-                    })?;
-                self.upgrade_event(negotiation)
+                self.negotiation_event(v1.bandwidth_upgrade_negotiation)
+            }
+            Some(value)
+                if matches!(
+                    v1_frame::FrameType::try_from(value),
+                    Ok(v1_frame::FrameType::PairedKeyEncryption
+                        | v1_frame::FrameType::AuthenticationMessage
+                        | v1_frame::FrameType::AuthenticationResult
+                        | v1_frame::FrameType::AutoResume
+                        | v1_frame::FrameType::AutoReconnect
+                        | v1_frame::FrameType::BandwidthUpgradeRetry)
+                ) =>
+            {
+                super::frame_dispatch_ignored(value);
+                Ok(None)
             }
             _ => {
                 frame_dispatch_rejected("unexpected_frame_type", v1.r#type);
@@ -381,6 +430,17 @@ impl Connection {
             }
         }
     }
+    fn negotiation_event(
+        &mut self,
+        frame: Option<BandwidthUpgradeNegotiationFrame>,
+    ) -> Result<Option<Event>, Error> {
+        let negotiation = frame.ok_or_else(|| {
+            upgrade_frame_rejected("missing_negotiation");
+            Error::UnexpectedFrame
+        })?;
+        self.upgrade_event(negotiation)
+    }
+
     fn keepalive_event(
         &mut self,
         frame: Option<KeepAliveFrame>,
@@ -422,66 +482,9 @@ impl Connection {
             bytes: completed_payload.bytes,
         }))
     }
-    fn file_payload(
-        &mut self,
-        id: i64,
-        size: i64,
-        name: Option<String>,
-        offset: i64,
-        bytes: Vec<u8>,
-        last: bool,
-    ) -> Result<Event, Error> {
-        let first_chunk = match self.payloads.get(&id) {
-            None => {
-                if self.incoming_file.is_some() {
-                    payload_rejected("receive", "concurrent_file");
-                    return Err(Error::InvalidPayload);
-                }
-                let _ = self.payloads.insert(id, PayloadKind::File);
-                self.incoming_file = Some(id);
-                true
-            }
-            Some(PayloadKind::File) if self.incoming_file == Some(id) => false,
-            _ => {
-                payload_rejected("receive", "file_reassembly_state");
-                return Err(Error::InvalidPayload);
-            }
-        };
-        let byte_count = bytes.len();
-        payload_chunk_received(offset, byte_count);
-        if first_chunk {
-            payload_debug_progress("receive", "started", "file", size);
-        }
-        let event = Event::FileChunk {
-            id,
-            offset,
-            bytes,
-            is_last: last,
-        };
-        if last {
-            let _ = self.payloads.remove(&id);
-            self.incoming_file = None;
-            payload_debug_progress_at(
-                "receive",
-                "completed",
-                "file",
-                offset,
-                byte_count,
-            );
-        }
-        if first_chunk {
-            self.pending_events.push_back(event);
-            return Ok(Event::FileHeader {
-                id,
-                total_size: size,
-                name,
-            });
-        }
-        Ok(event)
-    }
 }
 
-fn payload_rejected(operation: &'static str, reason: &'static str) {
+pub(super) fn payload_rejected(operation: &'static str, reason: &'static str) {
     tracing::debug!(
         target: "omarchy_quickshare::protocol",
         stage = "payload",

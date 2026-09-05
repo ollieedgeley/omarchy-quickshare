@@ -14,6 +14,11 @@ MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 RUFF ?= $(CURDIR)/.cache/tools/ruff-0.16.5/ruff
 TEST_ENV_CACHE ?= $(CURDIR)/.cache/test-env
 QUICKSHELL ?= quickshell
+RUST_LAN_TEST_DIR := tests/environments/diverse-lan/rust/scenarios
+RUST_LAN_CASES := outbound inbound inbound-content outbound-content \
+	cancellation-inbound cancellation-outbound failure-inbound \
+	failure-outbound rejection retry
+RUST_LAN_GATES := $(addprefix test-rust-lan-,$(RUST_LAN_CASES))
 REPOSITORY_FILES = git ls-files --cached --others --exclude-standard -z
 TOOLING_FILES = $(REPOSITORY_FILES) -- ':(exclude)*.md'
 DOCUMENT_FILES = $(REPOSITORY_FILES) -- '*.md'
@@ -36,7 +41,7 @@ DOCUMENT_FILES = $(REPOSITORY_FILES) -- '*.md'
 .PHONY: release release-native release-source release-sparse release-arch
 .PHONY: test-oracle-toolchain test-oracle-reference
 .PHONY: test-nearshare-reference test-nearby-linux-tooling rust-lan-provision
-.PHONY: test-rust-lan test-rust-lan-outbound test-rust-lan-inbound
+.PHONY: test-rust-lan $(RUST_LAN_GATES)
 .PHONY: test-nearby-linux-connections test-nearby-linux-sharing
 .PHONY: test-nearby-linux-sharing-actions sharing-fixtures-update
 .PHONY: test-nearby-linux-sharing-fixtures
@@ -267,16 +272,38 @@ test-diverse-lan: ## Exchange bytes across diverse same-LAN reference peers.
 rust-lan-provision: ## Build the current Rust daemon into the LAN test image.
 	@node tests/environments/diverse-lan/rust/rust-lan.mjs provision
 
-test-rust-lan: rust-lan-provision test-rust-lan-outbound
-test-rust-lan: test-rust-lan-inbound ## Verify daemon LAN transfers both ways.
+test-rust-lan: rust-lan-provision $(RUST_LAN_GATES)
+test-rust-lan: ## Verify daemon LAN transfers, outcomes, and retry behavior.
 
 test-rust-lan-outbound: ## Send from Rust to the Google-derived LAN peer.
-	@$(TIMEOUT) node --test \
-		tests/environments/diverse-lan/rust/rust-lan-outbound.e2e.mjs
+	@$(TIMEOUT) node --test $(RUST_LAN_TEST_DIR)/rust-lan-outbound.e2e.mjs
 
 test-rust-lan-inbound: ## Receive from the Google-derived LAN peer in Rust.
+	@$(TIMEOUT) node --test $(RUST_LAN_TEST_DIR)/rust-lan-inbound.e2e.mjs
+
+test-rust-lan-inbound-content: ## Receive reference text and Retry 12 URL bytes.
 	@$(TIMEOUT) node --test \
-		tests/environments/diverse-lan/rust/rust-lan-inbound.e2e.mjs
+		$(RUST_LAN_TEST_DIR)/rust-lan-inbound-content.e2e.mjs
+
+test-rust-lan-outbound-content: ## Send Rust text and Retry 12 URL bytes.
+	@$(TIMEOUT) node --test \
+		$(RUST_LAN_TEST_DIR)/rust-lan-outbound-content.e2e.mjs
+
+test-rust-lan-rejection: ## Reject before payload persistence in both roles.
+	@$(TIMEOUT) node --test $(RUST_LAN_TEST_DIR)/rust-lan-rejection.e2e.mjs
+
+test-rust-lan-retry: ## Continue after Retry 12 with file data in both roles.
+	@$(TIMEOUT) node --test $(RUST_LAN_TEST_DIR)/rust-lan-retry.e2e.mjs
+
+test-rust-lan-cancellation-inbound: ## Reference sender cancels before consent.
+test-rust-lan-cancellation-outbound: ## Rust sender cancels before consent.
+test-rust-lan-failure-inbound: ## Reference sender disappears before consent.
+test-rust-lan-failure-outbound: ## Reference receiver disappears before consent.
+test-rust-lan-cancellation-inbound \
+	test-rust-lan-cancellation-outbound \
+	test-rust-lan-failure-inbound \
+	test-rust-lan-failure-outbound: test-rust-lan-%:
+	@$(TIMEOUT) node --test $(RUST_LAN_TEST_DIR)/rust-lan-$*.e2e.mjs
 
 test-oracle-bluetooth: ## Check Google's simulated Bluetooth Classic medium.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs \

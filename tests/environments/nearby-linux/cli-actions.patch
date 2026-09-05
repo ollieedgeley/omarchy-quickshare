@@ -1,6 +1,14 @@
 --- a/sharing/linux/nearby_sharing_cli.cc
 +++ b/sharing/linux/nearby_sharing_cli.cc
-@@ -27,6 +27,8 @@
+@@ -21,12 +21,16 @@
+ #include <cstdint>
+ #include <cstdlib>
+ #include <filesystem>
++#include <fstream>
+ #include <functional>
++#include <iterator>
+ #include <iostream>
+ #include <memory>
  #include <mutex>
  #include <optional>
 +#include <sstream>
@@ -9,9 +17,16 @@
  #include <system_error>
  #include <utility>
  #include "absl/time/time.h"
-@@ -69,15 +70,21 @@
--
-+
+@@ -45,6 +49,7 @@
+ #include "sharing/nearby_sharing_settings.h"
+ #include "sharing/share_target.h"
+ #include "sharing/share_target_discovered_callback.h"
++#include "sharing/text_attachment.h"
+ #include "sharing/transfer_metadata.h"
+ #include "sharing/transfer_update_callback.h"
+ #include "sharing/proto/enums.pb.h"
+@@ -69,15 +74,23 @@
+
  void PrintUsage(const char* argv0) {
    std::cerr << "Usage:\n"
 -            << "  " << argv0 << " receive [--name NAME] [--timeout SECONDS]\n"
@@ -21,25 +36,39 @@
 +               " [--action accept|reject|hold]\n"
 +            << "  " << argv0
 +            << " send FILE [--name NAME] [--timeout SECONDS]"
-+               " [--action cancel]\n";
++               " [--action cancel] [--content-kind file|text|url]\n";
  }
--
-+
+
  struct Options {
    enum class Mode { kReceive, kSend };
 +  enum class Action { kAccept, kReject, kHold, kCancel };
--
-+
++  enum class ContentKind { kFile, kText, kUrl };
+
    Mode mode;
 +  Action action = Action::kAccept;
 +  bool action_specified = false;
++  ContentKind content_kind = ContentKind::kFile;
    std::string file_path;
    std::string device_name = GetHostname();
    int timeout_seconds = 120;
-@@ -118,18 +125,118 @@
+@@ -118,23 +131,166 @@
        if (options.timeout_seconds < 0) {
          return std::nullopt;
        }
++    } else if (arg == "--content-kind") {
++      if (index >= argc) {
++        return std::nullopt;
++      }
++      std::string kind = argv[index++];
++      if (kind == "file") {
++        options.content_kind = Options::ContentKind::kFile;
++      } else if (kind == "text") {
++        options.content_kind = Options::ContentKind::kText;
++      } else if (kind == "url") {
++        options.content_kind = Options::ContentKind::kUrl;
++      } else {
++        return std::nullopt;
++      }
 +    } else if (arg == "--action") {
 +      if (index >= argc || options.action_specified) {
 +        return std::nullopt;
@@ -61,8 +90,7 @@
        return std::nullopt;
      }
    }
--
-+
+
 +  if (options.mode == Options::Mode::kReceive &&
 +      options.action == Options::Action::kCancel) {
 +    return std::nullopt;
@@ -73,8 +101,7 @@
 +  }
 +
    return options;
- }
--
++}
 +
 +std::string_view ActionToString(Options::Action action) {
 +  switch (action) {
@@ -130,13 +157,14 @@
 +    }
 +  }
 +  std::cout << std::endl;
-+}
-+
+ }
+
  std::string StatusCodeToString(NearbySharingService::StatusCodes status) {
    return NearbySharingService::StatusCodeToString(status);
  }
--
-+
+
+-std::unique_ptr<AttachmentContainer> CreateFileAttachments(
+-    const std::string& file_path) {
 +void PrintActionRequested(Options::Action action, int64_t target_id) {
 +  std::cout << "QS_EVENT event=action-requested action="
 +            << ActionToString(action) << " target_id=" << target_id
@@ -155,10 +183,45 @@
 +            << target_id << " status=held" << std::endl;
 +}
 +
- std::unique_ptr<AttachmentContainer> CreateFileAttachments(
-     const std::string& file_path) {
++std::unique_ptr<AttachmentContainer> CreateAttachments(
++    const Options& options) {
    AttachmentContainer::Builder builder;
-@@ -160,10 +245,13 @@
+-  builder.AddFileAttachment(FileAttachment(FilePath(file_path)));
++  if (options.content_kind == Options::ContentKind::kFile) {
++    builder.AddFileAttachment(FileAttachment(FilePath(options.file_path)));
++    return builder.Build();
++  }
++  std::ifstream input(options.file_path, std::ios::binary);
++  std::string body{std::istreambuf_iterator<char>(input),
++                   std::istreambuf_iterator<char>()};
++  auto type = options.content_kind == Options::ContentKind::kText
++                  ? service::proto::TextMetadata::TEXT
++                  : service::proto::TextMetadata::URL;
++  builder.AddTextAttachment(TextAttachment(type, std::move(body), std::nullopt,
++                                           std::nullopt));
+   return builder.Build();
++}
++
++void PersistTextAttachment(const TransferMetadata& metadata,
++                           const AttachmentContainer& attachments) {
++  const char* path = std::getenv("QUICKSHARE_TEXT_OUTPUT");
++  const auto& texts = attachments.GetTextAttachments();
++  if (path == nullptr ||
++      metadata.status() != TransferMetadata::Status::kComplete ||
++      texts.size() != 1) {
++    return;
++  }
++  std::ofstream output(path, std::ios::binary);
++  output.write(texts[0].text_body().data(), texts[0].text_body().size());
++  const char* kind = texts[0].type() == service::proto::TextMetadata::URL
++                         ? "url"
++                         : "text";
++  std::cout << "QS_EVENT event=attachment kind=" << kind
++            << " bytes=" << texts[0].text_body().size() << std::endl;
+ }
+
+ template <typename Invoker>
+@@ -160,10 +316,13 @@
    std::condition_variable cv;
    bool done = false;
    bool send_requested = false;
@@ -171,19 +234,18 @@
 +  std::optional<int64_t> reject_target_id;
 +  std::optional<int64_t> cancel_target_id;
  };
--
-+
+
  void PrintTransferUpdate(const ShareTarget& share_target,
-@@ -176,4 +264,5 @@ void PrintTransferUpdate(
+@@ -176,26 +335,51 @@
+             << "% bytes=" << metadata.transferred_bytes() << "/"
+             << attachment_container.GetTotalAttachmentsSize() << std::endl;
    if (metadata.token().has_value()) {
 -    std::cout << "confirmation token: " << *metadata.token() << std::endl;
 +    std::cout << "confirmation token fingerprint: "
 +              << TokenFingerprint(*metadata.token()) << std::endl;
    }
  }
-@@ -182,20 +270,43 @@
--
-+
+
  class CliTransferCallback final : public TransferUpdateCallback {
   public:
 -  CliTransferCallback(CliState& state, bool receive_mode)
@@ -191,8 +253,7 @@
 +  CliTransferCallback(CliState& state, bool receive_mode,
 +                      Options::Action action)
 +      : state_(state), receive_mode_(receive_mode), action_(action) {}
--
-+
+
    void OnTransferUpdate(const ShareTarget& share_target,
                          const AttachmentContainer& attachment_container,
                          const TransferMetadata& transfer_metadata) override {
@@ -200,6 +261,7 @@
      std::lock_guard<std::mutex> lock(state_.mutex);
 +    PrintTransferEvent(transfer_metadata, attachment_container,
 +                       share_target.id);
++    PersistTextAttachment(transfer_metadata, attachment_container);
      if (receive_mode_ &&
          transfer_metadata.status() ==
 -            TransferMetadata::Status::kAwaitingLocalConfirmation &&
@@ -233,40 +295,35 @@
      }
      if (TransferMetadata::IsFinalStatus(transfer_metadata.status())) {
        state_.done = true;
-@@ -209,6 +320,7 @@
+@@ -209,6 +393,7 @@
   private:
    CliState& state_;
    bool receive_mode_;
 +  Options::Action action_;
  };
--
-+
+
  class CliDiscoveryCallback final : public ShareTargetDiscoveredCallback {
-@@ -285,7 +397,8 @@
--
-+
+@@ -285,7 +470,8 @@
+
    int RunReceive() {
      CliState state;
 -    CliTransferCallback transfer_callback(state, /*receive_mode=*/true);
 +    CliTransferCallback transfer_callback(state, /*receive_mode=*/true,
 +                                          options_.action);
--
-+
+
      auto status = WaitForStatus([&](auto callback) {
        service_->RegisterReceiveSurface(
-@@ -316,7 +429,8 @@
+@@ -316,7 +502,8 @@
      }
--
-+
+
      CliState state;
 -    CliTransferCallback transfer_callback(state, /*receive_mode=*/false);
 +    CliTransferCallback transfer_callback(state, /*receive_mode=*/false,
 +                                          options_.action);
      CliDiscoveryCallback discovery_callback(state);
--
-+
+
      auto status = WaitForStatus([&](auto callback) {
-@@ -344,12 +458,16 @@
+@@ -344,12 +531,16 @@
      const auto start = std::chrono::steady_clock::now();
      while (!g_interrupted) {
        std::optional<int64_t> accept_target_id;
@@ -283,7 +340,7 @@
                     state.selected_target.has_value() || g_interrupted.load();
            });
          } else {
-@@ -362,6 +480,8 @@
+@@ -362,6 +553,8 @@
            }
            state.cv.wait_for(lock, std::chrono::seconds(1), [&] {
              return state.done || state.accept_target_id.has_value() ||
@@ -292,10 +349,11 @@
                     state.selected_target.has_value() || g_interrupted.load();
            });
          }
-@@ -372,6 +492,14 @@
+@@ -371,6 +564,14 @@
+         if (state.accept_target_id.has_value()) {
            accept_target_id = state.accept_target_id;
            state.accept_target_id.reset();
-         }
++        }
 +        if (state.reject_target_id.has_value()) {
 +          reject_target_id = state.reject_target_id;
 +          state.reject_target_id.reset();
@@ -303,11 +361,10 @@
 +        if (state.cancel_target_id.has_value()) {
 +          cancel_target_id = state.cancel_target_id;
 +          state.cancel_target_id.reset();
-+        }
+         }
          if (state.selected_target.has_value() && !state.send_requested) {
            send_target = state.selected_target;
-           state.send_requested = true;
-@@ -385,6 +513,33 @@
+@@ -385,6 +586,33 @@
            service_->Accept(*accept_target_id, std::move(callback));
          });
          std::cout << "Accept: " << StatusCodeToString(status) << std::endl;
@@ -341,52 +398,137 @@
          if (status != NearbySharingService::StatusCodes::kOk) {
            return 1;
          }
+@@ -394,7 +622,7 @@
+         std::cout << "sending " << options_.file_path << " to \""
+                   << send_target->device_name << "\" id=" << send_target->id
+                   << std::endl;
+-        auto attachments = CreateFileAttachments(options_.file_path);
++        auto attachments = CreateAttachments(options_);
+         auto status = WaitForStatus([&](auto callback) {
+           service_->SendAttachments(send_target->id, std::move(attachments),
+                                     std::move(callback));
+--- a/connections/implementation/endpoint_manager.cc
++++ b/connections/implementation/endpoint_manager.cc
+@@ -15,7 +15,9 @@
+ #include "connections/implementation/endpoint_manager.h"
 
---- a/sharing/share_session.cc
-+++ b/sharing/share_session.cc
-@@ -19,6 +19,9 @@
- #include <functional>
+ #include <algorithm>
++#include <cstdlib>
+ #include <cstdint>
 +#include <iostream>
  #include <memory>
- #include <optional>
-+#include <sstream>
  #include <string>
-+#include <string_view>
  #include <utility>
- #include <vector>
-@@ -69,4 +71,23 @@ std::string TokenToFourDigitString(const std::vector<uint8_t>& bytes) {
-  return absl::StrFormat("%04d", std::abs(hash));
- }
-
-+std::string TokenFingerprint(std::string_view token) {
-+  const char* salt = std::getenv("QUICKSHARE_PIN_SALT");
-+  if (salt == nullptr || *salt == '\0') {
-+    return "";
-+  }
-+  uint64_t hash = 14695981039346656037ULL;
-+  for (unsigned char value : std::string_view(salt)) {
-+    hash ^= value;
-+    hash *= 1099511628211ULL;
-+  }
-+  for (unsigned char value : token) {
-+    hash ^= value;
-+    hash *= 1099511628211ULL;
-+  }
-+  std::ostringstream output;
-+  output << std::hex << hash;
-+  return output.str();
+@@ -66,6 +68,80 @@
+ // The maximum time we will wait for the encryption setup during negotiating a
+ // connection.
+ constexpr absl::Duration kDecryptRetryTimeout = absl::Seconds(3);
++
++bool RetryInjectionRequested() {
++  return std::getenv("QUICKSHARE_INJECT_RETRY12") != nullptr;
 +}
 +
- }  // namespace
-@@ -197,6 +209,11 @@ void ShareSession::RunPairedKeyVerification(
-     return;
-   }
-   token_ = TokenToFourDigitString(*token);
-+  std::string fingerprint = TokenFingerprint(token_);
-+  if (!fingerprint.empty()) {
-+    std::cout << "QS_EVENT event=paired-key-token token_fingerprint="
-+              << fingerprint << std::endl;
++std::string BandwidthUpgradeRetry() {
++  OfflineFrame frame;
++  frame.set_version(OfflineFrame::V1);
++  auto* v1_frame = frame.mutable_v1();
++  v1_frame->set_type(V1Frame::BANDWIDTH_UPGRADE_RETRY);
++  auto* retry = v1_frame->mutable_bandwidth_upgrade_retry();
++  retry->add_supported_medium(
++      ::location::nearby::connections::BandwidthUpgradeRetryFrame::WIFI_LAN);
++  retry->set_is_request(false);
++  return frame.SerializeAsString();
++}
++
++std::string KeepAliveRequest() {
++  OfflineFrame frame;
++  frame.set_version(OfflineFrame::V1);
++  auto* v1_frame = frame.mutable_v1();
++  v1_frame->set_type(V1Frame::KEEP_ALIVE);
++  auto* keep_alive = v1_frame->mutable_keep_alive();
++  keep_alive->set_ack(false);
++  keep_alive->set_seq_num(12);
++  return frame.SerializeAsString();
++}
++
++bool IsRetryInjectionPoint(
++    const PayloadTransferFrame::PayloadHeader& header,
++    const PayloadTransferFrame::PayloadChunk& chunk) {
++  if (chunk.offset() != 0) {
++    return false;
 +  }
++  if (header.type() == PayloadTransferFrame::PayloadHeader::FILE) {
++    return true;
++  }
++  const char* expected = std::getenv("QUICKSHARE_INJECT_RETRY12_BYTES");
++  return expected != nullptr &&
++         header.type() == PayloadTransferFrame::PayloadHeader::BYTES &&
++         chunk.body() == expected;
++}
++
++bool IsRetryInjectionPoint(const OfflineFrame& frame) {
++  if (parser::GetFrameType(frame) != V1Frame::PAYLOAD_TRANSFER) {
++    return false;
++  }
++  const auto& transfer = frame.v1().payload_transfer();
++  return transfer.has_payload_header() && transfer.has_payload_chunk() &&
++         IsRetryInjectionPoint(transfer.payload_header(),
++                               transfer.payload_chunk());
++}
++
++void ReportControlInjection(const char* frame_type, const char* position) {
++  std::cout << "QS_EVENT event=control-frame frame_type=" << frame_type
++            << " position=" << position << std::endl;
++}
++
++Exception InjectRetry(std::shared_ptr<EndpointChannel> channel,
++                      const char* position) {
++  Exception result = channel->Write(BandwidthUpgradeRetry());
++  if (!result.Ok()) {
++    return result;
++  }
++  ReportControlInjection("bandwidth-upgrade-retry", position);
++  if (std::getenv("QUICKSHARE_INJECT_RETRY12_BYTES") == nullptr) {
++    return result;
++  }
++  result = channel->Write(KeepAliveRequest());
++  if (result.Ok()) {
++    ReportControlInjection("keepalive", position);
++  }
++  return result;
++}
 
- key_verification_runner_ = std::make_shared<PairedKeyVerificationRunner>(
-       &clock_, os_type, IsIncoming(), visibility_history, *token,
+ // Returns true if the given `frame_type` is allowed before the connection to
+ // the endpoint is confirmed (i.e., KEEP_ALIVE, CONNECTION_RESPONSE, and
+@@ -284,6 +360,14 @@
+     }
+     OfflineFrame& frame = wrapped_frame.result();
+
++    if (RetryInjectionRequested() && IsRetryInjectionPoint(frame)) {
++      Exception result =
++          InjectRetry(endpoint_channel, "after-first-payload-data");
++      if (!result.Ok()) {
++        return ExceptionOr<bool>(result);
++      }
++    }
++
+     // Route the incoming offlineFrame to its registered processor.
+     V1Frame::FrameType frame_type = parser::GetFrameType(frame);
+     if (NearbyFlags::GetInstance().GetBoolFlag(
+@@ -679,5 +763,16 @@
+     const PayloadTransferFrame::PayloadHeader& payload_header,
+     const PayloadTransferFrame::PayloadChunk& payload_chunk,
+     const std::vector<std::string>& endpoint_ids) {
++  if (RetryInjectionRequested() &&
++      IsRetryInjectionPoint(payload_header, payload_chunk)) {
++    for (const std::string& endpoint_id : endpoint_ids) {
++      std::shared_ptr<EndpointChannel> channel =
++          channel_manager_->GetChannelForEndpoint(endpoint_id);
++      if (channel == nullptr ||
++          !InjectRetry(channel, "before-payload-data").Ok()) {
++        return {endpoint_id};
++      }
++    }
++  }
+   std::string bytes =
+       parser::ForDataPayloadTransfer(payload_header, payload_chunk);

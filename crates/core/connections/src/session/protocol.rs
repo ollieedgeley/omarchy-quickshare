@@ -1,7 +1,11 @@
+mod drain;
+mod file;
 mod frames;
 mod handshake;
 mod io;
+mod io_error;
 mod negotiate;
+mod outgoing_control;
 mod transfer;
 use quickshare_wire::connections::v1_frame;
 
@@ -54,6 +58,7 @@ fn payload_chunk_sent(offset: i64, byte_count: usize) {
         offset, byte_count, "payload chunk sent"
     );
 }
+
 fn payload_ack_received() {
     tracing::trace!(
         target: "omarchy_quickshare::protocol", stage = "control",
@@ -115,6 +120,15 @@ fn upgrade_frame_rejected(reason: &'static str) {
         target: "omarchy_quickshare::protocol", stage = "upgrade",
         operation = "receive", outcome = "rejected", reason,
         frame_type = "bandwidth_upgrade", "upgrade frame rejected"
+    );
+}
+fn frame_dispatch_ignored(received: i32) {
+    let frame_type = v1_frame::FrameType::try_from(received)
+        .map_or("unrecognized", |value| value.as_str_name());
+    tracing::debug!(
+        target: "omarchy_quickshare::protocol", stage = "frame_dispatch",
+        operation = "receive", outcome = "ignored", frame_type_code = received,
+        frame_type, "connection extension ignored"
     );
 }
 fn frame_dispatch_rejected(reason: &'static str, received: Option<i32>) {

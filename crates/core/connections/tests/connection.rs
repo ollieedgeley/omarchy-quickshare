@@ -22,6 +22,7 @@ use quickshare_wire::{
     sharing::Frame,
 };
 use rand_core as _;
+use rustix as _;
 use std::thread;
 use std::{
     io::{Read as _, Write as _},
@@ -622,7 +623,7 @@ fn control_frame(
                     payload_transfer_frame::payload_header::PayloadType::Bytes
                         as i32,
                 ),
-                total_size: Some(0),
+                total_size: Some(offset.max(0)),
                 ..Default::default()
             }),
             control_message: Some(payload_transfer_frame::ControlMessage {

@@ -61,7 +61,8 @@ impl Daemon {
                     let _replaced =
                         self.sharing.replace_attachment(share_id, attachment);
                 }
-                let recorded = self.sharing.record_progress(share_id, bytes);
+                let recorded = self.sharing.record_progress(share_id, bytes)
+                    && self.sharing.complete(share_id);
                 tracing::info!(
                     share_id,
                     direction = "inbound",
@@ -150,7 +151,8 @@ impl Daemon {
                 self.outbound.finish(share_id);
             }
             NetworkEvent::OutboundCompleted { bytes, share_id } => {
-                let recorded = self.sharing.record_progress(share_id, bytes);
+                let recorded = self.sharing.record_progress(share_id, bytes)
+                    && self.sharing.complete(share_id);
                 tracing::info!(
                     share_id,
                     direction = "outbound",
@@ -280,16 +282,21 @@ impl Daemon {
         candidate_share_id: Option<u64>,
         reason: &str,
     ) {
+        let cancelled = reason == "cancelled";
         tracing::warn!(
             direction = "inbound",
-            phase = "failed",
+            phase = if cancelled { "cancelled" } else { "failed" },
             error_class = "network",
-            "share failed"
+            "share ended"
         );
         if let Some(share_id) =
             candidate_share_id.or_else(|| self.active_inbound_consent_id())
         {
-            let _failed = self.sharing.fail(share_id);
+            let _transitioned = if cancelled {
+                self.sharing.cancel(share_id)
+            } else {
+                self.sharing.fail(share_id)
+            };
             let _observed = self.sharing.record_observation(
                 share_id,
                 None,
@@ -298,7 +305,9 @@ impl Daemon {
                 Some(recovery_guidance(reason)),
             );
         }
-        notify::notify(NotifyKind::Error);
+        if !cancelled {
+            notify::notify(NotifyKind::Error);
+        }
     }
 
     fn active_inbound_consent_id(&self) -> Option<u64> {

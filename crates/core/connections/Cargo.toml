@@ -12,6 +12,7 @@ prost.workspace = true
 quickshare-crypto = { path = "../crypto" }
 quickshare-wire = { path = "../wire" }
 rand_core.workspace = true
+rustix = { version = "=1.1.4", features = ["event"] }
 tracing.workspace = true
 
 [lints]

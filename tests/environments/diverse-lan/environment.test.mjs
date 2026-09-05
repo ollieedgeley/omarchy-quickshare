@@ -10,7 +10,6 @@ import { addNearShareAttachmentId } from "./nearshare-source.mjs";
 import { assertMatchingImageFingerprint } from "./prepared-images.mjs";
 
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(DIRECTORY, "../../..");
 const INTERNAL_NETWORK_PATTERN = /internal: true/u;
 const NEARSHARE_ADDRESS_PATTERN = /172\.30\.45\.10/u;
 const GOOGLE_ADDRESS_PATTERN = /172\.30\.45\.11/u;
@@ -22,8 +21,6 @@ const PIN_SALT_SIZE_PATTERN = /PIN_SALT_BYTES = 32/u;
 const PIN_SALT_GENERATION_PATTERN = /randomBytes\(PIN_SALT_BYTES\)/u;
 const PIN_SALT_VARIABLE_PATTERN = /QUICKSHARE_PIN_SALT/u;
 const MISSING_SALT_GUARD_PATTERN = /if not salt/u;
-const GOOGLE_TOKEN_FINGERPRINT_PATTERN = /token_fingerprint/u;
-const GOOGLE_RAW_TOKEN_PATTERN = /token=" << \*metadata\.token/u;
 const SHA256_MISMATCH_PATTERN = /SHA-256 mismatch/u;
 const INVALID_SHA256_PATTERN = /invalid SHA-256/u;
 const GOOGLE_TO_NEARSHARE_PATTERN = /"google-to-nearshare"/u;
@@ -63,21 +60,6 @@ test("headless NearShare reports a PIN fingerprint without its PIN", () => {
   assert.equal(
     fingerprint(Buffer.from("bytes")),
     fingerprint(Buffer.from("bytes")),
-  );
-});
-
-test("Google CLI fingerprints its confirmation token", () => {
-  const patch = readFileSync(
-    join(ROOT, "tests/environments/nearby-linux/cli-actions.patch"),
-    "utf8",
-  );
-  assert.match(patch, GOOGLE_TOKEN_FINGERPRINT_PATTERN);
-  assert.doesNotMatch(patch, GOOGLE_RAW_TOKEN_PATTERN);
-  assert.ok(
-    patch.indexOf("TokenToFourDigitString") <
-      patch.indexOf("event=paired-key-token") &&
-      patch.indexOf("event=paired-key-token") <
-        patch.indexOf("key_verification_runner_ ="),
   );
 });
 

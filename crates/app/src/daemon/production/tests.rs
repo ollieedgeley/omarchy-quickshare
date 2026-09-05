@@ -279,6 +279,28 @@ fn inbound_consent_timeout_fails_the_offered_share() {
 }
 
 #[test]
+fn inbound_peer_cancel_while_awaiting_consent_is_cancelled() {
+    let mut daemon = Daemon::new();
+    daemon.apply_network_event(NetworkEvent::InboundOffered {
+        kind: OfferKind::Text,
+        name: String::from("message"),
+        size_bytes: 7,
+        verification_code: String::from("6251"),
+    });
+    daemon.apply_network_event(NetworkEvent::InboundFailed {
+        reason: String::from("cancelled"),
+        share_id: None,
+    });
+    let share = daemon
+        .sharing
+        .snapshot()
+        .active_share()
+        .expect("cancelled share remains visible");
+    assert_eq!(share.phase(), Phase::Cancelled);
+    assert_eq!(share.terminal_reason(), Some("cancelled"));
+}
+
+#[test]
 fn inbound_accept_starts_eta_clock() {
     let mut daemon = Daemon::new();
     daemon.apply_network_event(NetworkEvent::InboundOffered {

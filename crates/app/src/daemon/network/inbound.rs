@@ -1,8 +1,9 @@
+mod consent;
+
 use alloc::collections::BTreeMap;
 use core::{net::Ipv4Addr, time::Duration};
 use std::path::Path;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::time::Instant;
+use std::sync::mpsc::{Receiver, Sender};
 use std::{env, io};
 
 use quickshare_connections::Medium;
@@ -17,6 +18,7 @@ use quickshare_sharing::{
 };
 use quickshare_storage::{ReceiveTarget, StagedFile};
 
+use self::consent::{Consent, wait_for_consent};
 use super::{
     NetworkCommand, NetworkEvent, TransferCancellation, emit_progress,
 };
@@ -25,19 +27,12 @@ use crate::daemon::media::{
     endpoint_name, medium_name, sharing_session,
 };
 use crate::daemon::observations::{
-    connection_span, protocol_io_kind, protocol_reason, record_share_id,
-    storage_reason, trace_paired_key_exchange, trace_protocol, trace_storage,
+    connection_span, protocol_io_kind, record_share_id, storage_reason,
+    trace_paired_key_exchange, trace_protocol, trace_storage,
 };
 
 const LAN_PORT: u16 = 53_318;
 const TEST_LAN_PORT: &str = "OMARCHY_QUICKSHARE_TEST_LAN_PORT";
-const CONSENT_POLL: Duration = Duration::from_millis(50);
-
-enum Consent {
-    Accepted(u64),
-    Rejected(u64),
-    TimedOut,
-}
 
 pub(super) fn open_listener(
     dns_sd: &DnsSd,
@@ -93,10 +88,10 @@ where
                     "connection",
                     "accept",
                     "failed",
-                    Some(protocol_reason(&error)),
+                    Some(error.reason()),
                     protocol_io_kind(&error),
                 );
-                (String::from(protocol_reason(&error)), None)
+                (String::from(error.reason()), None)
             })?;
         let _wifi = accept_negotiated_upgrade(&mut connection, manager)
             .map_err(|error| {
@@ -104,27 +99,27 @@ where
                     "upgrade",
                     "accept",
                     "failed",
-                    Some(protocol_reason(&error)),
+                    Some(error.reason()),
                     protocol_io_kind(&error),
                 );
-                (String::from(protocol_reason(&error)), None)
+                (String::from(error.reason()), None)
             })?;
         let pairing_medium = medium_name(connection.medium());
         let mut session = sharing_session(connection);
         let pairing = session.exchange_account_free_pairing();
         trace_paired_key_exchange(&pairing, "inbound", pairing_medium, None);
         let _pairing = pairing.map_err(|error| {
-            (String::from(protocol_reason(error.source_error())), None)
+            (String::from(error.source_error().reason()), None)
         })?;
         let offer = session.receive_incoming_offer().map_err(|error| {
             trace_protocol(
                 "consent",
                 "receive_offer",
                 "failed",
-                Some(protocol_reason(&error)),
+                Some(error.reason()),
                 protocol_io_kind(&error),
             );
-            (String::from(protocol_reason(&error)), None)
+            (String::from(error.reason()), None)
         })?;
         announce_offer(&offer, session.verification_code(), events).map_err(
             |error| {
@@ -138,7 +133,10 @@ where
                 (String::from("disconnected"), None)
             },
         )?;
-        let consent = wait_for_consent(commands, consent_deadline, on_other)?;
+        let consent =
+            wait_for_consent(commands, consent_deadline, on_other, || {
+                session.poll_pending_consent_control()
+            })?;
         let share_id = match consent {
             Consent::Accepted(share_id) => {
                 record_share_id(&connection_span, share_id);
@@ -149,7 +147,7 @@ where
                 record_share_id(&connection_span, share_id);
                 trace_protocol("consent", "reject", "completed", None, None);
                 session.reject_incoming_offer().map_err(|error| {
-                    (String::from(protocol_reason(&error)), Some(share_id))
+                    (String::from(error.reason()), Some(share_id))
                 })?;
                 cancellation.finish(share_id);
                 return Ok(NetworkEvent::InboundRejected { share_id });
@@ -162,9 +160,9 @@ where
                     Some("timed_out"),
                     None,
                 );
-                session.timeout_incoming_offer().map_err(|error| {
-                    (String::from(protocol_reason(&error)), None)
-                })?;
+                session
+                    .timeout_incoming_offer()
+                    .map_err(|error| (String::from(error.reason()), None))?;
                 return Err((String::from("timed_out"), None));
             }
         };
@@ -200,9 +198,9 @@ where
         } else {
             Vec::new()
         };
-        session.accept_incoming_offer().map_err(|error| {
-            (String::from(protocol_reason(&error)), Some(share_id))
-        })?;
+        session
+            .accept_incoming_offer()
+            .map_err(|error| (String::from(error.reason()), Some(share_id)))?;
         let transfer = receive_payload(
             &mut session,
             &offer,
@@ -231,10 +229,10 @@ where
                     "payload_transfer",
                     "receive",
                     "failed",
-                    Some(protocol_reason(&error)),
+                    Some(error.reason()),
                     protocol_io_kind(&error),
                 );
-                Err((String::from(protocol_reason(&error)), Some(share_id)))
+                Err((String::from(error.reason()), Some(share_id)))
             }
         }
     })() {
@@ -354,40 +352,6 @@ fn announce_offer(
         .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error))
 }
 
-fn wait_for_consent(
-    commands: &Receiver<NetworkCommand>,
-    deadline: Duration,
-    on_other: &mut dyn FnMut(NetworkCommand) -> bool,
-) -> Result<Consent, (String, Option<u64>)> {
-    let started = Instant::now();
-    loop {
-        if started.elapsed() >= deadline {
-            return Ok(Consent::TimedOut);
-        }
-        match commands.recv_timeout(CONSENT_POLL) {
-            Ok(NetworkCommand::AcceptInbound { share_id }) => {
-                return Ok(Consent::Accepted(share_id));
-            }
-            Ok(NetworkCommand::RejectInbound { share_id }) => {
-                return Ok(Consent::Rejected(share_id));
-            }
-            Ok(command) => {
-                let close = matches!(command, NetworkCommand::CloseVisibility);
-                if !on_other(command) {
-                    return Err((String::from("disconnected"), None));
-                }
-                if close {
-                    return Err((String::from("cancelled"), None));
-                }
-            }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => {
-                return Err((String::from("disconnected"), None));
-            }
-        }
-    }
-}
-
 fn advertisement(port: u16) -> io::Result<Advertisement> {
     advertisement_for(
         port,
@@ -417,67 +381,9 @@ fn advertisement_for(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Consent, LAN_PORT, NetworkCommand, advertisement_for, wait_for_consent,
-    };
+    use super::{LAN_PORT, advertisement_for};
     use core::net::Ipv4Addr;
     use quickshare_sharing::EndpointInfo;
-    use std::sync::mpsc;
-    use std::time::Duration;
-
-    #[test]
-    fn stop_discovery_during_consent_is_dispatched_before_accept() {
-        let (sender, receiver) = mpsc::channel();
-        sender
-            .send(NetworkCommand::StopDiscovery)
-            .expect("queue stop");
-        sender
-            .send(NetworkCommand::AcceptInbound { share_id: 4 })
-            .expect("queue accept");
-        let mut dispatched = 0_u8;
-        let consent = wait_for_consent(
-            &receiver,
-            Duration::from_secs(1),
-            &mut |command| {
-                assert!(matches!(command, NetworkCommand::StopDiscovery));
-                dispatched = dispatched.saturating_add(1);
-                true
-            },
-        )
-        .expect("accepted");
-        assert!(matches!(consent, Consent::Accepted(4)));
-        assert_eq!(dispatched, 1);
-    }
-
-    #[test]
-    fn close_visibility_during_consent_is_dispatched_and_cancels() {
-        let (sender, receiver) = mpsc::channel();
-        sender
-            .send(NetworkCommand::CloseVisibility)
-            .expect("queue close");
-        let mut dispatched = false;
-        let result = wait_for_consent(
-            &receiver,
-            Duration::from_secs(1),
-            &mut |command| {
-                dispatched = matches!(command, NetworkCommand::CloseVisibility);
-                true
-            },
-        );
-        assert!(dispatched);
-        assert!(matches!(result, Err((reason, None)) if reason == "cancelled"));
-    }
-
-    #[test]
-    fn consent_timeout_is_terminal() {
-        let (_sender, receiver) = mpsc::channel::<NetworkCommand>();
-        let consent =
-            wait_for_consent(&receiver, Duration::from_millis(0), &mut |_| {
-                true
-            })
-            .expect("timed out");
-        assert!(matches!(consent, Consent::TimedOut));
-    }
 
     #[test]
     fn advertisement_uses_laptop_hostname_and_fixed_port() {

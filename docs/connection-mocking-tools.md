@@ -284,7 +284,7 @@ The public Google source tree references an internal `gloop` thread-ID helper, t
 
 Google's [`FakeNearbyConnectionsManager`](https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/sharing/fake_nearby_connections_manager.h) lets Sharing tests inject connections, raw authentication tokens, incoming payloads, completion events, and bandwidth-upgrade results. [`incoming_share_session_test.cc`](https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/sharing/incoming_share_session_test.cc) covers file, text, URL, APK, invalid-size, insufficient-storage, accept, cancel, failure, timeout, and upgrade cases.
 
-Google's [`outgoing_share_session_test.cc`](https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/sharing/outgoing_share_session_test.cc) covers attachment-to-payload mapping, introductions, accept and reject responses, sequential payload sending, timeout, cancellation, and disconnect completion. These are semantic oracles built on fakes, not live peers.
+Google's [`outgoing_share_session_test.cc`](https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/sharing/outgoing_share_session_test.cc) covers attachment-to-payload mapping, introductions, accept and reject responses, sequential payload sending, timeout, cancellation, and release of delayed file completion after prior payload success. These are semantic oracles built on fakes, not live peers.
 
 The Rust endpoint cannot import these C++ fakes. We should mirror their scenarios in a language-neutral corpus. Each case can be a checked-in file containing:
 
@@ -304,13 +304,32 @@ Live Sharing interoperability uses a pinned, test-only control wrapper around th
 The test-only Google-derived reference lab uses Docker Compose only for its fixed two-peer topology, health, isolated bridge, case mounts, and teardown; a project runner owns its sealed multi-stage build, scenarios, assertions, evidence, and cleanup.
 Each peer uses a private bus, real NetworkManager and Avahi, and an adapter-shaped BlueZ fake that carries no traffic. The lab proves Wi-Fi LAN only; Bluetooth still requires virtual radios.
 
-### Connections BYTES lifecycle
+### Reference message and state comparison
 
-Non-empty BYTES payloads emit `DATA` with the body and flags `0`, then empty `DATA` at `offset = size` with `LAST_CHUNK`. A valid `PAYLOAD_ACK` is accepted and ignored when the endpoint does not track acknowledgements. `CONTROL` `PAYLOAD_ERROR` and `PAYLOAD_CANCELED` discard matching partial receive state before becoming typed events, and Sharing applies those outcomes only to the matching active payload ID. Unrelated status events do not terminate another attachment.
+This matrix uses Google Nearby `588531995decf09500870ed4d2e1ac6740a3e338`.
 
-Inbound text and URL keep the introduction's payload ID as attachment data. Inbound files enforce the introduced ID, offset, and size, accepting a terminal chunk only when it ends at the declared size. At either attachment path, BYTES on other IDs are skipped only when they decode as a structurally valid Sharing V1 control; `CANCEL` terminates the share, other recognized controls are discarded as Google's frame consumers do, and malformed or raw payload bytes remain errors. Outbound files send every non-empty chunk without `LAST_CHUNK`, then one empty terminal chunk at the declared size. Outbound attachments do not report success at the final local write: for at most 60 seconds they wait for a clean receiver disconnect. Local cancellation and matching peer cancellation or error remain authoritative, including at the disconnect boundary; timeout and truncated framed input fail rather than complete. Asymmetric tests drive an independent peer with this lifecycle. Loopback is self-consistency. Diverse LAN is independent pinned Linux-peer compatibility, not current Android. UKEY2 is crypto-only. The Android probe is Connections API-only. Physical Android remains compatibility evidence.
+| Transition                 | Pinned reference                                                                                                                                                                                                                              | Current local boundary                                                                                                                                                                       |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Account-free pairing       | Both roles send encryption, read encryption, send result, then read result; public `UNABLE` may continue.                                                                                                                                     | Same ordering and policy. Certificate-backed trust modes remain unsupported.                                                                                                                 |
+| Inbound attachment         | Introduction precedes consent; every declared payload must succeed; disconnect before completion fails.                                                                                                                                       | File, text, URL, and app-file receive paths validate ID, size, kind, and offset. Streams and Wi-Fi credentials are unsupported.                                                              |
+| Outbound `FILE`            | Final `LAST_CHUNK` establishes Connections payload success. With safe-disconnect negotiated, matching `PAYLOAD_ACK` separately signals safe disconnect. Sharing delays final completion until peer closure, with a 60-second failure timeout. | Local safe-disconnect is disabled. `send_file` establishes payload-write success, then bounded control drain determines final completion, failure, or cancellation.                          |
+| Outbound `BYTES`           | BYTES has no payload-received acknowledgement. Final `LAST_CHUNK` establishes payload success, followed by the same delayed Sharing completion lifecycle.                                                                                     | `send_bytes` establishes payload-write success, not terminal share completion. Progress reaching total remains nonterminal while bounded control drain runs.                                 |
+| Post-confirmation dispatch | Registered response, payload, bandwidth-upgrade, keepalive, and disconnection processors run. Known unregistered V1 types 7 through 12 are logged and ignored.                                                                                | Types 7 through 12 continue without implementing their optional features. Setup types 1 and 2 and missing, zero, or unknown discriminators remain strict errors by intentional local policy. |
+| Upgrade channel switch     | New-channel `CLIENT_INTRODUCTION` and acknowledgement are plaintext; old-channel `LAST_WRITE` and `SAFE_TO_CLOSE` are encrypted. Authenticated old-channel events may interleave.                                                             | The independent green checks cover exact plaintext and encrypted wire bytes, ordering, budgets, disconnect, upgrade failure, and keepalive interleaving.                                     |
+| Terminal failure           | Protocol, transport, rejection, cancellation, and timeout remain distinct.                                                                                                                                                                    | A public daemon/CLI regression proves that `ProtocolError::reason()` drives the same stored terminal reason and recovery through daemon state, JSON control/plugin, and CLI.                 |
 
-Do not treat the inbound phone failure as a known `CONTROL` or `PAYLOAD_ACK` packet, or these source-backed corrections as a measured phone fix. Those types stay candidates until logs record the rejected V1 frame type, payload packet type, payload ID, and control event. Admit an Android-shaped regression fixture only after those discriminants are logged, and only as synthetic field-presence metadata, never decrypted phone bytes.
+Final `LAST_CHUNK` establishes Connections payload success only; Sharing stays `DelayComplete` or `PendingComplete` until peer closure, or fails when its 60-second retention expires.
+After local payload state retires, valid late ACK, cancel, and error controls are ignored; pre-LAST cancellation remains authoritative. A future negotiated ACK follows consumer write and flush.
+
+The old-image Google-derived `FILE` retry decoded `BANDWIDTH_UPGRADE_RETRY` 12 before `unexpected_frame_type`; the exact fresh inbound 20-byte URL plus Retry 12 and keepalive is green in 26.64 seconds.
+Fresh outbound-content is green in 48.7 seconds: TEXT completed in 21.3 seconds, then both peers completed the exact 20-byte URL with Retry 12 and keepalive in 22.3 seconds. Immediate closure may race the ACK write and complete through pinned [`EndpointManager`](https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/connections/implementation/endpoint_manager.cc#L174-L327) removal and `OnDisconnected`; a held-open raw peer requires the exact keepalive acknowledgement. Independent Core tests cover both timings.
+Cancellation and peer loss each have one 60-second LAN child per direction and stop before consent or data. Real inbound peer loss is green in 38.56 seconds and proves socket EOF through Core polling, Sharing, and app state; advertisement loss remains nonterminal.
+The full current-image ten-child LAN rerun is pending. These drivers do not cover in-flight LAN faults or partial storage cleanup, and none proves stock Android behavior.
+
+Rust loopbacks, raw peers, Google Sharing fixtures, the Google-derived Linux
+peer, virtual radios, and the public Android Connections probe each cover only
+their stated seam. None is a stock Quick Share emulator. Physical-phone tests
+in both roles remain required for release compatibility claims.
 
 ### UKEY2 interoperability tests
 
@@ -465,7 +484,7 @@ Each child gate must meet the 60-second limit. Gates that need Linux capabilitie
 
 ### Manual physical-device compatibility
 
-No automated gate, Git hook, or Make target runs this check. When physical phones are available, manually test both file-transfer directions plus inbound text and URL, PIN confirmation, cancellation, Bluetooth fallback, LAN upgrade, hotspot, and Wi-Fi Direct. Community testers can supply this evidence because the project has no internal device lab. Record the stage, selected medium, timeout or error code, Android version, and radio chipset while omitting filenames, peer names, addresses, keys, and payload contents.
+No automated gate, Git hook, or Make target runs this check. When physical phones are available, manually test both file-transfer directions plus inbound text and URL, verification-code comparison, cancellation, Bluetooth fallback, LAN upgrade, hotspot, and Wi-Fi Direct. Community testers can supply this evidence because the project has no internal device lab. Record the stage, selected medium, timeout or error code, Android version, and radio chipset while omitting filenames, peer names, addresses, keys, and payload contents.
 
 ## What this can prove
 
@@ -479,22 +498,3 @@ The automated stack can prove all of the following with high confidence:
 - malformed or adversarial inputs do not crash the daemon, allocate without bounds, escape receive staging, or make unsafe outbound source reads.
 
 It cannot prove that every Android release, Google Play Services build, phone vendor, Bluetooth controller, Wi-Fi driver, or power-management policy behaves the same way. A modest real-device beta remains part of the compatibility strategy. The simulations make that beta focused and diagnosable instead of being the first time the protocol is tested.
-
-## First implementation milestone
-
-Build the oracle before the transfer engine grows. The first milestone should contain:
-
-1. a pinned `google/nearby` and `google/ukey2` revision manifest
-2. a C++ UKEY2 shell and a small Nearby oracle process
-3. a versioned, language-neutral scenario format
-4. Rust tests for UKEY2, D2D, offline frames, and one complete LAN transfer in each direction
-5. a private-bus NetworkManager and BlueZ test
-6. one privileged BlueZ virtual-controller job
-
-That milestone answers the riskiest question early: can our independent Rust state machine complete a live encrypted session with Google's implementation? If it can, the radio adapters become isolated Linux integration work rather than protocol guesswork.
-
-The live LAN portion of this milestone is implemented by
-`make test-rust-lan`. Its direction-specific child gates run the production
-daemon against the pinned Google-derived Sharing process and compare complete
-file hashes. The remaining transport and fault rows keep their own readiness
-thresholds; a green LAN route does not imply that they are implemented.

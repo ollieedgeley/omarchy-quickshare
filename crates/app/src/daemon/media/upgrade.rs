@@ -17,9 +17,7 @@ use quickshare_network::network_manager::{
 };
 use quickshare_sharing::ProtocolError;
 
-use crate::daemon::observations::{
-    io_error_kind, protocol_io_kind, protocol_reason,
-};
+use crate::daemon::observations::{io_error_kind, protocol_io_kind};
 
 use super::{attempt_order, endpoint_name, medium_name};
 
@@ -61,9 +59,7 @@ where
                     operation = "complete",
                     outcome = "failed",
                     medium = medium_name(medium),
-                    reason = crate::daemon::observations::pairing_error_class(
-                        &error,
-                    ),
+                    reason = error.reason(),
                     io_error_kind = protocol_io_kind(&error).unwrap_or("none"),
                     "upgrade failed"
                 );
@@ -87,7 +83,7 @@ where
                 operation = "complete",
                 outcome = "failed",
                 medium = medium_name(medium),
-                reason = protocol_reason(&error),
+                reason = error.reason(),
                 io_error_kind = protocol_io_kind(&error),
                 "upgrade failed"
             );
@@ -170,9 +166,7 @@ pub(crate) fn initiate_bandwidth_upgrade(
                                     operation = "complete",
                                     outcome = "failed",
                                     medium = medium_name(medium),
-                                    reason =
-                                        crate::daemon::observations::
-                                            pairing_error_class(&error),
+                                    reason = error.reason(),
                                     io_error_kind = protocol_io_kind(&error)
                                         .unwrap_or("none"),
                                     "upgrade failed"
@@ -257,7 +251,7 @@ pub(crate) fn accept_bandwidth_upgrade(
                 operation = "join",
                 outcome = "failed",
                 medium = medium_name(medium),
-                error_class = protocol_reason(&error),
+                error_class = error.reason(),
                 io_error_kind = protocol_io_kind(&error),
                 "upgrade failed"
             );

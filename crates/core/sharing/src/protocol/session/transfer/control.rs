@@ -4,166 +4,66 @@ use core::time::Duration;
 use quickshare_connections::{Error as ConnectionError, Event};
 use std::io;
 
-const OUTGOING_COMPLETION_TIMEOUT: Duration = Duration::from_secs(60);
-
 impl SharingSession {
-    pub(in crate::protocol) fn wait_for_outgoing_completion<Cancelled>(
-        &mut self,
-        payload_id: i64,
-        is_cancelled: &mut Cancelled,
+    /// Retains a completed outgoing transport for late peer control frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed timeout, cancellation, authentication, framing, or
+    /// unexpected-payload failure after closing the transport.
+    pub fn drain_post_transfer_control<Cancelled>(
+        self,
+        grace: Duration,
+        is_cancelled: Cancelled,
     ) -> Result<(), ProtocolError>
     where
         Cancelled: FnMut() -> bool,
     {
-        self.stop_if_cancelled(is_cancelled)?;
-        if let Err(error) = self
+        match self
             .connection
-            .set_read_timeout(OUTGOING_COMPLETION_TIMEOUT)
+            .drain_post_transfer_control(grace, is_cancelled)
         {
-            tracing::debug!(
-                target: "omarchy_quickshare::protocol",
-                stage = "transfer",
-                operation = "completion_wait",
-                outcome = "failed",
-                reason = "deadline_setup",
-                io_error_kind = "other",
-                "protocol_stage"
-            );
-            return Err(ProtocolError::from(error));
+            Ok(()) => Ok(()),
+            Err(ConnectionError::Cancelled) => Err(ProtocolError::Cancelled),
+            Err(ConnectionError::Io(error))
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                ) =>
+            {
+                Err(ProtocolError::TimedOut)
+            }
+            Err(error) => Err(ProtocolError::from(error)),
         }
-        tracing::debug!(
-            target: "omarchy_quickshare::protocol",
-            stage = "transfer",
-            operation = "completion_wait",
-            outcome = "deadline_started",
-            "protocol_stage"
-        );
-        let mut skipped_control_reported = false;
-        loop {
-            self.stop_if_cancelled(is_cancelled)?;
-            let event = match self.next_transfer_event_for(payload_id) {
-                Ok(event) => event,
-                Err(error) => {
-                    if is_cancelled() {
-                        tracing::debug!(
-                            target: "omarchy_quickshare::protocol",
-                            stage = "transfer",
-                            operation = "completion_wait",
-                            outcome = "cancelled",
-                            reason = "local",
-                            "protocol_stage"
-                        );
-                        return Err(ProtocolError::Cancelled);
-                    }
-                    let timed_out = matches!(
-                        &error,
-                        ProtocolError::Connection(ConnectionError::Io(inner))
-                            if inner.kind() == io::ErrorKind::TimedOut
-                    );
-                    let outcome = if timed_out {
-                        "deadline_elapsed"
-                    } else {
-                        "failed"
-                    };
-                    let reason = if timed_out { "timeout" } else { "receive" };
-                    let io_error_kind =
-                        if timed_out { "timed_out" } else { "other" };
-                    tracing::debug!(
-                        target: "omarchy_quickshare::protocol",
-                        stage = "transfer",
-                        operation = "completion_wait",
-                        outcome,
-                        reason,
-                        io_error_kind,
-                        "protocol_stage"
-                    );
-                    return Err(error);
-                }
-            };
-            if is_cancelled() {
-                tracing::debug!(
-                    target: "omarchy_quickshare::protocol",
-                    stage = "transfer",
-                    operation = "completion_wait",
-                    outcome = "cancelled",
-                    reason = "local",
-                    "protocol_stage"
-                );
-                return Err(ProtocolError::Cancelled);
+    }
+
+    /// Processes one ready peer event while local consent is pending.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed cancellation, disconnect, malformed-frame, or
+    /// unexpected-payload failure.
+    pub fn poll_pending_consent_control(
+        &mut self,
+    ) -> Result<(), ProtocolError> {
+        let Some(event) = self.connection.poll_event()? else {
+            return Ok(());
+        };
+        match event {
+            Event::KeepAlive { .. } => Ok(()),
+            Event::Disconnected => Err(ProtocolError::Disconnected),
+            Event::PayloadCancelled { .. } => Err(ProtocolError::Cancelled),
+            Event::Bytes { bytes, .. }
+                if frames::control_event_type(&bytes) == Some("cancel") =>
+            {
+                Err(ProtocolError::Cancelled)
             }
-            match event {
-                Event::Disconnected => {
-                    tracing::debug!(
-                        target: "omarchy_quickshare::protocol",
-                        stage = "transfer",
-                        operation = "completion_wait",
-                        outcome = "completed",
-                        reason = "peer_disconnected",
-                        disconnect_origin = "connection_event",
-                        "protocol_stage"
-                    );
-                    return Ok(());
-                }
-                Event::Bytes { bytes, .. } => {
-                    if let Some(event_type) = frames::control_event_type(&bytes)
-                    {
-                        if event_type == "cancel" {
-                            tracing::debug!(
-                                target: "omarchy_quickshare::protocol",
-                                stage = "control",
-                                operation = "demux",
-                                outcome = "cancelled",
-                                reason = "remote",
-                                event_type,
-                                "protocol_stage"
-                            );
-                            return Err(ProtocolError::Cancelled);
-                        }
-                        if skipped_control_reported {
-                            tracing::trace!(
-                                target: "omarchy_quickshare::protocol",
-                                stage = "control",
-                                operation = "demux",
-                                outcome = "skipped",
-                                event_type,
-                                "protocol_stage"
-                            );
-                        } else {
-                            tracing::debug!(
-                                target: "omarchy_quickshare::protocol",
-                                stage = "control",
-                                operation = "demux",
-                                outcome = "skipped",
-                                event_type,
-                                "protocol_stage"
-                            );
-                            skipped_control_reported = true;
-                        }
-                        continue;
-                    }
-                    tracing::debug!(
-                        target: "omarchy_quickshare::protocol",
-                        stage = "control",
-                        operation = "demux",
-                        outcome = "rejected",
-                        reason = "malformed",
-                        event_type = "unknown",
-                        "protocol_stage"
-                    );
-                    return Err(ProtocolError::InvalidPayload);
-                }
-                _ => {
-                    tracing::debug!(
-                        target: "omarchy_quickshare::protocol",
-                        stage = "validation",
-                        operation = "payload",
-                        outcome = "rejected",
-                        reason = "unexpected_event",
-                        "protocol_stage"
-                    );
-                    return Err(ProtocolError::InvalidPayload);
-                }
-            }
+            Event::PayloadError { .. }
+            | Event::Bytes { .. }
+            | Event::FileHeader { .. }
+            | Event::FileChunk { .. }
+            | Event::Upgrade { .. }
+            | _ => Err(ProtocolError::InvalidPayload),
         }
     }
 

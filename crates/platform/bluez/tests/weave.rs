@@ -12,7 +12,8 @@ use core::time::Duration;
 use async_io as _;
 use futures_lite as _;
 use quickshare_connections::ConnectionIo as _;
-use std::io::{Read, Write};
+use rustix as _;
+use std::io::{self, Read, Write};
 use tracing as _;
 use zbus as _;
 
@@ -106,6 +107,28 @@ fn raw_io_reads_fragmented_length_prefix_then_body() {
 }
 
 #[test]
+fn raw_read_ready_reports_native_leftover_and_eof() {
+    let (mut writer, mut reader) =
+        FakeRadio::connected_classic_io().expect("classic pair");
+    assert!(!reader.read_ready().expect("empty stream"));
+
+    writer.write_all(b"abc").expect("write bytes");
+    assert!(reader.read_ready().expect("native bytes"));
+    let mut first = [0_u8; 1];
+    reader.read_exact(&mut first).expect("first byte");
+    assert_eq!(&first, b"a");
+    assert!(reader.read_ready().expect("buffered bytes"));
+    let mut rest = [0_u8; 2];
+    reader.read_exact(&mut rest).expect("remaining bytes");
+    assert_eq!(&rest, b"bc");
+    assert!(!reader.read_ready().expect("drained stream"));
+
+    drop(writer);
+    assert!(reader.read_ready().expect("EOF readiness"));
+    assert_eq!(reader.read(&mut first).expect("clean EOF"), 0);
+}
+
+#[test]
 fn closing_a_raw_bluetooth_stream_is_clean_eof() {
     let (writer, mut reader) =
         FakeRadio::connected_classic_io().expect("classic pair");
@@ -118,9 +141,17 @@ fn closing_a_raw_bluetooth_stream_is_clean_eof() {
 fn raw_bluetooth_read_errors_are_preserved() {
     let (_writer, mut reader) =
         FakeRadio::connected_classic_io().expect("classic pair");
+    let unsupported = reader
+        .set_read_timeout(None)
+        .expect_err("timeout cannot be disabled");
+    assert_eq!(unsupported.kind(), io::ErrorKind::InvalidInput);
     reader
-        .set_read_timeout(Duration::ZERO)
+        .set_read_timeout(Some(Duration::ZERO))
         .expect("configure timeout");
+    assert_eq!(
+        reader.read_timeout().expect("read configured timeout"),
+        Some(Duration::ZERO)
+    );
 
     let error = reader.read(&mut [0_u8; 1]).expect_err("timeout");
     let bluetooth = error
@@ -128,4 +159,50 @@ fn raw_bluetooth_read_errors_are_preserved() {
         .and_then(|source| source.downcast_ref::<quickshare_bluez::Error>())
         .expect("Bluetooth error source");
     assert_eq!(bluetooth.kind(), ErrorKind::Timeout);
+}
+
+#[test]
+fn raw_write_timeout_reports_only_confirmed_bytes() {
+    let (mut writer, mut reader) =
+        FakeRadio::connected_classic_io().expect("classic pair");
+    writer
+        .set_write_timeout(Duration::from_nanos(1))
+        .expect("configure timeout");
+    writer
+        .set_write_timeout(Duration::from_millis(10))
+        .expect("configure operation timeout");
+    let payload = vec![0xA5; 8 * 1024 * 1024];
+    let mut confirmed = 0;
+
+    let timeout = loop {
+        match writer.write(
+            payload
+                .get(confirmed..)
+                .expect("confirmed offset within payload"),
+        ) {
+            Ok(count) => {
+                assert_ne!(count, 0, "write made no progress");
+                confirmed = confirmed
+                    .checked_add(count)
+                    .expect("confirmed byte count overflow");
+            }
+            Err(error) => break error,
+        }
+    };
+    assert!(matches!(
+        timeout.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    ));
+
+    writer.shutdown_write().expect("close writer");
+    let mut received = Vec::new();
+    let received_count =
+        reader.read_to_end(&mut received).expect("drain peer bytes");
+    assert_eq!(received_count, confirmed);
+    assert_eq!(
+        received,
+        payload
+            .get(..confirmed)
+            .expect("confirmed prefix within payload")
+    );
 }

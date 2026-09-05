@@ -239,7 +239,7 @@ impl SharingSession {
             byte_count = wire_size,
             "protocol_stage"
         );
-        self.wait_for_outgoing_completion(TEXT_PAYLOAD_ID, &mut is_cancelled)
+        self.stop_if_cancelled(&mut is_cancelled)
     }
 
     fn receive_incoming_value<Progress, Cancelled>(

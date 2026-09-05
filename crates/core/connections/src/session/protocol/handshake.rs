@@ -2,11 +2,13 @@ use super::super::{
     Connection, ConnectionIo, ConnectionOptions, Error, Medium, UpgradeState,
 };
 use super::{
-    frames::{request, request_data, response, response_data},
+    frames::{keepalive, request, request_data, response, response_data},
     io::{read, receive_plain, send_plain, write},
+    keepalive_received, keepalive_sent,
 };
 use core::time::Duration;
 use quickshare_crypto::{CompletedHandshake, Handshake};
+use quickshare_wire::connections::v1_frame::FrameType;
 use std::{
     collections::{HashMap, VecDeque},
     io,
@@ -14,6 +16,10 @@ use std::{
     time::Instant,
 };
 
+#[expect(
+    clippy::multiple_inherent_impl,
+    reason = "Connection methods remain grouped by protocol operation"
+)]
 impl Connection {
     /// Establishes encryption for the initiating side of a TCP connection.
     ///
@@ -64,7 +70,7 @@ impl Connection {
             frame_type = "connection_response",
             "setup frame sent"
         );
-        response_data(receive_plain(&mut stream)?)?;
+        receive_response(&mut stream)?;
         tracing::debug!(
             target: "omarchy_quickshare::protocol",
             stage = "setup",
@@ -130,7 +136,7 @@ impl Connection {
             frame_type = "connection_response",
             "setup frame sent"
         );
-        response_data(receive_plain(&mut stream)?)?;
+        receive_response(&mut stream)?;
         tracing::debug!(
             target: "omarchy_quickshare::protocol",
             stage = "setup",
@@ -171,17 +177,19 @@ impl Connection {
                 );
                 io::Error::other("read deadline overflow")
             })?;
-        self.stream.set_read_timeout(timeout).inspect_err(|error| {
-            tracing::debug!(
-                target: "omarchy_quickshare::protocol",
-                stage = "connection",
-                operation = "set_read_deadline",
-                outcome = "rejected",
-                reason = "io",
-                io_error_kind = super::io::io_error_kind(error.kind()),
-                "connection deadline rejected"
-            );
-        })?;
+        self.stream
+            .set_read_timeout(Some(timeout))
+            .inspect_err(|error| {
+                tracing::debug!(
+                    target: "omarchy_quickshare::protocol",
+                    stage = "connection",
+                    operation = "set_read_deadline",
+                    outcome = "rejected",
+                    reason = "io",
+                    io_error_kind = super::io::io_error_kind(error.kind()),
+                    "connection deadline rejected"
+                );
+            })?;
         self.read_deadline = Some(deadline);
         tracing::debug!(
             target: "omarchy_quickshare::protocol",
@@ -207,8 +215,7 @@ impl Connection {
             read_deadline: None,
             channel,
             incoming_bytes: HashMap::default(),
-            payloads: HashMap::default(),
-            incoming_file: None,
+            incoming_files: HashMap::default(),
             outgoing_file: None,
             pending_events: VecDeque::default(),
             medium,
@@ -216,6 +223,36 @@ impl Connection {
             upgrade_host: false,
             endpoint_id,
             verification_code,
+        }
+    }
+}
+
+fn receive_response<Stream>(stream: &mut Stream) -> Result<(), Error>
+where
+    Stream: io::Read + io::Write + ?Sized,
+{
+    loop {
+        let frame = receive_plain(stream)?;
+        let v1 = frame.v1.as_ref().ok_or(Error::UnexpectedFrame)?;
+        match v1.r#type {
+            Some(value) if value == FrameType::ConnectionResponse as i32 => {
+                return response_data(frame);
+            }
+            Some(value) if value == FrameType::KeepAlive as i32 => {
+                let keepalive_data =
+                    v1.keep_alive.as_ref().ok_or(Error::UnexpectedFrame)?;
+                let ack = keepalive_data.ack.unwrap_or(false);
+                let sequence = keepalive_data.seq_num.unwrap_or(0);
+                keepalive_received();
+                if !ack {
+                    send_plain(stream, &keepalive(true, sequence))?;
+                    keepalive_sent(true);
+                }
+            }
+            Some(value) if value == FrameType::Disconnection as i32 => {
+                return Err(Error::Rejected);
+            }
+            _ => return Err(Error::UnexpectedFrame),
         }
     }
 }

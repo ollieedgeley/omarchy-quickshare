@@ -69,6 +69,14 @@ mod tests {
         assert!(coordinator.accept_by_peer(share_id.get()));
         assert!(coordinator.record_progress(share_id.get(), 2));
         assert!(coordinator.record_progress(share_id.get(), 5));
+        assert_eq!(
+            coordinator
+                .snapshot()
+                .active_share()
+                .map(quickshare_sharing::ShareSnapshot::phase),
+            Some(Phase::Transferring),
+        );
+        assert!(coordinator.complete(share_id.get()));
 
         let snapshot = coordinator.snapshot();
         assert_eq!(snapshot.peers().len(), 1);
@@ -83,6 +91,32 @@ mod tests {
         assert_eq!(
             active.peer().map(quickshare_sharing::PeerSnapshot::id),
             Some("pixel-8"),
+        );
+    }
+
+    #[test]
+    fn zero_byte_share_requires_explicit_completion() {
+        let mut coordinator = Coordinator::new();
+        coordinator.observe_peer("pixel-8", "Ollie's Pixel");
+        let share_id =
+            coordinator.queue_outbound(Attachment::file("empty.txt", 0));
+        assert!(coordinator.select_peer(share_id.get(), "pixel-8"));
+        assert!(coordinator.accept_by_peer(share_id.get()));
+        assert!(coordinator.record_progress(share_id.get(), 0));
+        assert_eq!(
+            coordinator
+                .snapshot()
+                .active_share()
+                .map(quickshare_sharing::ShareSnapshot::phase),
+            Some(Phase::Transferring),
+        );
+        assert!(coordinator.complete(share_id.get()));
+        assert_eq!(
+            coordinator
+                .snapshot()
+                .active_share()
+                .map(quickshare_sharing::ShareSnapshot::phase),
+            Some(Phase::Completed),
         );
     }
 
@@ -186,6 +220,14 @@ mod tests {
             None
         );
         assert!(coordinator.record_progress(share_id.get(), 4));
+        assert_eq!(
+            coordinator
+                .snapshot()
+                .active_share()
+                .map(quickshare_sharing::ShareSnapshot::phase),
+            Some(Phase::Transferring),
+        );
+        assert!(coordinator.complete(share_id.get()));
         let completed_result = coordinator.snapshot().active_share();
         assert!(
             completed_result.is_some(),

@@ -370,6 +370,7 @@ fn simulated_daemon_runs_an_outbound_transfer_with_a_pinned_peer() {
         fixture.runtime_directory(),
         &["simulate", "progress", "1", "5"],
     );
+    assert_command(fixture.runtime_directory(), &["simulate", "complete", "1"]);
     assert_phase(
         fixture.runtime_directory(),
         Direction::Outbound,
@@ -422,6 +423,7 @@ fn simulated_daemon_runs_an_inbound_transfer() {
         fixture.runtime_directory(),
         &["simulate", "progress", "1", "10"],
     );
+    assert_command(fixture.runtime_directory(), &["simulate", "complete", "1"]);
     assert_phase(
         fixture.runtime_directory(),
         Direction::Inbound,
@@ -429,6 +431,35 @@ fn simulated_daemon_runs_an_inbound_transfer() {
     );
     let stop_result = fixture.stop();
     assert!(stop_result.is_ok(), "failed to stop simulated daemon");
+}
+
+#[test]
+fn simulated_advertisement_loss_preserves_established_inbound_consent() {
+    let root = runtime_fixture_path();
+    let fixture_result = DaemonProcessFixture::start_simulated(root);
+    assert!(fixture_result.is_ok(), "failed to start simulated daemon");
+    let Ok(fixture) = fixture_result else {
+        return;
+    };
+    assert_command(
+        fixture.runtime_directory(),
+        &["simulate", "incoming-text", "from phone"],
+    );
+    assert_phase(
+        fixture.runtime_directory(),
+        Direction::Inbound,
+        Phase::AwaitingLocalConsent,
+    );
+    assert_command(
+        fixture.runtime_directory(),
+        &["simulate", "peer-lost", "pixel-8"],
+    );
+    assert_phase(
+        fixture.runtime_directory(),
+        Direction::Inbound,
+        Phase::AwaitingLocalConsent,
+    );
+    assert!(fixture.stop().is_ok(), "failed to stop simulated daemon");
 }
 
 #[test]
@@ -466,23 +497,61 @@ fn simulated_daemon_exposes_failure_and_dismissal() {
     let Ok(fixture) = fixture_result else {
         return;
     };
-    assert_command(fixture.runtime_directory(), &["send", "hello"]);
-    assert_command(
-        fixture.runtime_directory(),
-        &["share", "select", "1", "pixel-8"],
-    );
-    assert_command(
-        fixture.runtime_directory(),
-        &["simulate", "peer-accept", "1"],
-    );
+    record_full_text_progress(&fixture);
+    assert_full_text_progress(fixture.runtime_directory());
     assert_command(fixture.runtime_directory(), &["simulate", "fail", "1"]);
+    let snapshot_result = endpoint_snapshot(fixture.runtime_directory());
+    assert!(snapshot_result.is_ok(), "failure snapshot failed");
+    let Ok(snapshot) = snapshot_result else {
+        return;
+    };
+    let active_result = snapshot.active_share();
+    assert!(active_result.is_some(), "failed share is not visible");
+    let Some(active) = active_result else {
+        return;
+    };
+    assert_eq!(active.phase(), Phase::Failed);
+    assert_eq!(active.terminal_reason(), Some("simulated_failure"));
+    assert_eq!(
+        active.recovery_guidance(),
+        Some("Retry the share. Confirm the peer is nearby.")
+    );
+    let status_result = run_command(fixture.runtime_directory(), &["status"]);
+    assert!(status_result.is_ok(), "human status failed");
+    let Ok(status) = status_result else {
+        return;
+    };
+    assert!(status.status.success(), "human status failed");
+    let output_result = String::from_utf8(status.stdout);
+    assert!(output_result.is_ok(), "status output was not UTF-8");
+    let Ok(output) = output_result else {
+        return;
+    };
+    assert!(output.contains("terminal_reason=simulated_failure"));
+    assert!(output.contains(
+        "recovery_guidance=Retry the share. Confirm the peer is nearby."
+    ));
+    assert_command(fixture.runtime_directory(), &["share", "dismiss", "1"]);
+    assert_idle(fixture.runtime_directory());
+    assert!(fixture.stop().is_ok(), "failed to stop simulated daemon");
+}
+
+#[test]
+fn simulated_full_progress_can_still_be_cancelled() {
+    let root = runtime_fixture_path();
+    let fixture_result = DaemonProcessFixture::start_simulated(root);
+    assert!(fixture_result.is_ok(), "failed to start simulated daemon");
+    let Ok(fixture) = fixture_result else {
+        return;
+    };
+    record_full_text_progress(&fixture);
+    assert_full_text_progress(fixture.runtime_directory());
+    assert_command(fixture.runtime_directory(), &["share", "cancel", "1"]);
     assert_phase(
         fixture.runtime_directory(),
         Direction::Outbound,
-        Phase::Failed,
+        Phase::Cancelled,
     );
-    assert_command(fixture.runtime_directory(), &["share", "dismiss", "1"]);
-    assert_idle(fixture.runtime_directory());
     assert!(fixture.stop().is_ok(), "failed to stop simulated daemon");
 }
 
@@ -681,4 +750,37 @@ fn assert_phase(runtime_directory: &Path, direction: Direction, phase: Phase) {
     };
     assert_eq!(active.direction(), direction);
     assert_eq!(active.phase(), phase);
+}
+
+fn assert_full_text_progress(runtime_directory: &Path) {
+    let snapshot_result = endpoint_snapshot(runtime_directory);
+    assert!(snapshot_result.is_ok(), "full progress snapshot failed");
+    let Ok(snapshot) = snapshot_result else {
+        return;
+    };
+    let active_result = snapshot.active_share();
+    assert!(active_result.is_some(), "transferring share is not visible");
+    let Some(active) = active_result else {
+        return;
+    };
+    assert_eq!(active.direction(), Direction::Outbound);
+    assert_eq!(active.phase(), Phase::Transferring);
+    assert_eq!(active.transferred_bytes(), 5);
+    assert_eq!(active.total_bytes(), 5);
+}
+
+fn record_full_text_progress(fixture: &DaemonProcessFixture) {
+    assert_command(fixture.runtime_directory(), &["send", "hello"]);
+    assert_command(
+        fixture.runtime_directory(),
+        &["share", "select", "1", "pixel-8"],
+    );
+    assert_command(
+        fixture.runtime_directory(),
+        &["simulate", "peer-accept", "1"],
+    );
+    assert_command(
+        fixture.runtime_directory(),
+        &["simulate", "progress", "1", "5"],
+    );
 }

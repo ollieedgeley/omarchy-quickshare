@@ -11,6 +11,7 @@ publish = false
 async-io = "=2.6.0"
 futures-lite = { version = "=2.6.1", default-features = false }
 quickshare-connections = { path = "../../core/connections" }
+rustix = { version = "=1.1.4", features = ["event"] }
 tracing.workspace = true
 zbus.workspace = true
 

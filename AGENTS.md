@@ -140,8 +140,11 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - `make test-nearshare-reference` runs the pinned diverse LAN peer through discovery, encryption, both transfer roles, and byte-integrity checks.
 - `make diverse-lan-{up,down}` measures the isolated NearShare↔Google-derived LAN lifecycle.
 - `make test-diverse-lan` checks simulated/reference mDNS, PIN fingerprints, both transfer roles, SHA-256 bytes, and a clean repeat.
-- `make rust-lan-provision` rebuilds the current daemon test image; `make test-rust-lan-{outbound,inbound}` checks one encrypted Google-derived LAN direction and exact file bytes.
-- `make test-rust-lan` rebuilds that image and runs both daemon directions; use it before claiming live LAN interoperability.
+- `make rust-lan-provision` rebuilds the daemon image; `make test-rust-lan-{outbound,inbound}` checks encrypted FILE bytes in one direction each.
+- `make test-rust-lan-{inbound-content,outbound-content}` checks text and the exact 20-byte URL with decoded Retry 12 in one direction each.
+- `make test-rust-lan-rejection` checks both receiver roles while held before consent and payload data; `make test-rust-lan-cancellation-{inbound,outbound}` gives each sender role its own 60-second child.
+- `make test-rust-lan-retry` checks Retry 12 plus FILE data in both roles; `make test-rust-lan-failure-{inbound,outbound}` gives each pre-consent/data peer-loss role its own 60-second child.
+- `make test-rust-lan` provisions once, then runs all ten LAN child gates; use it before claiming live LAN interoperability.
 - `make lint-nearby-linux` and `make test-nearby-linux-tooling` check the
   Google-derived peer definition and its fast contract tests.
 - `make test-nearby-linux-connections`, `make test-nearby-linux-sharing`, and

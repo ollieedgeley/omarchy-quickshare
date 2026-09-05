@@ -16,7 +16,7 @@
 )]
 
 use base64 as _;
-use core::cell::Cell;
+use core::{cell::Cell, time::Duration};
 use prost as _;
 use quickshare_connections::{Connection, ConnectionOptions, Event};
 use quickshare_crypto::Handshake;
@@ -31,6 +31,7 @@ use serde as _;
 use std::{
     io::{Cursor, Read},
     os::unix::net::UnixStream,
+    sync::mpsc,
     thread,
 };
 use tracing as _;
@@ -317,6 +318,51 @@ fn unix_pair_sends_url_after_consent() {
         .send_outgoing_url("https://omarchy.local", || {}, |_| {}, || false)
         .expect("send url after accept");
     receiver.join().expect("receiver completes");
+}
+
+#[test]
+fn outbound_url_completes_while_receiver_connection_remains_open() {
+    let (initiator_stream, responder_stream) =
+        UnixStream::pair().expect("unix pair");
+    let (received_sender, received) = mpsc::channel();
+    let (release, release_receiver) = mpsc::channel();
+    let peer = thread::spawn(move || {
+        let mut session =
+            SharingSession::accept_io(responder_stream, "remote", "Remote")
+                .expect("establish peer session");
+        let _pairing = session.exchange_account_free_pairing().expect("pair");
+        let offer = session.receive_incoming_offer().expect("receive offer");
+        session.accept_incoming_offer().expect("accept offer");
+        let value = session
+            .receive_incoming_url(&offer, |_| {}, || false)
+            .expect("receive URL");
+        received_sender.send(value).expect("report received URL");
+        release_receiver.recv().expect("release receiver");
+    });
+    let (completed_sender, completed) = mpsc::channel();
+    let sender = thread::spawn(move || {
+        let mut session =
+            SharingSession::connect_io(initiator_stream, "local", "Omarchy")
+                .expect("establish local session");
+        let _pairing = session.exchange_account_free_pairing().expect("pair");
+        let result = session.send_outgoing_url(
+            "https://omarchy.local",
+            || {},
+            |_| {},
+            || false,
+        );
+        completed_sender.send(result).expect("report sender result");
+    });
+
+    assert_eq!(
+        received.recv_timeout(Duration::from_secs(1)).expect("URL"),
+        "https://omarchy.local"
+    );
+    let result = completed.recv_timeout(Duration::from_secs(1));
+    release.send(()).expect("release receiver");
+    peer.join().expect("receiver completes");
+    sender.join().expect("sender completes");
+    assert!(matches!(result, Ok(Ok(()))), "{result:?}");
 }
 
 #[test]

@@ -19,7 +19,7 @@ use rand_core::{OsRng, RngCore as _};
 use crate::{
     config::Config,
     daemon::observations::{
-        BLE, BLUETOOTH, WIFI_DIRECT, WIFI_HOTSPOT, WIFI_LAN, protocol_reason,
+        BLE, BLUETOOTH, WIFI_DIRECT, WIFI_HOTSPOT, WIFI_LAN,
     },
 };
 
@@ -471,7 +471,7 @@ fn trace_handshake<T>(
                 operation = "handshake",
                 stage = "handshake",
                 medium = medium_name(medium),
-                error_class = protocol_reason(&error),
+                error_class = error.reason(),
                 "handshake failed"
             );
             Err(error)
