@@ -14,18 +14,22 @@ directions, that daemon completed discovery, a same-LAN TCP connection, and
 Connections/UKEY2, then disconnected inside the account-free paired-key
 exchange before introduction or consent.
 
-The latest physical run used `b45235f` and superseded the earlier
-`invalid_payload` diagnosis. In its auto-accept sequence, acceptance occurred
-after 108 ms and disconnection followed 58 ms later. None of 20 attempts
-completed. The evidence does not establish the disconnect origin or reveal the
-proprietary peer's internal reason, so no phone fix is claimed.
+The latest physical run used installed build `34b9fe1`. On one inbound URL
+attempt at `2026-09-05T08:49:35Z`, handshake and pairing completed, the URL
+introduction was accepted, and local consent was accepted 83 ms after the
+offer. The daemon wrote `ACCEPT`, skipped an unrelated Sharing response, then
+about 4 ms later rejected the next Connections frame as
+`unexpected_frame_type` with `frame_type="unknown"`. Public status collapsed
+this into `disconnected` with 0 of 20 bytes transferred, but the trace showed
+no EOF or explicit disconnect as the cause. The numeric discriminator and the
+proprietary peer's internal cause remain unknown. No phone outcome was reported.
 
-The newer diagnostic instrumentation has since been exercised with the actual
-daemon and the pinned Google-derived Linux peer. A 1,048,577-byte `FILE`
-completed in both directions with matching integrity. Its logs preserved
-`connection_id` correlation before assigning each `share_id`. That is
-reference-peer evidence, not a stock Android result. The instrumented build
-still awaits its next physical-phone run.
+The historical `b45235f` inbound URL attempt at `2026-09-05T06:09:28Z` accepted
+consent 108 ms after the offer, failed 58 ms later, and transferred 0 of 20
+bytes in that one attempt. Its `disconnected` status did not establish origin.
+
+A 1,048,577-byte `FILE` passed integrity and chronology checks in both directions
+with the Google-derived Linux peer. This is reference evidence, not phone compatibility evidence.
 
 This document complements the broader
 [implementation baseline](research/implementation-baseline-2026-09.md),
@@ -169,7 +173,8 @@ exist yet.
 The inbound UI ordering is correct: no local consent screen is emitted before
 pairing and introduction. The pre-`b45235f` phone-to-laptop runs reached local
 consent and then failed during step 6 with `invalid_payload` in
-`payload_transfer`. The newer auto-accept run is the current physical evidence.
+`payload_transfer`. The later `b45235f` timing is historical. The `34b9fe1`
+run below is the current physical evidence.
 
 ## Physical-device evidence
 
@@ -211,26 +216,40 @@ lifecycle corrections documented in the
 physical run had tested it. Neither the inbound failure nor the outbound result
 disagreement could then be called fixed.
 
-### Newest physical run on `b45235f`
+### Historical automatic URL attempt on `b45235f`
 
-- The auto-accept sequence ran 20 attempts and completed 0.
-- Acceptance was observed after 108 ms. Disconnection followed 58 ms later.
-- The available evidence did not establish the disconnect origin or expose the
-  proprietary peer's internal reason.
+- At `2026-09-05T06:09:28Z`, one inbound URL attempt accepted local consent
+  108 ms after the offer, failed 58 ms later, and transferred 0 of 20 bytes.
+- Public status was `disconnected`, but the origin and proprietary peer's
+  internal reason were unknown.
 
-This run supersedes `invalid_payload` as the newest observed failure, but it
-does not explain the failure and does not demonstrate a phone fix.
+This run superseded `invalid_payload` at the time, but is now historical timing
+evidence. It did not demonstrate a phone fix.
+
+### Latest physical run on `34b9fe1`
+
+- At `2026-09-05T08:49:35Z`, the installed build completed handshake and
+  pairing, accepted the URL introduction, and accepted local consent 83 ms
+  after the offer.
+- The daemon wrote `ACCEPT`, skipped an unrelated Sharing response, then about
+  4 ms later rejected the next Connections frame as `unexpected_frame_type`
+  with `frame_type="unknown"`.
+- Public status was `disconnected` with 0 of 20 bytes transferred. No EOF or
+  explicit disconnect was observed as the cause, so the status does not prove
+  that the phone closed the connection.
+- The concrete local failure boundary is `frame_dispatch`. The unlogged numeric
+  discriminator and the proprietary peer's internal cause remain unknown.
+
+The numbered summary is
+`.cache/phone-debug/20260905T084935Z/inbound-01-summary.json`. No phone-side
+outcome was reported, and this run does not demonstrate a phone fix.
 
 ### Diagnostic reference run
 
-After the physical run, the instrumented daemon transferred a 1,048,577-byte
-`FILE` with the pinned Google-derived Linux peer in both directions over LAN.
-Both directions passed exact integrity checks in the temporary harness. The
-logs also preserved the connection-to-share chronology: `connection_id`
-correlated the exchange before `share_id` was assigned. The run verifies the
-new observability on a live reference exchange. It does not establish stock
-Android compatibility, and the instrumented build still needs a physical-phone
-test.
+Before this run, the daemon transferred a 1,048,577-byte `FILE` with the
+Google-derived Linux peer in both directions over LAN. Both passed exact
+integrity and connection-to-share chronology checks. This is reference
+evidence, not proprietary-phone compatibility evidence.
 
 ## Why the simulations pass
 
@@ -250,54 +269,62 @@ interoperability.
 The critical mismatch is therefore not "simulation versus hardware" in
 general. It is the remaining gap between Google-derived or open peers,
 lower-layer probes, and the current stock Android Quick Share product. The
-newest phone run ends shortly after acceptance, with no known disconnect
-origin.
+newest phone trace reaches local consent and then ends at the local Connections
+`frame_dispatch` rejection. It does not reveal the numeric frame type or the
+proprietary peer's internal cause.
 
 ## Evidence-backed gaps
 
 ### Confirmed gaps
 
-1. The newest physical auto-accept sequence completed 0 of 20 attempts.
-   Acceptance occurred after 108 ms and disconnection followed 58 ms later,
-   but the disconnect origin remains unknown.
-2. The proprietary peer did not provide an internal failure reason. Local
-   diagnostics cannot reconstruct a reason the peer did not send.
-3. One earlier outbound attempt produced a phone error after the daemon
+1. The newest physical evidence is one inbound URL attempt on installed build
+   `34b9fe1`. It reached local consent, wrote `ACCEPT`, then hit the local
+   Connections `frame_dispatch` rejection about 4 ms later with
+   `unexpected_frame_type` and `frame_type="unknown"`.
+2. Public status collapsed that attempt into `disconnected` with 0 of 20 bytes
+   transferred. Because the trace showed no EOF or explicit disconnect as the
+   cause, that status does not prove the phone closed the connection.
+3. The received numeric frame discriminator was not logged, and the
+   proprietary peer did not provide an internal failure reason.
+4. One earlier outbound attempt produced a phone error after the daemon
    reported local completion. The newest run does not show that disagreement
    fixed.
-4. The Google fixture corpus covers introduction/response semantics but not a
+5. The Google fixture corpus covers introduction/response semantics but not a
    role-complete paired-key transcript generated by Google's runner.
-5. The live Linux reference test proves one peer implementation and file
+6. The live Linux reference test proves one peer implementation and file
    transfers, not current stock Android policy or protocol drift.
-6. The Android probe stops at Nearby Connections and cannot validate Quick
+7. The Android probe stops at Nearby Connections and cannot validate Quick
    Share Sharing or its UI.
-7. No admitted black-box stock Quick Share test covers Android sender and
+8. No admitted black-box stock Quick Share test covers Android sender and
    receiver roles against the Rust daemon.
-8. The new diagnostic instrumentation has passed the bidirectional reference
-   `FILE` run but has not yet been exercised in another physical-phone run.
+9. The next physical rerun still needs discriminator-enriched logging that
+   records the received `Option<i32>` and known enum name.
 
 ### Not yet proven
 
-The current evidence does not identify which side initiated the newest
-disconnect or which proprietary validation or policy branch caused it. The
-108 ms acceptance and 58 ms post-acceptance interval narrow the timing, not the
-cause. Debug fields can report a local operation, outcome, reason,
-`io_error_kind`, or `disconnect_origin` when the daemon knows them. They cannot
-reveal an internal peer reason that never crosses the wire.
+The current evidence identifies the local failure boundary as Connections
+`frame_dispatch`, after the daemon wrote `ACCEPT`. It does not identify the
+received numeric frame type or the proprietary peer's internal validation or
+policy cause. The public `disconnected` status is too coarse to establish a
+remote close, and the trace contains no EOF or explicit disconnect as the
+cause. The next diagnostic can expose the received `Option<i32>` and known enum
+name. It still cannot reveal an internal peer reason that never crosses the
+wire.
 
 The 1,048,577-byte reference `FILE` run proves bidirectional integrity and
-connection-to-share correlation for that Google-derived Linux peer. It does
-not prove the current phone fixed, settle the earlier phone-versus-daemon
-outcome disagreement, or certify arbitrary peers and transports.
+connection-to-share chronology for that Google-derived Linux peer. It does not
+prove the current phone fixed, settle the earlier phone-versus-daemon outcome
+disagreement, or certify arbitrary peers and transports.
 
 ## Original staged implementation plan
 
 This plan records the investigation sequence written from the 2026-09-04
-paired-key baseline. The later physical run showed pairing completing in both
-directions, so phases 1 through 3 do not describe the active failure boundary.
-Keep them as the rationale for the earlier investigation, not as a claim that
-pairing still fails. The immediate work now starts with physical validation of
-the installed lifecycle changes.
+paired-key baseline. Later physical runs showed pairing completing, and the
+latest `34b9fe1` run reached introduction and local consent before a Connections
+`frame_dispatch` rejection. Phases 1 through 3 therefore do not describe the
+active failure boundary. Keep them as the rationale for the earlier
+investigation, not as a claim that pairing still fails. Immediate work now
+starts with a discriminator-enriched physical rerun.
 
 ### Phase 1: make the failure diagnosable
 
@@ -429,13 +456,15 @@ screen is insufficient.
 
 ## Current change order
 
-1. **Now:** run the instrumented build against the physical phone and correlate
-   events by `connection_id`, then `share_id` once assigned.
-2. **Next:** record the privacy-safe terminal outcome and any available
-   `io_error_kind` or `disconnect_origin`. Do not infer a proprietary peer's
-   internal reason from a generic disconnect.
+1. **Now:** expose the received frame discriminator as `Option<i32>` plus its
+   known enum name, then rerun the same inbound URL case on the physical phone.
+2. **Next:** correlate the trace by `connection_id`, then `share_id` once
+   assigned, and compare the discriminator-enriched event with the saved
+   `20260905T084935Z` numbered summary.
 3. **Then:** change wire behavior only if the physical evidence identifies a
-   concrete rejected frame, validation branch, or terminal-state mismatch.
+   concrete rejected frame, validation branch, or terminal-state mismatch. Do
+   not infer a remote close from coarse `disconnected` status or invent the
+   proprietary peer's internal reason.
 4. **Before compatibility claims:** complete the Phase 4 stock Android gate or
    document why it cannot run, and complete Phase 5 physical acceptance.
 5. **After same-LAN transfer is verified on the phone:** broaden Bluetooth,

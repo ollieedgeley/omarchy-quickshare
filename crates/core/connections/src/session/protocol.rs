@@ -3,6 +3,7 @@ mod handshake;
 mod io;
 mod negotiate;
 mod transfer;
+use quickshare_wire::connections::v1_frame;
 
 fn payload_trace_progress(
     operation: &'static str,
@@ -116,10 +117,24 @@ fn upgrade_frame_rejected(reason: &'static str) {
         frame_type = "bandwidth_upgrade", "upgrade frame rejected"
     );
 }
-fn frame_dispatch_rejected(reason: &'static str) {
-    tracing::debug!(
-        target: "omarchy_quickshare::protocol", stage = "frame_dispatch",
-        operation = "receive", outcome = "rejected", reason,
-        frame_type = "unknown", "connection frame rejected"
-    );
+fn frame_dispatch_rejected(reason: &'static str, received: Option<i32>) {
+    let frame_type = received.map_or("missing", |code| {
+        v1_frame::FrameType::try_from(code)
+            .map_or("unrecognized", |value| value.as_str_name())
+    });
+    if let Some(frame_type_code) = received {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol", stage = "frame_dispatch",
+            operation = "receive", outcome = "rejected", reason,
+            frame_type_present = true, frame_type_code, frame_type,
+            "connection frame rejected"
+        );
+    } else {
+        tracing::debug!(
+            target: "omarchy_quickshare::protocol", stage = "frame_dispatch",
+            operation = "receive", outcome = "rejected", reason,
+            frame_type_present = false, frame_type,
+            "connection frame rejected"
+        );
+    }
 }

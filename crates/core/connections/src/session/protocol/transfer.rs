@@ -376,7 +376,7 @@ impl Connection {
                 self.upgrade_event(negotiation)
             }
             _ => {
-                frame_dispatch_rejected("unexpected_frame_type");
+                frame_dispatch_rejected("unexpected_frame_type", v1.r#type);
                 Err(Error::UnexpectedFrame)
             }
         }

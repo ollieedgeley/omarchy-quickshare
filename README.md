@@ -249,6 +249,10 @@ disconnection frame, stream EOF, a truncated frame, or a connection event.
 Those origins describe what the daemon observed. A proprietary peer may
 disconnect without disclosing its internal reason.
 
+Rejected Connections frames also report `frame_type_present`, the received
+`frame_type_code` when present, and `frame_type` as the known protobuf enum
+name, `unrecognized` for an unknown number, or `missing` for an absent field.
+
 `locally_written` and `staged` report local progress, not successful delivery.
 Only a terminal `completed` outcome reports completion. `trace` adds per-frame,
 chunk, and keepalive metadata when debug is not enough. Neither level logs
