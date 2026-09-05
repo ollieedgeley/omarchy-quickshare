@@ -138,6 +138,35 @@ fn decodes_google_file_introduction_and_accept_response() {
 }
 
 #[test]
+fn rejects_accept_response_in_invalid_envelope() {
+    let response_type = Some(i32::from(v1_frame::FrameType::Response));
+    let invalid_envelopes: [(Option<i32>, Option<i32>); 7] = [
+        (None, response_type),
+        (Some(0_i32), response_type),
+        (Some(2_i32), response_type),
+        (Some(1_i32), None),
+        (Some(1_i32), Some(0_i32)),
+        (Some(1_i32), Some(i32::MAX)),
+        (Some(1_i32), Some(i32::from(v1_frame::FrameType::Cancel))),
+    ];
+    for (version, frame_type) in invalid_envelopes {
+        let mut frame = Frame::decode(
+            google_v1!("incoming/responses/accept.bin").as_slice(),
+        )
+        .expect("Google accept frame");
+        frame.version = version;
+        frame.v1.as_mut().expect("Google v1 response").r#type = frame_type;
+        assert!(
+            matches!(
+                SharingSession::decode_response(&frame.encode_to_vec()),
+                Err(ProtocolError::InvalidFrame)
+            ),
+            "invalid envelope: version {version:?}, type {frame_type:?}"
+        );
+    }
+}
+
+#[test]
 fn decodes_google_outgoing_file_introduction() {
     let offer = decode_google_offer(
         google_v1!("outgoing/introductions/file.bin"),

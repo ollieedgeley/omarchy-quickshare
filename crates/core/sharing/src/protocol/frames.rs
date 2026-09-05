@@ -148,7 +148,7 @@ pub(in crate::protocol) fn decode_response(
         ProtocolError::from(error)
     })?;
     let supported_version = frame.version == Some(1);
-    let v1 = frame.v1.ok_or_else(|| {
+    let v1 = frame.v1.filter(|_| supported_version).ok_or_else(|| {
         let reason = if supported_version {
             "missing_v1"
         } else {
@@ -167,23 +167,26 @@ pub(in crate::protocol) fn decode_response(
     let frame_type = v1
         .r#type
         .and_then(|value| v1_frame::FrameType::try_from(value).ok());
-    let response = v1.connection_response.ok_or_else(|| {
-        let reason = match frame_type {
-            None | Some(v1_frame::FrameType::UnknownFrameType) => {
-                "unknown_frame_type"
-            }
-            Some(_) => "unexpected_frame_type",
-        };
-        tracing::debug!(
-            target: "omarchy_quickshare::protocol",
-            stage = "validation",
-            operation = "consent",
-            outcome = "rejected",
-            reason,
-            "protocol_stage"
-        );
-        ProtocolError::InvalidFrame
-    })?;
+    let response = v1
+        .connection_response
+        .filter(|_| frame_type == Some(v1_frame::FrameType::Response))
+        .ok_or_else(|| {
+            let reason = match frame_type {
+                None | Some(v1_frame::FrameType::UnknownFrameType) => {
+                    "unknown_frame_type"
+                }
+                Some(_) => "unexpected_frame_type",
+            };
+            tracing::debug!(
+                target: "omarchy_quickshare::protocol",
+                stage = "validation",
+                operation = "consent",
+                outcome = "rejected",
+                reason,
+                "protocol_stage"
+            );
+            ProtocolError::InvalidFrame
+        })?;
     let status = response.status.ok_or_else(|| {
         tracing::debug!(
             target: "omarchy_quickshare::protocol",
