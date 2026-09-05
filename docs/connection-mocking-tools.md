@@ -247,9 +247,9 @@ The same budget applies to scripts and tools invoked during the test phase by Ma
 
 Run cheap, deterministic gates before expensive gates when dependencies allow it. The local gate runner must enforce the 60-second child-gate timeout and report the timed-out gate by name. `make help` must list the targeted command for every child gate so a developer can rerun only the failed area.
 
-### Fast-feedback entries in AGENTS.md
+### Fast-feedback catalogue maintenance
 
-Any change that creates a gate, splits a gate to meet the runtime budget, or renames a gate must update the root `AGENTS.md` in the same change. Add or replace a concise entry under a `Fast feedback gates` heading. Each entry should take no more than two lines and must give the exact Make or Cargo command plus the feature area or failure class it checks.
+Any change that creates a gate, splits a gate to meet the runtime budget, or renames a gate must update [Fast feedback gates](development-workflow.md#fast-feedback-gates) in the same change. Each entry should take no more than two lines and must give the exact Make or Cargo command plus the feature area or failure class it checks.
 
 Prefer the public Make target when one exists. Mention a required service, privilege, virtual device, or fixture only when the command cannot run without it. Remove stale commands instead of keeping a history. The section is a routing table that lets an agent choose the narrowest relevant gate before running a top-level aggregate.
 

@@ -266,9 +266,89 @@ The hook stops on the first failed child gate and aborts the push. A successful 
 
 ## Gate documentation
 
-Creating, renaming, or splitting any hook child gate updates the root `AGENTS.md` in the same commit. Its `Fast feedback gates` section gives the exact Make command and the feature or failure class it checks in no more than two lines.
+Creating, renaming, or splitting a gate updates [Fast feedback gates](#fast-feedback-gates) in this document in the same change. Give the exact Make or Cargo command and its scope in no more than two lines.
 
 The initial hook change must include contract fixtures for staged-only behavior, mirror/index setup and reuse, partial staging rejection, additions, deletions, renames, the first commit, CodeGraph stale and error fallbacks, LSP fallbacks, dependent-only candidate selection, Rust test-path recognition, unit and doc-test fallback, Cargo target mapping, multiple pushed refs, locked stable exact-commit worktree reuse, semantic commit validation, hook failure propagation, verification failure preventing a build, and build failure preventing a push.
+
+## Fast feedback gates
+
+- `make format-app-check` checks Rust; `make format-tooling-check` checks
+  tooling and repository configuration.
+- `make format-docs-check` checks Markdown; `make format-check` combines all
+  formatting domains.
+- `make lint-rust-clippy` runs strict Clippy; `make lint-rust-docs` fails
+  rustdoc warnings; `make lint-rust-analyzer` runs rust-analyzer diagnostics.
+  `make lint-rust` runs those three child gates.
+- `make ruff-provision` installs pinned Ruff; `make analyzers-provision`
+  installs or validates every pinned cross-language analyzer.
+- `make lint-python` checks all Python tooling; `make lint-javascript` runs
+  every current non-deprecated ESLint core rule as an error.
+- `make lint-analysis-general` runs strict jscpd, cargo-machete, Knip, Ruff, and
+  Vulture checks.
+- `make lint-analysis-clang-tidy` and `make lint-analysis-cppcheck` isolate
+  strict native analysis; `make lint-analysis` combines all three groups.
+- `make lint-ast` runs the complete error-only ast-grep scan;
+  `make test-ast-rules` checks its rule fixtures and snapshots.
+- `make lint-docs` checks Markdown policy; `make lint-structure-app` and
+  `make lint-structure-tooling` isolate structure feedback.
+  `make lint-structure` combines them.
+- `make pre-commit-source-{format,lint,ast,analysis}` checks exact staged
+  non-test files with applicable tools, in that order.
+- `make pre-commit-test-{format,lint,ast,analysis}` checks exact staged test
+  files with applicable tools, in that order.
+- `make pre-commit-domain-analysis` reruns applicable analyzers across every
+  complete repository domain touched by the staged change.
+- `make pre-commit-test` runs directly staged and conservatively affected
+  domain tests selected from CodeGraph, repository ownership, and Cargo
+  metadata.
+- `make lint-android` validates Android SDK, probe, and AVD pins; `make android-preflight` checks host and KVM support.
+- `make android-bootstrap` fetches pinned host tools; `make android-orchestrator-provision` prepares the pinned Mobly controller.
+- After `make android-license`, `make android-provision` prepares the SDK, probe, and AVDs; `make android-seed` records clean first boots.
+- `make android-up` starts and checks the prepared peers; `make android-down` stops them and records lifecycle time.
+- `make lint-sources` validates immutable test-source pins; `make test-source-cache` hash-checks their prepared archives.
+- `make sources-fetch` provisions the pinned source cache; provisioning is not part of a child test's 60-second execution budget.
+- `make lint-oracle` checks the pinned oracle definition; `make oracle-provision` builds it outside the test budget.
+- `make oracle-up` and `make oracle-down` measure lifecycle time; `make test-oracle-toolchain` tests the warm environment.
+- `make proxy-up` and `make proxy-down` measure proxy lifecycle time; `make test-proxy-toxiproxy` checks TCP cutoff and recovery in both directions.
+- `make dbus-up` and `make dbus-down` measure private-bus lifecycle; `make test-dbus-bluez` and `make test-dbus-networkmanager` check service templates through real clients.
+- `make lint-bluetooth-radio` checks the pinned real-radio definition; `make bluetooth-radio-provision` builds it outside test time.
+- `make bluetooth-radio-{up,down}` measures lifecycle; `make test-bluetooth-{controller,ble,classic}` checks isolated BlueZ radio paths.
+- `make lint-live-bwu-kvm` checks the two-guest KVM harness;
+  `make live-bwu-kvm-provision` builds its sealed Google-peer image.
+- `make test-live-bwu-kvm` proves isolated LAN and Classic byte paths.
+- `make network-up` and `make network-down` measure virtual-radio lifecycle; `make test-network-wmediumd` and `make test-network-netem` check 802.11 and UDP fault recovery.
+- `make test-network-lan`, `make test-network-hotspot-client`, and `make test-network-hotspot-owner` check real Wi-Fi association and bidirectional TCP paths.
+- `make test-network-wifi-direct-client` checks the supported Linux-client P2P role against a simulated remote group owner.
+- `make oracle-reference-provision` builds the pinned Google oracle; `make test-oracle-reference` checks UKEY2 both ways.
+- `make test-oracle-{bluetooth,ble,lan,hotspot,wifi-direct}` checks one pinned Google simulated connection family.
+- `make test-oracle-bwu-handler` checks selected Bluetooth, Wi-Fi Direct, and LAN simulated semantics; `make test-oracle-bwu-fallback` checks selected fallback semantics, not cross-peer transfer interoperability.
+- `make test-rust` runs workspace Rust tests; `make test-tooling` runs
+  quality-gate and hook contract tests.
+- `make test-plugin-release` checks the allowlisted plugin export and every
+  native availability state through Quick Shell.
+- `make test-local-install` checks local binary installation and the systemd
+  user-service lifecycle; `make install-local` performs the local install.
+- `make test-contracts` runs shared transfer scenarios against fast doubles; simulator adapters consume the same scenarios.
+- `make test-nearshare-reference` runs the pinned diverse LAN peer through discovery, encryption, both transfer roles, and byte-integrity checks.
+- `make diverse-lan-{up,down}` measures the isolated NearShare↔Google-derived LAN lifecycle.
+- `make test-diverse-lan` checks simulated/reference mDNS, PIN fingerprints, both transfer roles, SHA-256 bytes, and a clean repeat.
+- `make rust-lan-provision` rebuilds the daemon image; `make test-rust-lan-{outbound,inbound}` checks encrypted FILE bytes in one direction each.
+- `make test-rust-lan-{inbound-content,outbound-content}` checks text and the exact 20-byte URL with decoded Retry 12 in one direction each.
+- `make test-rust-lan-rejection` checks both receiver roles while held before consent and payload data; `make test-rust-lan-cancellation-{inbound,outbound}` gives each sender role its own 60-second child.
+- `make test-rust-lan-retry` checks Retry 12 plus FILE data in both roles; `make test-rust-lan-failure-{inbound,outbound}` gives each pre-consent/data peer-loss role its own 60-second child.
+- `make test-rust-lan` provisions once, then runs all ten LAN child gates; use it before claiming live LAN interoperability.
+- `make lint-nearby-linux` and `make test-nearby-linux-tooling` check the
+  Google-derived peer definition and its fast contract tests.
+- `make test-nearby-linux-connections`, `make test-nearby-linux-sharing`, and
+  `make test-nearby-linux-sharing-actions` run each prepared live peer suite.
+- `make test-nearby-linux-sharing-fixtures` compares every generated Google
+  Sharing frame and trace with the pinned corpus.
+- `make test-android-nearby` runs the experimental AVD admission control; it is not a compatibility gate until it passes repeatably.
+- `make verify-app` gives application-only feedback; `make verify-tooling` checks development tooling without starting environments.
+- `make pre-commit` checks the staged snapshot and its affected tests;
+  `make pre-push` serializes exact-commit verification and builds in a stable
+  ignored worktree.
+- `make verify` runs the complete local quality suite; `make build` performs the locked workspace build after verification.
 
 ## Deferred setup
 

@@ -1,31 +1,25 @@
 # Repository instructions
 
-## Current authority
+## Scope and work loop
 
-Repository setup, quality tooling, application behavior, local hooks, commits,
-and pushes are authorized. Use the development and release thresholds in the
-programmatic connection-testing document.
-
-## Work loop
-
-1. Read the closest `AGENTS.md` and the task-specific document listed below.
-2. Inspect the current tree and preserve user changes. A planned path or command does not exist until the repository contains it.
-3. Use CodeGraph before direct code search or file reads. Use `rg` or `rg --files` for prose and unindexed content.
-4. Make the smallest complete change. Behavior changes follow the TDD loop below.
-5. Run the narrowest relevant gate that exists. Fix failures before broadening the check.
-6. Finish with the requested result, relevant checks passing, and affected policy or command documentation updated.
+- Work within the agreed task and the user's current scope.
+- Read the relevant policy below before changing its subject.
+- Preserve user changes.
+- Confirm planned paths and commands exist before using them.
+- Make the smallest complete change.
+- Finish with the requested result and relevant checks passing.
 
 ## Read before changing
 
-- Domain terms or names: read [CONTEXT.md](CONTEXT.md) and use its vocabulary.
-- Crates, modules, dependencies, tests, fixtures, tools, packaging, or paths: read [project structure](docs/architecture/project-structure.md) and preserve its ownership and dependency map.
-- Product behavior, compatibility claims, protocol coverage, dependencies, licensing, or implementation strategy: read [Quick Share feasibility](docs/quick-share-feasibility.md) and [Rust feasibility](docs/rust-reimplementation-feasibility.md).
+- Domain terms or names: use the vocabulary in [CONTEXT.md](CONTEXT.md).
+- Ownership, dependencies, file layout, workspace shape, or packaging: read [project structure](docs/architecture/project-structure.md).
+- Product behavior, compatibility claims, or protocol coverage: read [Quick Share feasibility](docs/quick-share-feasibility.md) and [Rust feasibility](docs/rust-reimplementation-feasibility.md).
+- Rust implementation strategy, dependencies, or licensing: read [Rust feasibility](docs/rust-reimplementation-feasibility.md) and the relevant constraints in [Quick Share feasibility](docs/quick-share-feasibility.md).
 - Connection seams, simulators, oracles, virtual systems, test support, or coverage claims: read [programmatic connection testing](docs/connection-mocking-tools.md).
-- Application behavior, gates, hooks, affected-test selection, commits, or pushes: read [development workflow](docs/development-workflow.md).
+- Behavior development, gates, hooks, affected-test selection, commits, or pushes: follow [development workflow](docs/development-workflow.md).
 - ast-grep configuration, rules, suppressions, scans, or rule tests: read [strict ast-grep policy](docs/ast-grep-strict-rust-policy.md).
-- Workspace shape or source-versus-plugin distribution: read [ADR 0001](docs/adr/0001-workspace-and-distribution-shape.md).
 
-Keep detailed policy in its owning document. Do not copy it into this file.
+- Keep detailed policy in its owning document.
 
 <!-- CODEGRAPH_START -->
 
@@ -41,138 +35,64 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 
 ## Repository handling
 
-- Follow the ownership, dependency, file-count, and directory-count rules in the project structure before adding or moving files.
-- Count physical lines before finishing. Project-authored files and every `AGENTS.md` stop at 500 lines; tests and test-only support stop at 800.
-- Before writing application behavior, satisfy the development threshold in
-  the programmatic connection-testing document. Treat live reference-peer
-  interoperability as release evidence rather than a development prerequisite.
+- Preserve the project structure's ownership, dependency, file-count, and directory-count rules when adding or moving files.
+- Count physical lines before finishing.
+- Keep project-authored files and every `AGENTS.md` at most 500 lines.
+- Keep tests and test-only support at most 800 lines.
+- Satisfy the connection-testing development threshold before writing application behavior.
+- Treat live reference-peer interoperability as release evidence, not a development prerequisite.
 
 ## TDD and test design
 
-- For each behavior, name the observable seam, add the smallest failing test, confirm the intended failure, write only enough code to pass, refactor while green, and rerun the targeted gates.
-- Commit a behavior's test, implementation, fixture, and direct support changes together. Documentation, build, and test-infrastructure work needs tests only where it creates an executable contract.
-- Use the test doubles and simulator hierarchy defined in the programmatic connection-testing document. Keep test time, randomness, synchronization, and failure injection deterministic.
-- Test public behavior and observable state. Keep repeated setup in honestly named helpers, builders, factories, fixtures, fakes, stubs, or mocks.
+- Name each behavior's observable seam before adding its smallest failing test.
+- Confirm the intended failure before writing only enough code to pass.
+- Refactor while green, then rerun the targeted gates.
+- Commit each behavior's test, implementation, fixtures, and direct support together.
+- Test documentation, build, and test-infrastructure changes only where they create an executable contract.
+- Use the connection-testing policy's test doubles and simulator hierarchy.
+- Keep test time, randomness, synchronization, and failure injection deterministic.
+- Test public behavior and observable state.
+- Keep repeated setup in honestly named helpers, builders, factories, fixtures, fakes, stubs, or mocks.
 
 ## Quality gates
 
-- The root `Makefile` is the public task interface; Cargo remains the Rust build system. Release users do not need Make.
-- Gates fail on the first unhandled error. Each directly runnable child test gate has a 60-second execution limit. Prepared-environment startup and teardown use separate measured lifecycle targets, aim for 30 seconds, and should not exceed 60 seconds where practical; their time is not charged to the test gate.
-- Split a slow child by a real responsibility, suite, connection type, or environment. A wrapper, sibling aggregate, or background process does not reset the limit.
-- Pin Rust, rustfmt, Clippy, rust-analyzer, ast-grep, and other verification tools. Missing tools fail a gate instead of silently reducing coverage.
-- Treat formatting differences and every enabled diagnostic as errors. Use the lint and ast-grep policies for exact configuration and exceptions.
-- Creating, renaming, or splitting a gate updates `Fast feedback gates` below in the same change. Give the exact Make or Cargo command and its scope in no more than two lines.
+- Use the root `Makefile` as the public task interface.
+- Keep Cargo as the Rust build system without requiring Make for release users.
+- Stop gates at the first unhandled error.
+- Limit each directly runnable child test gate to 60 seconds.
+- Measure prepared-environment startup and teardown in separate lifecycle targets outside the test budget.
+- Aim for 30-second lifecycle targets, not exceeding 60 seconds where practical.
+- Split slow children by responsibility, suite, connection type, or environment.
+- Never reset the time limit through a wrapper, sibling aggregate, or background process.
+- Pin Rust, rustfmt, Clippy, rust-analyzer, ast-grep, and other verification tools.
+- Fail gates on missing tools instead of reducing coverage.
+- Treat formatting differences and every enabled diagnostic as errors.
+- Use the lint and ast-grep policies for exact configuration and exceptions.
+- Select existing commands from [Fast feedback gates](docs/development-workflow.md#fast-feedback-gates).
+- Update that catalogue in the same change that creates, renames, or splits a gate.
 
 ## Git workflow
 
-- Use the tracked Husky hooks and the Conventional Commit types defined in the development workflow. Do not add hosted CI; local verification is authoritative.
-- Pre-commit checks the staged snapshot and the wider affected test set selected by the development workflow. Treat CodeGraph output as candidate data, not the final test scope.
-- Pre-push verifies the exact commit with `make verify`, then runs `make build` only after verification passes. Neither command may require a physical phone.
-- Do not run checks speculatively or for general reassurance. Run a check only
-  when it provides evidence for the current change: reproducing a reported
-  failure, proving the fix, exercising new or changed behavior, or validating
-  a modified gate. Choose the narrowest command that observes the relevant
-  contract. Git hooks own aggregate formatting, linting, analysis,
-  verification, and build gates; never invoke `make pre-commit`,
-  `make pre-push`, `make verify`, or `make build` manually.
-- During authorized implementation, commit each green vertical slice after targeted gates pass, then push through the pre-push hook to the approved remote.
+- Use tracked Husky hooks and the development workflow's Conventional Commit types.
+- Keep local verification authoritative without adding hosted CI.
+- Verify the exact staged snapshot and the wider affected test set in pre-commit.
+- Treat CodeGraph output as candidate data, not the final test scope.
+- Verify the exact pushed commit with `make verify`, then `make build` only after verification passes.
+- Keep physical phones out of automated gates.
+- Run checks only for the current change to reproduce a failure, prove a fix, exercise changed behavior, or validate a modified gate.
+- Choose the narrowest existing command that observes the relevant contract.
+- Fix failures before broadening the check.
+- Leave aggregate formatting, linting, analysis, verification, and build gates to Git hooks.
+- Never manually invoke `make pre-commit`, `make pre-push`, `make verify`, or `make build`.
+- During authorized implementation, commit each green vertical slice after targeted gates pass.
+- Push each authorized slice through the pre-push hook to the approved remote.
 - Never use `--no-verify`, disabled tests, red or `WIP` commits, or force pushes.
-
-## Fast feedback gates
-
-- `make format-app-check` checks Rust; `make format-tooling-check` checks
-  tooling and repository configuration.
-- `make format-docs-check` checks Markdown; `make format-check` combines all
-  formatting domains.
-- `make lint-rust-clippy` runs strict Clippy; `make lint-rust-docs` fails
-  rustdoc warnings; `make lint-rust-analyzer` runs rust-analyzer diagnostics.
-  `make lint-rust` runs those three child gates.
-- `make ruff-provision` installs pinned Ruff; `make analyzers-provision`
-  installs or validates every pinned cross-language analyzer.
-- `make lint-python` checks all Python tooling; `make lint-javascript` runs
-  every current non-deprecated ESLint core rule as an error.
-- `make lint-analysis-general` runs strict jscpd, cargo-machete, Knip, Ruff, and
-  Vulture checks.
-- `make lint-analysis-clang-tidy` and `make lint-analysis-cppcheck` isolate
-  strict native analysis; `make lint-analysis` combines all three groups.
-- `make lint-ast` runs the complete error-only ast-grep scan;
-  `make test-ast-rules` checks its rule fixtures and snapshots.
-- `make lint-docs` checks Markdown policy; `make lint-structure-app` and
-  `make lint-structure-tooling` isolate structure feedback.
-  `make lint-structure` combines them.
-- `make pre-commit-source-{format,lint,ast,analysis}` checks exact staged
-  non-test files with applicable tools, in that order.
-- `make pre-commit-test-{format,lint,ast,analysis}` checks exact staged test
-  files with applicable tools, in that order.
-- `make pre-commit-domain-analysis` reruns applicable analyzers across every
-  complete repository domain touched by the staged change.
-- `make pre-commit-test` runs directly staged and conservatively affected
-  domain tests selected from CodeGraph, repository ownership, and Cargo
-  metadata.
-- `make lint-android` validates Android SDK, probe, and AVD pins; `make android-preflight` checks host and KVM support.
-- `make android-bootstrap` fetches pinned host tools; `make android-orchestrator-provision` prepares the pinned Mobly controller.
-- After `make android-license`, `make android-provision` prepares the SDK, probe, and AVDs; `make android-seed` records clean first boots.
-- `make android-up` starts and checks the prepared peers; `make android-down` stops them and records lifecycle time.
-- `make lint-sources` validates immutable test-source pins; `make test-source-cache` hash-checks their prepared archives.
-- `make sources-fetch` provisions the pinned source cache; provisioning is not part of a child test's 60-second execution budget.
-- `make lint-oracle` checks the pinned oracle definition; `make oracle-provision` builds it outside the test budget.
-- `make oracle-up` and `make oracle-down` measure lifecycle time; `make test-oracle-toolchain` tests the warm environment.
-- `make proxy-up` and `make proxy-down` measure proxy lifecycle time; `make test-proxy-toxiproxy` checks TCP cutoff and recovery in both directions.
-- `make dbus-up` and `make dbus-down` measure private-bus lifecycle; `make test-dbus-bluez` and `make test-dbus-networkmanager` check service templates through real clients.
-- `make lint-bluetooth-radio` checks the pinned real-radio definition; `make bluetooth-radio-provision` builds it outside test time.
-- `make bluetooth-radio-{up,down}` measures lifecycle; `make test-bluetooth-{controller,ble,classic}` checks isolated BlueZ radio paths.
-- `make lint-live-bwu-kvm` checks the two-guest KVM harness;
-  `make live-bwu-kvm-provision` builds its sealed Google-peer image.
-- `make test-live-bwu-kvm` proves isolated LAN and Classic byte paths.
-- `make network-up` and `make network-down` measure virtual-radio lifecycle; `make test-network-wmediumd` and `make test-network-netem` check 802.11 and UDP fault recovery.
-- `make test-network-lan`, `make test-network-hotspot-client`, and `make test-network-hotspot-owner` check real Wi-Fi association and bidirectional TCP paths.
-- `make test-network-wifi-direct-client` checks the supported Linux-client P2P role against a simulated remote group owner.
-- `make oracle-reference-provision` builds the pinned Google oracle; `make test-oracle-reference` checks UKEY2 both ways.
-- `make test-oracle-{bluetooth,ble,lan,hotspot,wifi-direct}` checks one pinned Google simulated connection family.
-- `make test-oracle-bwu-handler` checks selected Bluetooth, Wi-Fi Direct, and LAN simulated semantics; `make test-oracle-bwu-fallback` checks selected fallback semantics, not cross-peer transfer interoperability.
-- `make test-rust` runs workspace Rust tests; `make test-tooling` runs
-  quality-gate and hook contract tests.
-- `make test-plugin-release` checks the allowlisted plugin export and every
-  native availability state through Quick Shell.
-- `make test-local-install` checks local binary installation and the systemd
-  user-service lifecycle; `make install-local` performs the local install.
-- `make test-contracts` runs shared transfer scenarios against fast doubles; simulator adapters consume the same scenarios.
-- `make test-nearshare-reference` runs the pinned diverse LAN peer through discovery, encryption, both transfer roles, and byte-integrity checks.
-- `make diverse-lan-{up,down}` measures the isolated NearShare↔Google-derived LAN lifecycle.
-- `make test-diverse-lan` checks simulated/reference mDNS, PIN fingerprints, both transfer roles, SHA-256 bytes, and a clean repeat.
-- `make rust-lan-provision` rebuilds the daemon image; `make test-rust-lan-{outbound,inbound}` checks encrypted FILE bytes in one direction each.
-- `make test-rust-lan-{inbound-content,outbound-content}` checks text and the exact 20-byte URL with decoded Retry 12 in one direction each.
-- `make test-rust-lan-rejection` checks both receiver roles while held before consent and payload data; `make test-rust-lan-cancellation-{inbound,outbound}` gives each sender role its own 60-second child.
-- `make test-rust-lan-retry` checks Retry 12 plus FILE data in both roles; `make test-rust-lan-failure-{inbound,outbound}` gives each pre-consent/data peer-loss role its own 60-second child.
-- `make test-rust-lan` provisions once, then runs all ten LAN child gates; use it before claiming live LAN interoperability.
-- `make lint-nearby-linux` and `make test-nearby-linux-tooling` check the
-  Google-derived peer definition and its fast contract tests.
-- `make test-nearby-linux-connections`, `make test-nearby-linux-sharing`, and
-  `make test-nearby-linux-sharing-actions` run each prepared live peer suite.
-- `make test-nearby-linux-sharing-fixtures` compares every generated Google
-  Sharing frame and trace with the pinned corpus.
-- `make test-android-nearby` runs the experimental AVD admission control; it is not a compatibility gate until it passes repeatably.
-- `make verify-app` gives application-only feedback; `make verify-tooling` checks development tooling without starting environments.
-- `make pre-commit` checks the staged snapshot and its affected tests;
-  `make pre-push` serializes exact-commit verification and builds in a stable
-  ignored worktree.
-- `make verify` runs the complete local quality suite; `make build` performs the locked workspace build after verification.
 
 ## Maintaining this guide
 
-- Keep this file concise and broadly applicable. Prefer fewer than 200 lines; 500 is the hard limit.
-- Add a rule after a repeated agent error or when a project fact cannot be inferred from code, commands, or the linked source of truth.
-- Put a subsystem-only rule in a nested `AGENTS.md` when that subtree exists. Keep essential repository policy here and do not duplicate parent instructions.
-- Update or remove stale instructions in the same change that alters the related workflow, command, path, or policy.
-
-## SKILLS
-
-ponytail
-ponytail review
-implement
-tdd
-multi-stage-dockerfile
-
-Use other skills if they are applicable.
-Find them here:
-/home/ollie/Skills
+- Keep this guide concise and broadly applicable, preferably below 200 lines.
+- Add rules for repeated agent errors or project facts absent from code, commands, and linked policy.
+- Put subsystem-only rules in a nested `AGENTS.md` when that subtree exists.
+- Keep essential repository policy here without duplicating parent instructions.
+- Update affected policy and command documentation in the same change.
+- Remove stale instructions when their workflow, command, path, or policy changes.

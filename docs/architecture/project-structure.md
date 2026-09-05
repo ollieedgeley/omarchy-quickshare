@@ -46,7 +46,6 @@ Directories shown below are reserved locations, not instructions to create empty
 │       ├── network/
 │       └── storage/
 ├── docs/
-│   ├── adr/
 │   ├── architecture/
 │   ├── operations/
 │   ├── policy/
@@ -236,7 +235,7 @@ The future file-count gate must enforce these rules in addition to the existing 
 - generated, vendored, cache, and artifact directories are excluded from the count only when their path and provenance are declared
 - crossing a budget adds a child under the existing owner; it never creates numbered parts or a catch-all directory
 
-When this gate is implemented, the same change must add its narrow Make command to `AGENTS.md` under `Fast feedback gates`.
+When this gate is implemented, the same change must add its narrow Make command to [Fast feedback gates](../development-workflow.md#fast-feedback-gates).
 
 ## Predicted additions
 
