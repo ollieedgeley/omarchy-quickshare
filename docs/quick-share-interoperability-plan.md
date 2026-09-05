@@ -208,6 +208,14 @@ The current reproducible evidence is:
 - real peer loss proves socket EOF through Core polling, Sharing, and app state
   in both roles. It does not simulate discovery loss; advertisement loss
   remains nonterminal.
+- `make test-diverse-lan` is green in 22.56 seconds including lifecycle. It
+  proves equal per-run salted PIN fingerprints and exact FILE bytes for
+  Google-to-NearShare, NearShare-to-Google, and a clean repeated
+  Google-to-NearShare transfer;
+- the test-only `prepareNearShareSource` adapter rewrites only
+  `nearshare/core/crypto.py::pin_code` so Python emulates Google's C++ signed
+  `% 9973`. The immutable NearShare pin and source remain unchanged. This is
+  prepared-adapter evidence, not stock NearShare, Android, or other transports.
 
 The old-image Google-derived `FILE` retry decoded frame 12 before
 `unexpected_frame_type`. The old-image inbound-content gate then completed TEXT

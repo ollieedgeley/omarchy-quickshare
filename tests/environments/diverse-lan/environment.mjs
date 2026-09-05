@@ -43,7 +43,8 @@ const RECEIVER_READY_TIMEOUT_MS = 5_000;
 const RECEIVER_READY_POLL_MS = 20;
 const NEARSHARE_RECEIVER_READY_PATTERN =
   /"event": "ready", "role": "receiver"/u;
-const PIN_FINGERPRINT_PATTERN = /fingerprint[=":]+(?<fingerprint>[a-f0-9]+)/gu;
+const PIN_FINGERPRINT_PATTERN =
+  /fingerprint(?:=|":\s*")(?<fingerprint>[a-f0-9]+)/gu;
 const XDG = {
   XDG_CONFIG_HOME: "/run/quickshare/config",
   XDG_DOWNLOAD_DIR: "/cases/received",
