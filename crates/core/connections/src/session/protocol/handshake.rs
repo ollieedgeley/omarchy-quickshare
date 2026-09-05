@@ -5,10 +5,13 @@ use super::{
     frames::{request, request_data, response, response_data},
     io::{read, receive_plain, send_plain, write},
 };
+use core::time::Duration;
 use quickshare_crypto::{CompletedHandshake, Handshake};
 use std::{
     collections::{HashMap, VecDeque},
+    io,
     net::TcpStream,
+    time::Instant,
 };
 
 impl Connection {
@@ -117,6 +120,20 @@ impl Connection {
         &self.verification_code
     }
 
+    /// Bounds each subsequent blocking read to `timeout`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the active stream cannot apply the timeout.
+    pub fn set_read_timeout(&mut self, timeout: Duration) -> Result<(), Error> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| io::Error::other("read deadline overflow"))?;
+        self.stream.set_read_timeout(timeout)?;
+        self.read_deadline = Some(deadline);
+        Ok(())
+    }
+
     fn new(
         stream: Box<dyn ConnectionIo>,
         completed: CompletedHandshake,
@@ -128,6 +145,7 @@ impl Connection {
         let channel = completed.into_channel();
         Self {
             stream,
+            read_deadline: None,
             channel,
             incoming_bytes: HashMap::default(),
             payloads: HashMap::default(),

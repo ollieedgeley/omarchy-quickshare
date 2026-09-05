@@ -1,3 +1,4 @@
+use core::time::Duration;
 use quickshare_crypto::SecureChannel;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -6,6 +7,7 @@ use std::{
     fmt, io,
     io::{Read, Write},
     net::{Shutdown, TcpStream},
+    time::Instant,
 };
 
 mod frame;
@@ -28,11 +30,22 @@ pub trait ConnectionIo: Read + Write + Send {
     ///
     /// Returns an I/O error when the write half cannot be shut down.
     fn shutdown_write(&mut self) -> io::Result<()>;
+
+    /// Bounds each subsequent blocking read to `timeout`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the stream cannot apply the timeout.
+    fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()>;
 }
 
 impl ConnectionIo for TcpStream {
     fn shutdown_write(&mut self) -> io::Result<()> {
         Self::shutdown(self, Shutdown::Write)
+    }
+
+    fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        Self::set_read_timeout(self, Some(timeout))
     }
 }
 
@@ -41,11 +54,19 @@ impl ConnectionIo for UnixStream {
     fn shutdown_write(&mut self) -> io::Result<()> {
         Self::shutdown(self, Shutdown::Write)
     }
+
+    fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        Self::set_read_timeout(self, Some(timeout))
+    }
 }
 
 impl ConnectionIo for Box<dyn ConnectionIo> {
     fn shutdown_write(&mut self) -> io::Result<()> {
         (**self).shutdown_write()
+    }
+
+    fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        (**self).set_read_timeout(timeout)
     }
 }
 
@@ -195,6 +216,7 @@ struct IncomingBytes {
 /// An encrypted Nearby Connections relationship over a byte stream.
 pub struct Connection {
     stream: Box<dyn ConnectionIo>,
+    read_deadline: Option<Instant>,
     channel: SecureChannel,
     incoming_bytes: HashMap<i64, IncomingBytes>,
     payloads: HashMap<i64, PayloadKind>,

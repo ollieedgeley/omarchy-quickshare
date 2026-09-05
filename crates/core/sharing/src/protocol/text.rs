@@ -142,7 +142,7 @@ impl SharingSession {
         self.connection
             .send_bytes(TEXT_PAYLOAD_ID, value.as_bytes())?;
         on_progress(u64::try_from(value.len()).unwrap_or(0));
-        Ok(())
+        self.wait_for_outgoing_completion(TEXT_PAYLOAD_ID, &mut is_cancelled)
     }
 
     fn receive_incoming_value<Progress, Cancelled>(
@@ -159,24 +159,29 @@ impl SharingSession {
         if offer.kind() != expected {
             return Err(ProtocolError::InvalidPayload);
         }
-        self.stop_if_cancelled(&mut is_cancelled)?;
-        match self.next_transfer_event()? {
-            Event::Bytes { id, bytes }
-                if id != offer.payload_id() && frames::is_cancel(&bytes)? =>
-            {
-                Err(ProtocolError::Cancelled)
-            }
-            Event::Bytes { id, bytes } => {
-                let size = i64::try_from(bytes.len())
-                    .map_err(|_| ProtocolError::InvalidPayload)?;
-                if id != offer.payload_id() || size != offer.size_bytes() {
-                    return Err(ProtocolError::InvalidPayload);
+        loop {
+            self.stop_if_cancelled(&mut is_cancelled)?;
+            match self.next_transfer_event_for(offer.payload_id())? {
+                Event::Bytes { id, bytes } if id == offer.payload_id() => {
+                    let size = i64::try_from(bytes.len())
+                        .map_err(|_| ProtocolError::InvalidPayload)?;
+                    if size != offer.size_bytes() {
+                        return Err(ProtocolError::InvalidPayload);
+                    }
+                    on_progress(u64::try_from(bytes.len()).unwrap_or(0));
+                    return String::from_utf8(bytes)
+                        .map_err(|_| ProtocolError::InvalidPayload);
                 }
-                on_progress(u64::try_from(bytes.len()).unwrap_or(0));
-                String::from_utf8(bytes)
-                    .map_err(|_| ProtocolError::InvalidPayload)
+                Event::Bytes { bytes, .. } if frames::is_v1_control(&bytes) => {
+                    if frames::is_cancel(&bytes)? {
+                        return Err(ProtocolError::Cancelled);
+                    }
+                }
+                Event::Disconnected => {
+                    return Err(ProtocolError::Disconnected);
+                }
+                _ => return Err(ProtocolError::InvalidPayload),
             }
-            _ => Err(ProtocolError::InvalidPayload),
         }
     }
 }

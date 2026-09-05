@@ -1,7 +1,10 @@
 use super::{FILE_CHUNK_SIZE, FILE_PAYLOAD_ID, SharingSession};
 use crate::protocol::{IncomingOffer, ProtocolError, frames, offer};
+use core::time::Duration;
 use quickshare_connections::Event;
 use std::io::{Read, Write};
+
+const OUTGOING_COMPLETION_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl SharingSession {
     /// Receives a file payload into a caller-owned destination.
@@ -73,36 +76,42 @@ impl SharingSession {
             wire_size,
             &mut on_progress,
             &mut is_cancelled,
-        )
+        )?;
+        self.wait_for_outgoing_completion(FILE_PAYLOAD_ID, &mut is_cancelled)
     }
 
     fn receive_file_header(
         &mut self,
         offer: &IncomingOffer,
     ) -> Result<(i64, u64), ProtocolError> {
-        let event = self.next_transfer_event()?;
-        if let Event::Bytes { bytes, .. } = &event
-            && frames::is_cancel(bytes)?
-        {
-            return Err(ProtocolError::Cancelled);
+        loop {
+            match self.next_transfer_event_for(offer.payload_id())? {
+                Event::Bytes { bytes, .. } if frames::is_v1_control(&bytes) => {
+                    if frames::is_cancel(&bytes)? {
+                        return Err(ProtocolError::Cancelled);
+                    }
+                }
+                Event::FileHeader {
+                    id,
+                    total_size,
+                    name,
+                } => {
+                    if id != offer.payload_id()
+                        || total_size != offer.size_bytes()
+                        || name.as_deref() != Some(offer.name())
+                    {
+                        return Err(ProtocolError::InvalidPayload);
+                    }
+                    let size = u64::try_from(total_size)
+                        .map_err(|_| ProtocolError::InvalidPayload)?;
+                    return Ok((id, size));
+                }
+                Event::Disconnected => {
+                    return Err(ProtocolError::Disconnected);
+                }
+                _ => return Err(ProtocolError::InvalidPayload),
+            }
         }
-        let Event::FileHeader {
-            id,
-            total_size,
-            name,
-        } = event
-        else {
-            return Err(ProtocolError::InvalidPayload);
-        };
-        if id != offer.payload_id()
-            || total_size != offer.size_bytes()
-            || name.as_deref() != Some(offer.name())
-        {
-            return Err(ProtocolError::InvalidPayload);
-        }
-        u64::try_from(total_size)
-            .map(|size| (id, size))
-            .map_err(|_| ProtocolError::InvalidPayload)
     }
 
     fn receive_file_chunks<Writer, Progress, Cancelled>(
@@ -121,11 +130,14 @@ impl SharingSession {
         let mut received = 0_u64;
         loop {
             self.stop_if_cancelled(is_cancelled)?;
-            let event = self.next_transfer_event()?;
+            let event = self.next_transfer_event_for(id)?;
             if let Event::Bytes { bytes, .. } = &event
-                && frames::is_cancel(bytes)?
+                && frames::is_v1_control(bytes)
             {
-                return Err(ProtocolError::Cancelled);
+                if frames::is_cancel(bytes)? {
+                    return Err(ProtocolError::Cancelled);
+                }
+                continue;
             }
             let Event::FileChunk {
                 id: chunk_id,
@@ -134,7 +146,11 @@ impl SharingSession {
                 is_last,
             } = event
             else {
-                return Err(ProtocolError::InvalidPayload);
+                return if matches!(event, Event::Disconnected) {
+                    Err(ProtocolError::Disconnected)
+                } else {
+                    Err(ProtocolError::InvalidPayload)
+                };
             };
             let expected_offset = i64::try_from(received)
                 .map_err(|_| ProtocolError::InvalidPayload)?;
@@ -208,8 +224,7 @@ impl SharingSession {
             let next_offset = offset
                 .checked_add(read_size)
                 .ok_or(ProtocolError::InvalidPayload)?;
-            let is_last = next_offset == size;
-            if is_last {
+            if next_offset == size {
                 let mut extra = [0_u8; 1];
                 if reader.read(&mut extra)? != 0 {
                     return Err(ProtocolError::InvalidPayload);
@@ -220,12 +235,77 @@ impl SharingSession {
                 i64::try_from(offset)
                     .map_err(|_| ProtocolError::InvalidPayload)?,
                 &buffer[..read],
-                is_last,
+                false,
             )?;
             offset = next_offset;
             on_progress(offset);
         }
+        self.stop_if_cancelled(is_cancelled)?;
+        self.connection.send_file_chunk(
+            FILE_PAYLOAD_ID,
+            wire_size,
+            &[],
+            true,
+        )?;
         Ok(())
+    }
+
+    pub(in crate::protocol) fn wait_for_outgoing_completion<Cancelled>(
+        &mut self,
+        payload_id: i64,
+        is_cancelled: &mut Cancelled,
+    ) -> Result<(), ProtocolError>
+    where
+        Cancelled: FnMut() -> bool,
+    {
+        self.stop_if_cancelled(is_cancelled)?;
+        self.connection
+            .set_read_timeout(OUTGOING_COMPLETION_TIMEOUT)?;
+        loop {
+            self.stop_if_cancelled(is_cancelled)?;
+            let event = match self.next_transfer_event_for(payload_id) {
+                Ok(event) => event,
+                Err(error) => {
+                    if is_cancelled() {
+                        return Err(ProtocolError::Cancelled);
+                    }
+                    return Err(error);
+                }
+            };
+            if is_cancelled() {
+                return Err(ProtocolError::Cancelled);
+            }
+            match event {
+                Event::Disconnected => return Ok(()),
+                Event::Bytes { bytes, .. } if frames::is_v1_control(&bytes) => {
+                    if frames::is_cancel(&bytes)? {
+                        return Err(ProtocolError::Cancelled);
+                    }
+                }
+                _ => return Err(ProtocolError::InvalidPayload),
+            }
+        }
+    }
+
+    pub(in crate::protocol) fn next_transfer_event_for(
+        &mut self,
+        payload_id: i64,
+    ) -> Result<Event, ProtocolError> {
+        loop {
+            match self.connection.receive()? {
+                Event::PayloadCancelled { id, .. } if id == payload_id => {
+                    return Err(ProtocolError::Cancelled);
+                }
+                Event::PayloadError { id, .. } if id == payload_id => {
+                    return Err(ProtocolError::InvalidPayload);
+                }
+                Event::KeepAlive { .. }
+                | Event::Upgrade { .. }
+                | Event::PayloadCancelled { .. }
+                | Event::PayloadError { .. } => {}
+                event => return Ok(event),
+            }
+        }
     }
 
     pub(in crate::protocol) fn next_transfer_event(

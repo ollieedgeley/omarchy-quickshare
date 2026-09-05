@@ -2,20 +2,25 @@
 
 use std::io::{self, Read, Write};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::bus::DbusBytePipe;
 use crate::classic::ClassicSocket;
 use crate::gatt::WeaveSocket;
 use crate::l2cap::L2capChannel;
-use crate::radio::Error;
+use crate::radio::{Error, ErrorKind};
+
 use crate::weave::{Assembler, recv_data, send_data};
+
+const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A bounded authenticated byte stream independent of BlueZ medium.
 #[derive(Debug)]
 pub struct BluetoothIo {
     /// Raw Classic/L2CAP pipe or framed GATT weave pipe.
     inner: IoInner,
+    /// Bound for one blocking stream read.
+    read_timeout: Duration,
 }
 
 #[derive(Debug)]
@@ -48,6 +53,7 @@ impl BluetoothIo {
                 pipe: socket.into_dbus_pipe()?,
                 leftover: Mutex::new(Vec::new()),
             },
+            read_timeout: DEFAULT_READ_TIMEOUT,
         })
     }
 
@@ -58,6 +64,7 @@ impl BluetoothIo {
                 pipe: channel.into_dbus_pipe()?,
                 leftover: Mutex::new(Vec::new()),
             },
+            read_timeout: DEFAULT_READ_TIMEOUT,
         })
     }
 
@@ -70,6 +77,7 @@ impl BluetoothIo {
                 leftover: Mutex::new(Vec::new()),
                 requested: Mutex::new(false),
             },
+            read_timeout: DEFAULT_READ_TIMEOUT,
         })
     }
 
@@ -93,23 +101,28 @@ impl quickshare_connections::ConnectionIo for BluetoothIo {
     fn shutdown_write(&mut self) -> io::Result<()> {
         BluetoothIo::shutdown_write(self)
     }
+
+    #[inline]
+    fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.read_timeout = timeout;
+        Ok(())
+    }
 }
 
 impl Read for BluetoothIo {
     #[inline]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let timeout = self.read_timeout;
         match &self.inner {
             IoInner::Raw { pipe, leftover } => {
-                read_buffered(leftover, buf, || {
-                    pipe.recv(Duration::from_secs(60)).map_err(io::Error::other)
-                })
+                read_buffered(leftover, buf, || read_result(pipe.recv(timeout)))
             }
             IoInner::Weave {
                 pipe,
                 assembler,
                 leftover,
                 ..
-            } => read_weave(pipe, assembler, leftover, buf),
+            } => read_weave(pipe, assembler, leftover, buf, timeout),
         }
     }
 }
@@ -199,17 +212,30 @@ fn read_weave(
     assembler: &Mutex<Assembler>,
     leftover: &Mutex<Vec<u8>>,
     buf: &mut [u8],
+    timeout: Duration,
 ) -> io::Result<usize> {
     read_buffered(leftover, buf, || {
         let mut assembler = assembler
             .lock()
             .map_err(|_| io::Error::other("weave assembler lock poisoned"))?;
-        recv_data(
+        read_result(recv_data(
             &mut assembler,
-            Duration::from_secs(60),
-            |deadline| pipe.recv(deadline),
+            timeout,
+            |deadline| {
+                let remaining = deadline
+                    .checked_duration_since(Instant::now())
+                    .filter(|remaining| !remaining.is_zero())
+                    .ok_or_else(Error::timeout)?;
+                pipe.recv(remaining)
+            },
             |pdu| pipe.send(pdu),
-        )
-        .map_err(io::Error::other)
+        ))
     })
+}
+
+fn read_result(result: Result<Vec<u8>, Error>) -> io::Result<Vec<u8>> {
+    match result {
+        Err(error) if error.kind() == ErrorKind::Closed => Ok(Vec::new()),
+        outcome => outcome.map_err(io::Error::other),
+    }
 }

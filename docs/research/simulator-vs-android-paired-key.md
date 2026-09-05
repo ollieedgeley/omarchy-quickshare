@@ -22,10 +22,13 @@ Before the local lifecycle change:
 The current local code implements that Google and RQuickShare BYTES lifecycle.
 Non-empty bodies go out as `DATA` without `LAST_CHUNK`, then an empty terminal
 `DATA` at `offset = size` with `LAST_CHUNK`. A valid `PAYLOAD_ACK` is ignored.
-`PAYLOAD_ERROR` and `PAYLOAD_CANCELED` discard matching partial receive state
-before becoming typed events. Sharing control frames use fresh payload IDs.
-Attachment payload ID `3` is unchanged. Text cancellation decoding probes only
-non-attachment IDs.
+Payload errors and cancellations affect only the matching active payload ID.
+Inbound text and URL distinguish their introduced payload from structurally
+valid V1 Sharing controls on other IDs; `CANCEL` terminates the share, while
+other controls may interleave without being mistaken for attachment data.
+Malformed controls, wrong attachment IDs and sizes, and invalid UTF-8 fail.
+Outbound text and URL wait up to 60 seconds for a clean receiver disconnect.
+Cancellation remains authoritative; timeout or truncated framed input fails.
 
 That local change is not a measured phone fix. The inbound physical run that
 reached paired-key `receive_result` and then `connection_unexpected_frame` was
@@ -107,8 +110,49 @@ which was a separate post-pairing lifecycle risk.
 
 The current code matches the implemented contract below. Control frames call
 [`next_control_payload_id`][local-control-id], which skips `0` and attachment
-payload ID `3`. Text cancellation decoding only treats a BYTES event as cancel
-when its ID is not the offer attachment ID.
+payload ID `3`. During text, URL, and file transfer, only a structurally valid
+V1 Sharing frame on another ID is control; matching-ID data remains attachment
+data, and status errors or cancellations are scoped to their payload ID.
+
+## Source conformance audit
+
+- **Discovery advertisement — source-aligned, runtime unverified.** Google's
+  [`Advertisement`][google-advertisement] length-validates salt and metadata
+  key, while capability fields are optional. No defect was established. Actual
+  BLE, Bluetooth Classic, and LAN discovery against a current phone are
+  unverified.
+- **Connection media — fallback exists, runtime unverified.** An empty
+  supported-medium list has Google's documented fallback in
+  [`BasePcpHandler`][google-pcp]. Per-medium negotiation, timeouts, fallback,
+  and upgrades remain unverified on real radios; no source audit proved them
+  defective.
+- **UKEY2 and D2D — source-aligned.** Key derivation, the authentication-string
+  salt's trailing NUL, directional keys, and increment-before-send sequencing
+  match the pinned UKEY2 sources. This audit did not rerun exhaustive negative
+  crypto cases.
+- **Paired-key exchange — source-aligned for the supported mode.** Send/read
+  order and account-free `UNABLE` fallback match
+  [`PairedKeyVerificationRunner`][google-pairing]. Hidden non-Everyone inbound
+  fails in Google rather than falling back; that account-backed product mode is
+  unsupported here.
+- **Introduction and consent — source-aligned.** Status-only responses,
+  distinct attachment/payload IDs, and split APK counting match Google. Fixed
+  IDs that stay distinct within a transfer are valid. Attachment kinds outside
+  the declared product scope remain unsupported.
+- **Attachment transfer — corrected locally, not phone-proven.** Source now
+  emits Google's empty terminal FILE chunk, demultiplexes recognized V1 Sharing
+  controls from attachment data, and scopes payload status by ID. Public
+  regressions prove local behavior; current-phone behavior has not been
+  measured.
+- **Terminal outcome — corrected locally, not phone-proven.** Outbound
+  attachments wait at most 60 seconds after the final local write for a clean
+  receiver disconnect. Local or matching peer cancellation remains
+  authoritative, and a matching error, timeout, or truncated framed input
+  fails, following [`OutgoingShareSession`][google-outgoing]. No current phone
+  run proves the disconnect timing.
+- **Radio and upgrade — unverified.** BLE/GATT, Classic, LAN migration, hotspot,
+  Wi-Fi Direct, per-medium timeout, and fallback need direction-specific
+  runtime evidence. No additional source defect was established.
 
 ## Why the simulated setup passes
 
@@ -185,10 +229,16 @@ and not a claim that a physical phone now interoperates.
 Non-empty BYTES payloads emit `DATA` body flags `0`, then empty `DATA` at
 `offset = size` with `LAST_CHUNK`. A valid `PAYLOAD_ACK` is accepted and
 ignored when the endpoint does not track acknowledgements. `CONTROL`
-`PAYLOAD_ERROR` and `PAYLOAD_CANCELED` become typed events or outcomes, not
-`UnexpectedFrame`. Sharing control frames use a fresh sender-generated ID.
-Attachment payload ID `3` stays correlated to introduction metadata. Text
-cancellation decoding only probes non-attachment IDs.
+`PAYLOAD_ERROR` and `PAYLOAD_CANCELED` become ID-scoped typed events or
+outcomes, not `UnexpectedFrame`. Sharing control frames use a fresh
+sender-generated ID. Attachment payload ID `3` stays correlated to introduction
+metadata. Inbound text, URL, and file paths skip only valid V1 controls on other
+IDs, honor `CANCEL`, and preserve exact payload ID, offset, size, and content
+validation. Outbound files emit non-empty chunks without `LAST_CHUNK`, followed
+by one empty terminal chunk at the declared size. Outbound attachments wait at
+most 60 seconds for a clean receiver disconnect after their final write.
+Cancellation remains authoritative; matching error, timeout, or truncated
+framed input remains failure.
 
 `CONTROL` and `PAYLOAD_ACK` remain candidates for the recorded phone failure
 until logs record the rejected V1 frame type, payload packet type, and control
@@ -205,6 +255,9 @@ event.
 [android-payload]: https://developers.google.com/android/reference/com/google/android/gms/nearby/connection/Payload
 [connections-overview]: https://developers.google.com/nearby/connections/overview
 [google-pairing]: https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/sharing/paired_key_verification_runner.cc
+[google-advertisement]: https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/sharing/advertisement.cc
+[google-outgoing]: https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/sharing/outgoing_share_session.cc
+[google-pcp]: https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/connections/implementation/base_pcp_handler.cc
 [google-payload-manager]: https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/connections/implementation/payload_manager.cc
 [google-payload]: https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/sharing/nearby_connections_types.h
 [google-session]: https://github.com/google/nearby/blob/588531995decf09500870ed4d2e1ac6740a3e338/sharing/share_session.cc

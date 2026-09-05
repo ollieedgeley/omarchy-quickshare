@@ -4,9 +4,9 @@
 //! first/last flags, and a 2-bit command. Layer B prefixes reassembled
 //! payloads with a 3-byte service-id hash (`fc9f5e` data, `000000` control).
 
-use core::time::Duration;
+use std::time::{Duration, Instant};
 
-use crate::radio::Error;
+use crate::radio::{Error, ErrorKind};
 
 /// Control bit in a layer-A header.
 pub(crate) const CONTROL: u8 = 0x80;
@@ -194,16 +194,28 @@ where
 /// Reads GATT PDUs, answers layer-A handshake, and returns one data payload.
 pub(crate) fn recv_data<R, W>(
     assembler: &mut Assembler,
-    deadline: Duration,
+    timeout: Duration,
     mut read_pdu: R,
     mut write_pdu: W,
 ) -> Result<Vec<u8>, Error>
 where
-    R: FnMut(Duration) -> Result<Vec<u8>, Error>,
+    R: FnMut(Instant) -> Result<Vec<u8>, Error>,
     W: FnMut(&[u8]) -> Result<(), Error>,
 {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(Error::timeout)?;
     loop {
-        let pdu = read_pdu(deadline)?;
+        let pdu = match read_pdu(deadline) {
+            Err(error)
+                if error.kind() == ErrorKind::Closed && assembler.started =>
+            {
+                return Err(Error::protocol(
+                    "truncated weave message at pipe close",
+                ));
+            }
+            result => result?,
+        };
         match decode_pdu(&pdu)? {
             Packet::Request => write_pdu(&encode_confirm())?,
             Packet::Confirm | Packet::Error => {}
@@ -297,9 +309,12 @@ fn is_disconnect(control: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::time::Duration;
+
     use super::{
         Assembler, Message, decode_pdu, encode_confirm, encode_data,
-        encode_request,
+        encode_request, recv_data,
     };
     use crate::radio::ErrorKind;
 
@@ -333,6 +348,75 @@ mod tests {
             Some(Message::Data(bytes)) => assert_eq!(bytes, payload),
             _ => panic!("expected reassembled data"),
         }
+    }
+    #[test]
+    fn control_pdus_do_not_extend_the_read_deadline() {
+        let timeout = Duration::from_millis(3);
+        let mut now = None;
+        let mut pdus = VecDeque::from([
+            encode_request(),
+            encode_confirm(),
+            encode_confirm(),
+            encode_data(b"too late", 64).remove(0),
+        ]);
+        let error = recv_data(
+            &mut Assembler::new(),
+            timeout,
+            |read_deadline| {
+                let now = now.get_or_insert_with(|| {
+                    read_deadline
+                        .checked_sub(timeout)
+                        .expect("deadline includes timeout")
+                });
+                if *now >= read_deadline {
+                    return Err(crate::radio::Error::timeout());
+                }
+                *now += Duration::from_millis(1);
+                Ok(pdus.pop_front().expect("queued PDU"))
+            },
+            |_| Ok(()),
+        )
+        .expect_err("control PDUs must not reset the deadline");
+
+        assert_eq!(error.kind(), ErrorKind::Timeout);
+    }
+
+    #[test]
+    fn graceful_disconnect_is_closed_not_protocol_failure() {
+        let error = recv_data(
+            &mut Assembler::new(),
+            Duration::from_secs(1),
+            |_| Ok(vec![0x0C, 0x00, 0x00, 0x00, 0x08, 0x02]),
+            |_| Ok(()),
+        )
+        .expect_err("disconnect");
+
+        assert_eq!(error.kind(), ErrorKind::Closed);
+    }
+
+    #[test]
+    fn pipe_close_is_clean_only_between_weave_messages() {
+        let boundary = recv_data(
+            &mut Assembler::new(),
+            Duration::from_secs(1),
+            |_| Err(crate::radio::Error::closed()),
+            |_| Ok(()),
+        )
+        .expect_err("boundary close");
+        assert_eq!(boundary.kind(), ErrorKind::Closed);
+
+        let mut pdus = VecDeque::from([
+            Ok(vec![0x08, 0xFC, 0x9F]),
+            Err(crate::radio::Error::closed()),
+        ]);
+        let truncated = recv_data(
+            &mut Assembler::new(),
+            Duration::from_secs(1),
+            |_| pdus.pop_front().expect("queued pipe result"),
+            |_| Ok(()),
+        )
+        .expect_err("close during fragmented weave message");
+        assert_eq!(truncated.kind(), ErrorKind::Protocol);
     }
 
     #[test]

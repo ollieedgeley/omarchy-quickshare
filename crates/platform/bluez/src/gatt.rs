@@ -3,6 +3,7 @@
 use core::time::Duration;
 use std::mem;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use crate::advertisement::powered_slot;
 use crate::radio::{
@@ -166,7 +167,13 @@ impl WeaveSocket {
                 recv_data(
                     &mut assembler,
                     deadline,
-                    |deadline| state.handle.recv(deadline),
+                    |deadline| {
+                        let remaining = deadline
+                            .checked_duration_since(Instant::now())
+                            .filter(|remaining| !remaining.is_zero())
+                            .ok_or_else(Error::timeout)?;
+                        state.handle.recv(remaining)
+                    },
                     |pdu| state.handle.send(pdu),
                 )
             }

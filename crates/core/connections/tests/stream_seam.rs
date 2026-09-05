@@ -15,7 +15,7 @@ use quickshare_connections::{
 use quickshare_crypto::Handshake;
 use quickshare_wire::sharing::Frame;
 use rand_core as _;
-use std::{os::unix::net::UnixStream, thread};
+use std::{io::Write as _, os::unix::net::UnixStream, thread};
 
 const INITIATOR_RANDOM: [u8; 32] = [1; 32];
 const RESPONDER_RANDOM: [u8; 32] = [2; 32];
@@ -230,4 +230,56 @@ fn unix_pair_complete_upgrade_io_continues_payload_on_new_stream() {
         .send_bytes(11, b"after")
         .expect("send bytes after medium switch");
     responder.join().expect("responder completes");
+}
+
+#[test]
+fn clean_eof_disconnects_but_truncated_frames_are_io_errors() {
+    let connect = |tail: &[u8]| {
+        let (receiver_stream, sender_stream) =
+            UnixStream::pair().expect("unix pair");
+        let mut raw_sender =
+            sender_stream.try_clone().expect("clone sender stream");
+        let copied_tail = tail.to_vec();
+        let sender = thread::spawn(move || {
+            let _connection = Connection::connect_io(
+                sender_stream,
+                Handshake::initiator(INITIATOR_RANDOM, INITIATOR_SECRET),
+                ConnectionOptions::new("initiator", "initiator"),
+            )
+            .expect("establish sender encryption");
+            raw_sender
+                .write_all(&copied_tail)
+                .expect("write raw frame tail");
+            raw_sender.flush().expect("flush raw frame tail");
+        });
+        let connection = Connection::accept_io(
+            receiver_stream,
+            Handshake::responder(RESPONDER_RANDOM, RESPONDER_SECRET),
+            ConnectionOptions::new("responder", "responder"),
+        )
+        .expect("establish receiver encryption");
+        (connection, sender)
+    };
+
+    let (mut clean, clean_sender) = connect(&[]);
+    assert_eq!(
+        clean.receive().expect("clean EOF on a frame boundary"),
+        Event::Disconnected
+    );
+    clean_sender.join().expect("clean sender completes");
+
+    for (tail, label) in [
+        (&[0, 0][..], "partial frame prefix"),
+        (&[0, 0, 0, 4, 0][..], "partial declared frame body"),
+    ] {
+        let (mut connection, sender) = connect(tail);
+        assert!(
+            matches!(
+                connection.receive(),
+                Err(quickshare_connections::Error::Io(_))
+            ),
+            "{label} must remain an I/O error"
+        );
+        sender.join().expect("truncating sender completes");
+    }
 }

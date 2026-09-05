@@ -11,7 +11,7 @@ use core::time::Duration;
 
 use async_io as _;
 use futures_lite as _;
-use quickshare_connections as _;
+use quickshare_connections::ConnectionIo as _;
 use std::io::{Read, Write};
 use zbus as _;
 
@@ -102,4 +102,29 @@ fn raw_io_reads_fragmented_length_prefix_then_body() {
     let mut body = [0_u8; 3];
     reader.read_exact(&mut body).expect("body");
     assert_eq!(&body, b"xyz");
+}
+
+#[test]
+fn closing_a_raw_bluetooth_stream_is_clean_eof() {
+    let (writer, mut reader) =
+        FakeRadio::connected_classic_io().expect("classic pair");
+    drop(writer);
+
+    assert_eq!(reader.read(&mut [0_u8; 1]).expect("clean EOF"), 0);
+}
+
+#[test]
+fn raw_bluetooth_read_errors_are_preserved() {
+    let (_writer, mut reader) =
+        FakeRadio::connected_classic_io().expect("classic pair");
+    reader
+        .set_read_timeout(Duration::ZERO)
+        .expect("configure timeout");
+
+    let error = reader.read(&mut [0_u8; 1]).expect_err("timeout");
+    let bluetooth = error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<quickshare_bluez::Error>())
+        .expect("Bluetooth error source");
+    assert_eq!(bluetooth.kind(), ErrorKind::Timeout);
 }

@@ -65,6 +65,20 @@ pub(in crate::protocol) fn is_cancel(
             == Some(v1_frame::FrameType::Cancel as i32))
 }
 
+pub(in crate::protocol) fn is_v1_control(bytes: &[u8]) -> bool {
+    let Ok(frame) = Frame::decode(bytes) else {
+        return false;
+    };
+    if frame.version != Some(1) {
+        return false;
+    }
+    frame
+        .v1
+        .and_then(|v1| v1.r#type)
+        .and_then(|kind| v1_frame::FrameType::try_from(kind).ok())
+        .is_some_and(|kind| kind != v1_frame::FrameType::UnknownFrameType)
+}
+
 pub(in crate::protocol) fn decode_response(
     bytes: &[u8],
 ) -> Result<connection_response_frame::Status, ProtocolError> {
