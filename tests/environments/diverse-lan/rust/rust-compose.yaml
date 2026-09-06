@@ -47,6 +47,7 @@ services:
       context: ${RUST_LAN_CONTEXT:?set Rust LAN context}
       dockerfile: tests/environments/diverse-lan/rust/Dockerfile.rust-peer
     image: omarchy-quickshare/rust-lan-peer:development
+    init: true
     command: [infinity]
     environment:
       XDG_CONFIG_HOME: /cases/config
