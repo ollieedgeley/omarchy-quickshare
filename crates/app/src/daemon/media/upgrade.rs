@@ -19,7 +19,7 @@ use quickshare_sharing::ProtocolError;
 
 use crate::daemon::observations::{io_error_kind, protocol_io_kind};
 
-use super::{attempt_order, endpoint_name, medium_name};
+use super::{attempt_order, medium_name};
 
 /// Deadline used to join or own an upgraded Wi-Fi medium.
 const UPGRADE_DEADLINE: Duration = Duration::from_secs(8);
@@ -102,6 +102,7 @@ where
 pub(crate) fn initiate_bandwidth_upgrade(
     connection: &mut Connection,
     manager: Option<&NetworkManager>,
+    name: &str,
 ) -> Result<Option<WifiSession>, ProtocolError> {
     let current = connection.medium();
     if current.rank() >= Medium::WifiLan.rank() {
@@ -143,7 +144,7 @@ pub(crate) fn initiate_bandwidth_upgrade(
         };
         match started {
             Ok(session) => {
-                offer_hosted_path(connection, &session, port)?;
+                offer_hosted_path(connection, &session, port, name)?;
                 match wait_for_upgrade_stream(&listener) {
                     Ok(stream) => {
                         match connection.complete_upgrade_io(medium, stream) {
@@ -303,6 +304,7 @@ fn offer_hosted_path(
     connection: &mut Connection,
     session: &WifiSession,
     port: u16,
+    name: &str,
 ) -> Result<(), ProtocolError> {
     let candidate = session.candidate();
     let ip_address = candidate.addresses().first().copied();
@@ -314,7 +316,7 @@ fn offer_hosted_path(
         password: Some(String::from("quickshare")),
         port: Some(port),
         ssid: Some(String::from("DIRECT-OQSR")),
-        device_name: Some(String::from(endpoint_name())),
+        device_name: Some(String::from(name)),
         pin: None,
     };
     let medium = match candidate.medium() {

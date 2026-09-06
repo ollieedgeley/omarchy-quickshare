@@ -38,6 +38,9 @@ impl Daemon {
     )]
     fn apply_network_event(&mut self, event: NetworkEvent) {
         match event {
+            NetworkEvent::PreferencesConfigured { config, error } => {
+                self.preferences_configured(config, error);
+            }
             NetworkEvent::InboundCancelled { share_id } => {
                 let _cancelled = self.sharing.cancel(share_id);
                 tracing::info!(
@@ -292,11 +295,14 @@ impl Daemon {
         if let Some(share_id) =
             candidate_share_id.or_else(|| self.active_inbound_consent_id())
         {
-            let _transitioned = if cancelled {
+            let transitioned = if cancelled {
                 self.sharing.cancel(share_id)
             } else {
                 self.sharing.fail(share_id)
             };
+            if !transitioned {
+                return;
+            }
             let _observed = self.sharing.record_observation(
                 share_id,
                 None,

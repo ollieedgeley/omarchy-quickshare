@@ -37,6 +37,23 @@ make install-local-simulation
 
 Running `make install-local` again restores the normal service mode.
 
+## Preferences
+
+The native config is
+`${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-quickshare/config.toml`.
+Valid CLI or editor changes apply automatically without restarting the daemon.
+Use `omarchy-quickshare config show` to inspect saved preferences and
+`omarchy-quickshare config set device_name "My laptop"` to edit them.
+The CLI distinguishes applied, saved-offline, pending, and activation-error
+outcomes. Operations already admitted keep their settings until they finish.
+
+The plugin uses control protocol 4. Native status includes saved and applied
+preferences, pending activation, and errors. Pin/unpin actions require the
+daemon; `omarchy-quickshare config set pinned_peer_id pixel-8` also works offline.
+`discoverable` and `read_clipboard_on_select` default to `false` and are stored
+only. Later tickets own their policy; they do not yet change the panel or
+clipboard behavior described below.
+
 ## Terminal sharing
 
 Pass one text value, URL, file, or folder directly to the native CLI. The

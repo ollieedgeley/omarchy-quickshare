@@ -26,7 +26,7 @@ fn exchange(
     socket_path: &Path,
     request: &RequestEnvelope,
 ) -> io::Result<ResponseEnvelope> {
-    let mut stream = UnixStream::connect(socket_path).map_err(|error| {
+    let stream = UnixStream::connect(socket_path).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!(
@@ -36,6 +36,13 @@ fn exchange(
             ),
         )
     })?;
+    exchange_stream(stream, request)
+}
+
+fn exchange_stream(
+    mut stream: UnixStream,
+    request: &RequestEnvelope,
+) -> io::Result<ResponseEnvelope> {
     write_request(&mut stream, request)?;
     let response = read_response(&mut BufReader::new(stream))?;
     if response.version() != PROTOCOL_VERSION {
@@ -119,7 +126,9 @@ where
     Output: Write,
 {
     match command {
-        Command::Config { action } => config_command(action, output),
+        Command::Config { action } => {
+            config_command(action, socket_path, output)
+        }
         Command::Daemon { .. } => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "daemon commands start locally",
@@ -191,6 +200,7 @@ where
 
 fn config_command<Output>(
     action: ConfigCommand,
+    socket_path: &Path,
     output: &mut Output,
 ) -> io::Result<()>
 where
@@ -198,9 +208,29 @@ where
 {
     match action {
         ConfigCommand::Set { key, value } => {
-            let mut config = Config::load()?;
-            config.set(&key, &value)?;
-            writeln!(output, "Config updated.")
+            match UnixStream::connect(socket_path) {
+                Ok(stream) => {
+                    let response = exchange_stream(
+                        stream,
+                        &RequestEnvelope::patch_preferences(&key, &value),
+                    )?;
+                    write_action(output, response.response())
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound
+                            | io::ErrorKind::ConnectionRefused
+                    ) =>
+                {
+                    let _saved = Config::patch(&key, &value)?;
+                    writeln!(
+                        output,
+                        "Preferences saved; daemon offline, not applied."
+                    )
+                }
+                Err(error) => Err(error),
+            }
         }
         ConfigCommand::Show => write!(output, "{}", Config::load()?.to_toml()),
     }
@@ -302,6 +332,16 @@ where
 {
     match response {
         Response::Applied => writeln!(output, "Action applied."),
+        Response::Preferences { preferences } => {
+            if let Some(error) = &preferences.error {
+                return Err(io::Error::other(error.clone()));
+            }
+            if preferences.pending {
+                writeln!(output, "Preferences saved; activation pending.")
+            } else {
+                writeln!(output, "Preferences saved and applied.")
+            }
+        }
         Response::Cancelled => writeln!(output, "Share cancelled."),
         Response::NotFound => Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -330,34 +370,44 @@ fn write_status<Output>(
 where
     Output: Write,
 {
-    let Response::Snapshot { snapshot } = response else {
+    let Response::Snapshot {
+        snapshot,
+        preferences,
+    } = response
+    else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "endpoint did not return a snapshot",
         ));
     };
-    write_snapshot(output, snapshot)
+    write_snapshot(output, snapshot, preferences.applied.as_ref())?;
+    writeln!(output, "preferences_pending={}", preferences.pending)?;
+    if let Some(error) = &preferences.error {
+        writeln!(output, "preferences_error={error}")?;
+    }
+    Ok(())
 }
 
 /// Renders public snapshot fields used by humans and scripts.
 fn write_snapshot<Output>(
     output: &mut Output,
     snapshot: &EndpointSnapshot,
+    applied: Option<&quickshare_control::response::PreferenceValues>,
 ) -> io::Result<()>
 where
     Output: Write,
 {
-    let config = Config::load()?;
-    writeln!(
-        output,
-        "receive_directory={}",
-        config.receive_directory.display()
-    )?;
+    if let Some(applied) = applied {
+        let directory = applied.receive_directory.display();
+        writeln!(output, "receive_directory={directory}")?;
+    }
     writeln!(output, "discovery={:?}", snapshot.discovery())?;
     writeln!(output, "visibility={:?}", snapshot.visibility())?;
     if let Some(peer) = snapshot.peers().iter().find(|peer| peer.is_pinned()) {
         writeln!(output, "pinned_peer={}", peer.id())?;
-    } else if let Some(peer_id) = config.pinned_peer_id.as_deref() {
+    } else if let Some(peer_id) =
+        applied.and_then(|value| value.pinned_peer_id.as_deref())
+    {
         writeln!(output, "pinned_peer={peer_id}")?;
     } else {
         writeln!(output, "pinned_peer=")?;

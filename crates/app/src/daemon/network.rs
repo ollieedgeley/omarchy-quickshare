@@ -17,12 +17,8 @@ mod worker;
 mod tests;
 
 use alloc::sync::Arc;
-use core::{
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
-};
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::io;
-use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 
@@ -31,6 +27,7 @@ use self::worker::run_worker;
 use self::worker::{emit_peer_lost, remember_seen};
 use super::media::PeerRoute;
 use super::outbound::OutboundTransfer;
+use crate::config::Config;
 use quickshare_network::DnsSd;
 
 /// Commands sent from the local-control owner to the network worker.
@@ -43,6 +40,11 @@ pub(super) enum NetworkCommand {
     },
     /// Stops advertising this endpoint to nearby senders.
     CloseVisibility,
+    /// Applies saved preferences to future inbound admissions.
+    Configure {
+        /// Complete saved preferences acknowledged after application.
+        config: Config,
+    },
     /// Starts Nearby Sharing LAN, BLE, and Classic discovery.
     Discover,
     /// Advertises this endpoint and listens for incoming connections.
@@ -155,6 +157,13 @@ pub(super) enum NetworkEvent {
         /// Private candidate route for this sighting.
         route: PeerRoute,
     },
+    /// Reports whether saved preferences now govern future admissions.
+    PreferencesConfigured {
+        /// Original preferences submitted to the worker.
+        config: Config,
+        /// Configuration failure, leaving prior settings unchanged.
+        error: Option<String>,
+    },
     /// Payload bytes observed for the active share.
     Progress {
         /// Selected medium carrying these bytes.
@@ -240,6 +249,11 @@ impl NetworkWorker {
         self.send(NetworkCommand::CloseVisibility)
     }
 
+    /// Queues preferences without replacing the worker or active transfer.
+    pub(super) fn configure(&self, config: Config) -> io::Result<()> {
+        self.send(NetworkCommand::Configure { config })
+    }
+
     /// Requests one Nearby Sharing LAN browse.
     pub(super) fn discover(&self) -> io::Result<()> {
         self.send(NetworkCommand::Discover)
@@ -300,10 +314,7 @@ impl NetworkWorker {
         reason = "Daemon startup owns the one production worker construction"
     )]
     /// Starts the production network worker after its DNS-SD adapter is ready.
-    pub(super) fn start(
-        receive_directory: PathBuf,
-        consent_deadline: Duration,
-    ) -> io::Result<Self> {
+    pub(super) fn start(config: Config) -> io::Result<Self> {
         let (command_sender, command_receiver) = mpsc::channel();
         let (event_sender, event_receiver) = mpsc::channel();
         let (ready_sender, ready_receiver) =
@@ -336,8 +347,7 @@ impl NetworkWorker {
                 command_receiver,
                 event_sender,
                 worker_cancellation,
-                receive_directory,
-                consent_deadline,
+                config,
             );
         });
         ready_receiver

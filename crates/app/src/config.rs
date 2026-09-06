@@ -1,9 +1,14 @@
 //! User-visible endpoint settings stored as strict TOML.
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::env;
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::process;
+
+use toml_edit::{DocumentMut, Item, Value};
 
 /// Default outbound search window.
 pub const DEFAULT_DISCOVERY_TIMEOUT_SECS: u64 = 15;
@@ -12,15 +17,24 @@ pub const DEFAULT_VISIBILITY_TIMEOUT_SECS: u64 = 300;
 /// Default active-transfer deadline.
 pub const DEFAULT_TRANSFER_TIMEOUT_SECS: u64 = 120;
 
+/// Distinguishes temporary files across writes and skips interrupted writes.
+static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
+
 /// Strict local settings for the endpoint.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
+    /// Pending inbound consent deadline captured when an offer arrives.
+    pub consent_timeout_secs: u64,
     /// Optional device name advertised instead of the system hostname.
     pub device_name: Option<String>,
+    /// Whether saved policy allows inbound discovery.
+    pub discoverable: bool,
     /// Outbound search deadline in seconds.
     pub discovery_timeout_secs: u64,
     /// Preferred peer identifier persisted across restarts.
     pub pinned_peer_id: Option<String>,
+    /// Whether the future picker may read the clipboard when selecting.
+    pub read_clipboard_on_select: bool,
     /// Directory that receives completed inbound files.
     pub receive_directory: PathBuf,
     /// Active-transfer deadline in seconds.
@@ -33,9 +47,12 @@ impl Default for Config {
     #[inline]
     fn default() -> Self {
         Self {
+            consent_timeout_secs: DEFAULT_VISIBILITY_TIMEOUT_SECS,
             device_name: None,
+            discoverable: false,
             discovery_timeout_secs: DEFAULT_DISCOVERY_TIMEOUT_SECS,
             pinned_peer_id: None,
+            read_clipboard_on_select: false,
             receive_directory: default_receive_directory(),
             transfer_timeout_secs: DEFAULT_TRANSFER_TIMEOUT_SECS,
             visibility_timeout_secs: DEFAULT_VISIBILITY_TIMEOUT_SECS,
@@ -53,83 +70,109 @@ impl Config {
         load_from(&config_path()?)
     }
 
-    /// Writes these settings as strict TOML.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the config directory or file cannot be written.
-    pub fn save(&self) -> io::Result<()> {
-        let path = config_path()?;
-        if let Some(directory) = path.parent() {
-            fs::create_dir_all(directory)?;
-        }
-        fs::write(path, self.to_toml())
-    }
-
     /// Renders the effective settings as strict TOML.
     #[must_use]
     pub fn to_toml(&self) -> String {
         let mut body = format!(
-            "discovery_timeout_secs = {}\nreceive_directory = \"{}\"\n\
+            "consent_timeout_secs = {}\ndiscoverable = {}\n\
+             read_clipboard_on_select = {}\n\
+             discovery_timeout_secs = {}\nreceive_directory = {}\n\
              transfer_timeout_secs = {}\nvisibility_timeout_secs = {}\n",
+            self.consent_timeout_secs,
+            self.discoverable,
+            self.read_clipboard_on_select,
             self.discovery_timeout_secs,
-            escape_toml(&self.receive_directory.display().to_string()),
+            Value::from(self.receive_directory.display().to_string()),
             self.transfer_timeout_secs,
             self.visibility_timeout_secs,
         );
         if let Some(device_name) = &self.device_name {
             body.push_str(&format!(
-                "device_name = \"{}\"\n",
-                escape_toml(device_name)
+                "device_name = {}\n",
+                Value::from(device_name.as_str())
             ));
         }
         if let Some(peer_id) = &self.pinned_peer_id {
             body.push_str(&format!(
-                "pinned_peer_id = \"{}\"\n",
-                escape_toml(peer_id)
+                "pinned_peer_id = {}\n",
+                Value::from(peer_id.as_str())
             ));
         }
         body
     }
 
-    /// Updates one documented setting and persists the file.
+    /// Validates and atomically commits one key against the latest file.
+    ///
+    /// Product writers serialize through a private sibling lock. Editors
+    /// need not lock, but an edit detected before replacement aborts the patch.
     ///
     /// # Errors
     ///
-    /// Returns an error for an unknown key, invalid value, or write failure.
-    pub fn set(&mut self, key: &str, value: &str) -> io::Result<()> {
-        match key {
-            "device_name" => {
-                self.device_name = parse_device_name(value)?;
+    /// Returns an error for invalid current settings, an invalid patch, a
+    /// concurrent external edit, or a failure before atomic replacement.
+    pub fn patch(key: &str, value: &str) -> io::Result<Self> {
+        let path = config_path()?;
+        let directory = path
+            .parent()
+            .ok_or_else(|| io::Error::other("config parent unavailable"))?;
+        fs::create_dir_all(directory)?;
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(directory.join(".config.lock"))?;
+        lock.lock()?;
+        let original = read_document(&path)?;
+        let mut document = parse_document(original.as_deref().unwrap_or(""))?;
+        let current = from_document(&document)?;
+        if !document.contains_key("consent_timeout_secs") {
+            let consent = i64::try_from(current.consent_timeout_secs).map_err(
+                |error| io::Error::new(io::ErrorKind::InvalidData, error),
+            )?;
+            document["consent_timeout_secs"] =
+                Item::Value(Value::from(consent));
+        }
+        let mut replacement = patch_value(key, value)?;
+        if let Some(previous) = document.get(key).and_then(Item::as_value) {
+            *replacement.decor_mut() = previous.decor().clone();
+        }
+        document[key] = Item::Value(replacement);
+        let candidate = from_document(&document)?;
+        let (temporary, mut file) = loop {
+            let sequence = NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed);
+            let temporary = directory
+                .join(format!(".config-{}-{sequence}.tmp", process::id()));
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temporary)
+            {
+                Ok(file) => break (temporary, file),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
             }
-            "discovery_timeout_secs" => {
-                self.discovery_timeout_secs = parse_timeout(value)?;
-            }
-            "pinned_peer_id" => {
-                self.pinned_peer_id = non_empty(value);
-            }
-            "receive_directory" => {
-                self.receive_directory = expand_user(Path::new(value));
-            }
-            "transfer_timeout_secs" => {
-                self.transfer_timeout_secs = parse_timeout(value)?;
-            }
-            "visibility_timeout_secs" => {
-                self.visibility_timeout_secs = parse_timeout(value)?;
-            }
-            _ => {
+        };
+        let result = (|| {
+            file.write_all(document.to_string().as_bytes())?;
+            file.flush()?;
+            file.sync_all()?;
+            if read_document(&path)? != original {
                 return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "unknown config key '{key}'; expected device_name, \
-                         receive_directory, pinned_peer_id, \
-                         discovery_timeout_secs, visibility_timeout_secs, or \
-                         transfer_timeout_secs"
-                    ),
+                    io::ErrorKind::WouldBlock,
+                    "config.toml changed during the patch; \
+                     retry against the current settings",
                 ));
             }
+            fs::rename(&temporary, &path)
+        })();
+        if result.is_err() {
+            let _cleanup = fs::remove_file(&temporary);
         }
-        self.save()
+        result?;
+        Ok(candidate)
     }
 }
 
@@ -170,61 +213,131 @@ pub fn config_path() -> io::Result<PathBuf> {
 
 /// Reads one strict config file, or defaults when it is missing.
 fn load_from(path: &Path) -> io::Result<Config> {
+    let document =
+        parse_document(read_document(path)?.as_deref().unwrap_or(""))?;
+    from_document(&document)
+}
+
+/// Reads the bytes used both for parsing and detecting external changes.
+fn read_document(path: &Path) -> io::Result<Option<String>> {
     match fs::read_to_string(path) {
-        Ok(body) => parse_toml(&body),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Ok(Config::default())
-        }
+        Ok(body) => Ok(Some(body)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
 }
 
-/// Parses the documented key=value TOML subset and rejects unknown keys.
-fn parse_toml(body: &str) -> io::Result<Config> {
+/// Parses real TOML while retaining the original formatting.
+fn parse_document(body: &str) -> io::Result<DocumentMut> {
+    body.parse::<DocumentMut>().map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid config.toml: {error}"),
+        )
+    })
+}
+
+/// Validates every setting without accepting undocumented keys.
+fn from_document(document: &DocumentMut) -> io::Result<Config> {
     let mut config = Config::default();
-    for (index, raw) in body.lines().enumerate() {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            return Err(invalid_config(index, line));
+    for (key, item) in document.iter() {
+        let invalid = || {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid config.toml value for '{key}'"),
+            )
         };
-        let key = key.trim();
-        let value = value.trim();
         match key {
             "device_name" => {
-                config.device_name = parse_device_name(&parse_string(value)?)?;
-            }
-            "discovery_timeout_secs" => {
-                config.discovery_timeout_secs = parse_timeout(value)?;
+                config.device_name =
+                    parse_device_name(item.as_str().ok_or_else(invalid)?)?;
             }
             "pinned_peer_id" => {
-                config.pinned_peer_id = non_empty(&parse_string(value)?);
+                config.pinned_peer_id =
+                    non_empty(item.as_str().ok_or_else(invalid)?);
             }
             "receive_directory" => {
-                config.receive_directory =
-                    expand_user(Path::new(&parse_string(value)?));
+                let value = item.as_str().ok_or_else(invalid)?;
+                if value.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "receive_directory must not be empty",
+                    ));
+                }
+                config.receive_directory = expand_user(Path::new(value));
             }
-            "transfer_timeout_secs" => {
-                config.transfer_timeout_secs = parse_timeout(value)?;
+            "discoverable" => {
+                config.discoverable = item.as_bool().ok_or_else(invalid)?;
             }
-            "visibility_timeout_secs" => {
-                config.visibility_timeout_secs = parse_timeout(value)?;
+            "read_clipboard_on_select" => {
+                config.read_clipboard_on_select =
+                    item.as_bool().ok_or_else(invalid)?;
             }
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "invalid config.toml: unknown key '{key}'; unknown \
-                         keys are rejected and every setting must use the \
-                         documented names"
-                    ),
-                ));
+            "consent_timeout_secs"
+            | "discovery_timeout_secs"
+            | "visibility_timeout_secs"
+            | "transfer_timeout_secs" => {
+                let timeout =
+                    u64::try_from(item.as_integer().ok_or_else(invalid)?)
+                        .map_err(|_error| invalid())?;
+                match key {
+                    "consent_timeout_secs" => {
+                        config.consent_timeout_secs = timeout;
+                    }
+                    "discovery_timeout_secs" => {
+                        config.discovery_timeout_secs = timeout;
+                    }
+                    "visibility_timeout_secs" => {
+                        config.visibility_timeout_secs = timeout;
+                    }
+                    _ => config.transfer_timeout_secs = timeout,
+                }
             }
+            _ => return Err(unknown_key(key)),
         }
     }
+    if !document.contains_key("consent_timeout_secs") {
+        config.consent_timeout_secs = config.visibility_timeout_secs;
+    }
     Ok(config)
+}
+
+/// Converts the CLI/control string value to the setting's TOML type.
+fn patch_value(key: &str, value: &str) -> io::Result<Value> {
+    match key {
+        "device_name" => {
+            Ok(Value::from(parse_device_name(value)?.unwrap_or_default()))
+        }
+        "pinned_peer_id" => {
+            Ok(Value::from(non_empty(value).unwrap_or_default()))
+        }
+        "receive_directory" => Ok(Value::from(
+            expand_user(Path::new(value)).display().to_string(),
+        )),
+        "discoverable" | "read_clipboard_on_select" => {
+            value.parse::<bool>().map(Value::from).map_err(|error| {
+                io::Error::new(io::ErrorKind::InvalidInput, error)
+            })
+        }
+        "consent_timeout_secs"
+        | "discovery_timeout_secs"
+        | "visibility_timeout_secs"
+        | "transfer_timeout_secs" => {
+            let timeout =
+                i64::try_from(parse_timeout(value)?).map_err(|error| {
+                    io::Error::new(io::ErrorKind::InvalidInput, error)
+                })?;
+            Ok(Value::from(timeout))
+        }
+        _ => Err(unknown_key(key)),
+    }
+}
+
+fn unknown_key(key: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("unknown config key '{key}'"),
+    )
 }
 
 /// Expands a leading `~` using `$HOME`.
@@ -254,22 +367,6 @@ fn parse_timeout(value: &str) -> io::Result<u64> {
     })
 }
 
-/// Parses a quoted or bare TOML string.
-fn parse_string(value: &str) -> io::Result<String> {
-    if let Some(inner) = value
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-    {
-        return Ok(inner.replace("\\\"", "\"").replace("\\\\", "\\"));
-    }
-    if value.contains(' ') {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid config.toml string '{value}'"),
-        ));
-    }
-    Ok(String::from(value))
-}
 /// Parses an optional endpoint name that fits the wire advertisement.
 fn parse_device_name(value: &str) -> io::Result<Option<String>> {
     let name = non_empty(value);
@@ -293,21 +390,4 @@ fn non_empty(value: &str) -> Option<String> {
     } else {
         Some(String::from(trimmed))
     }
-}
-
-/// Escapes a TOML basic string.
-fn escape_toml(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-/// Converts a malformed line into an actionable I/O error.
-fn invalid_config(index: usize, line: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!(
-            "invalid config.toml on line {}: '{line}'; unknown keys are \
-             rejected and every setting must use the documented names",
-            index.saturating_add(1)
-        ),
-    )
 }

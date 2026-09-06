@@ -177,6 +177,33 @@ impl PublishedLanListener {
         self.listener.port()
     }
 
+    /// Updates the advertisement while keeping this listener bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the port or service fullname changes, the
+    /// advertisement is invalid, or the DNS-SD daemon rejects the update.
+    /// A failed update does not withdraw the existing registration.
+    #[inline]
+    pub fn republish(
+        &mut self,
+        advertisement: &Advertisement,
+    ) -> io::Result<()> {
+        if advertisement.port != self.listener.port() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "advertisement port does not match the bound listener",
+            ));
+        }
+        let registration = self.registration.as_mut().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotConnected,
+                "listener has no active DNS-SD registration",
+            )
+        })?;
+        registration.update(advertisement).map_err(io::Error::other)
+    }
+
     /// Withdraws the DNS-SD record and closes the listener.
     ///
     /// # Errors

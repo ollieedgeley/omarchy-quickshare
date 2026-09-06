@@ -28,7 +28,11 @@ const RECEIVE_DIRECTORY =
   /^receive_directory = "~\/Downloads\/omarchy-quickshare"$/mu;
 const TRANSFER_TIMEOUT = /^transfer_timeout_secs = 120$/mu;
 const VISIBILITY_TIMEOUT = /^visibility_timeout_secs = 300$/mu;
-const DEFAULT_CONFIG = `discovery_timeout_secs = 15
+const DEFAULT_CONFIG = `# Default local endpoint configuration.
+consent_timeout_secs = 300
+discoverable = false
+discovery_timeout_secs = 15
+read_clipboard_on_select = false
 receive_directory = "~/Downloads/omarchy-quickshare"
 transfer_timeout_secs = 120
 visibility_timeout_secs = 300

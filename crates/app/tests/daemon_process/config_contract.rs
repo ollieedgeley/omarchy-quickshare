@@ -1,3 +1,11 @@
+#![expect(
+    clippy::panic_in_result_fn,
+    reason = "Tests propagate I/O setup errors and assert public behavior"
+)]
+
+#[path = "config_contract/live_preferences.rs"]
+mod live_preferences;
+
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use std::env;
@@ -100,7 +108,7 @@ fn snapshot(root: &Path) -> io::Result<EndpointSnapshot> {
     }
     let envelope = read_response(&mut output.stdout.as_slice())?;
     match envelope.response() {
-        Response::Snapshot { snapshot } => Ok(snapshot.clone()),
+        Response::Snapshot { snapshot, .. } => Ok(snapshot.clone()),
         Response::Applied
         | Response::Cancelled
         | Response::NotFound
@@ -223,6 +231,180 @@ fn config_set_persists_and_rejects_unknown_keys() {
     assert!(!invalid.status.success());
     let cleaned = fs::remove_dir_all(&root);
     assert!(cleaned.is_ok(), "cleanup");
+}
+
+#[test]
+fn live_preferences_preserves_document_settings() -> io::Result<()> {
+    let root = fixture_root();
+    let path = root.join("config/omarchy-quickshare/config.toml");
+    fs::create_dir_all(
+        path.parent()
+            .ok_or_else(|| io::Error::other("config parent"))?,
+    )?;
+    fs::write(
+        &path,
+        "# Keep this user's explanation\nreceive_directory = \"/cases/inbox\"\n\
+         discovery_timeout_secs = 27\nvisibility_timeout_secs = 301\n\
+         transfer_timeout_secs = 121\npinned_peer_id = \"peer-7\"\n",
+    )?;
+    let updated = run(&root, &["config", "set", "device_name", "new-name"])?;
+    assert!(
+        updated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&updated.stderr)
+    );
+    let saved = fs::read_to_string(&path)?;
+    assert!(saved.contains("# Keep this user's explanation"));
+    let inspected = run(&root, &["config", "show"])?;
+    assert!(inspected.status.success());
+    let body = String::from_utf8_lossy(&inspected.stdout);
+    assert!(body.contains("receive_directory = \"/cases/inbox\""));
+    assert!(body.contains("discovery_timeout_secs = 27"));
+    assert!(body.contains("visibility_timeout_secs = 301"));
+    assert!(body.contains("transfer_timeout_secs = 121"));
+    assert!(body.contains("pinned_peer_id = \"peer-7\""));
+    assert!(body.contains("device_name = \"new-name\""));
+    fs::remove_dir_all(root)
+}
+
+#[test]
+fn live_preferences_rejects_invalid_document_then_recovers() -> io::Result<()> {
+    let root = fixture_root();
+    let directory = root.join("config/omarchy-quickshare");
+    fs::create_dir_all(&directory)?;
+    let path = directory.join("config.toml");
+    let invalid = "# Unfinished hand edit\ndevice_name = \"unfinished\n";
+    fs::write(&path, invalid)?;
+    let refused = run(&root, &["config", "set", "pinned_peer_id", "peer-9"])?;
+    assert!(!refused.status.success());
+    assert_eq!(fs::read_to_string(&path)?, invalid);
+    fs::write(
+        &path,
+        "device_name = \"desk\\u0020top\" # Keep inline comment\n",
+    )?;
+    let updated =
+        run(&root, &["config", "set", "pinned_peer_id", "  peer-9  "])?;
+    assert!(
+        updated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&updated.stderr)
+    );
+    let saved = fs::read_to_string(&path)?;
+    assert!(
+        saved
+            .contains("device_name = \"desk\\u0020top\" # Keep inline comment")
+    );
+    let inspected = run(&root, &["config", "show"])?;
+    assert!(inspected.status.success());
+    let body = String::from_utf8_lossy(&inspected.stdout);
+    assert!(body.contains("device_name = \"desk top\""));
+    assert!(body.contains("pinned_peer_id = \"peer-9\""));
+    fs::remove_dir_all(root)
+}
+
+#[test]
+fn live_preferences_concurrent_offline_patches_preserve_both_keys()
+-> io::Result<()> {
+    let root = fixture_root();
+    let directory = root.join("config/omarchy-quickshare");
+    fs::create_dir_all(&directory)?;
+    let path = directory.join("config.toml");
+    fs::write(
+        &path,
+        "# Both independent changes must survive\ntransfer_timeout_secs = 91\n",
+    )?;
+    let name =
+        command(&root, &["config", "set", "device_name", "concurrent-name"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()?;
+    let pin = command(
+        &root,
+        &["config", "set", "pinned_peer_id", "concurrent-peer"],
+    )
+    .stdout(Stdio::null())
+    .stderr(Stdio::piped())
+    .spawn()?;
+    let name_result = name.wait_with_output()?;
+    let pin_result = pin.wait_with_output()?;
+    assert!(
+        name_result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&name_result.stderr)
+    );
+    assert!(
+        pin_result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pin_result.stderr)
+    );
+    let inspected = run(&root, &["config", "show"])?;
+    assert!(inspected.status.success());
+    let body = String::from_utf8_lossy(&inspected.stdout);
+    assert!(body.contains("device_name = \"concurrent-name\""));
+    assert!(body.contains("pinned_peer_id = \"concurrent-peer\""));
+    assert!(body.contains("transfer_timeout_secs = 91"));
+    assert!(
+        fs::read_to_string(path)?
+            .contains("# Both independent changes must survive")
+    );
+    fs::remove_dir_all(root)
+}
+
+#[test]
+fn live_preferences_rejects_empty_receive_directory() -> io::Result<()> {
+    let root = fixture_root();
+    let directory = root.join("config/omarchy-quickshare");
+    fs::create_dir_all(&directory)?;
+    let path = directory.join("config.toml");
+    let original =
+        "# Keep destination\nreceive_directory = \"relative-inbox\"\n";
+    fs::write(&path, original)?;
+    let refused = run(&root, &["config", "set", "receive_directory", ""])?;
+    assert!(!refused.status.success());
+    assert_eq!(fs::read_to_string(&path)?, original);
+    let inspected = run(&root, &["config", "show"])?;
+    assert!(
+        inspected.status.success(),
+        "nonempty relative paths remain valid"
+    );
+    fs::write(&path, "receive_directory = \"\"\n")?;
+    let invalid = run(&root, &["config", "show"])?;
+    assert!(!invalid.status.success());
+    fs::remove_dir_all(root)
+}
+
+#[test]
+fn live_preferences_separates_legacy_consent_timeout() -> io::Result<()> {
+    let root = fixture_root();
+    let directory = root.join("config/omarchy-quickshare");
+    fs::create_dir_all(&directory)?;
+    let path = directory.join("config.toml");
+    let legacy = "# Legacy deadline\nvisibility_timeout_secs = 17\n";
+    fs::write(&path, legacy)?;
+    let before = run(&root, &["config", "show"])?;
+    assert!(before.status.success());
+    assert_eq!(
+        fs::read_to_string(&path)?,
+        legacy,
+        "reading must not migrate the file"
+    );
+    let visibility =
+        run(&root, &["config", "set", "visibility_timeout_secs", "31"])?;
+    assert!(visibility.status.success());
+    let inspected = run(&root, &["config", "show"])?;
+    assert!(inspected.status.success());
+    let body = String::from_utf8_lossy(&inspected.stdout);
+    assert!(body.contains("consent_timeout_secs = 17"));
+    assert!(body.contains("visibility_timeout_secs = 31"));
+    assert!(fs::read_to_string(&path)?.contains("# Legacy deadline"));
+    let consent = run(&root, &["config", "set", "consent_timeout_secs", "42"])?;
+    assert!(consent.status.success());
+    let updated = run(&root, &["config", "show"])?;
+    assert!(updated.status.success());
+    let body = String::from_utf8_lossy(&updated.stdout);
+    assert!(body.contains("consent_timeout_secs = 42"));
+    assert!(body.contains("visibility_timeout_secs = 31"));
+    fs::remove_dir_all(root)
 }
 
 #[test]

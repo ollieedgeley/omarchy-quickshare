@@ -169,23 +169,7 @@ impl DnsSd {
         &self,
         advertisement: &Advertisement,
     ) -> Result<Registration, Error> {
-        let properties = advertisement.properties.iter().collect::<Vec<_>>();
-        let addresses = advertisement
-            .addresses
-            .iter()
-            .copied()
-            .map(IpAddr::V4)
-            .collect::<Vec<_>>();
-        let service = ServiceInfo::new(
-            &advertisement.service_type,
-            &advertisement.instance,
-            &advertisement.hostname,
-            addresses.as_slice(),
-            advertisement.port,
-            properties.as_slice(),
-        )
-        .inspect_err(|_| dns_failure("build_advertisement"))
-        .map_err(convert_error)?;
+        let service = build_advertisement(advertisement)?;
         let fullname = service.get_fullname().to_owned();
         self.daemon
             .register(service)
@@ -265,6 +249,25 @@ impl DnsSd {
 }
 
 impl Registration {
+    /// Updates this service without withdrawing the active registration first.
+    pub(crate) fn update(
+        &self,
+        advertisement: &Advertisement,
+    ) -> Result<(), Error> {
+        let service = build_advertisement(advertisement)?;
+        if service.get_fullname() != self.fullname {
+            return Err(Error(
+                "replacement advertisement must keep \
+                 the registered service fullname"
+                    .to_owned(),
+            ));
+        }
+        self.daemon
+            .register(service)
+            .inspect_err(|_| dns_failure("update_advertisement"))
+            .map_err(convert_error)
+    }
+
     /// Gracefully removes this service advertisement.
     ///
     /// # Errors
@@ -415,6 +418,28 @@ pub fn host_label(name: &str) -> String {
     } else {
         label
     }
+}
+
+fn build_advertisement(
+    advertisement: &Advertisement,
+) -> Result<ServiceInfo, Error> {
+    let properties = advertisement.properties.iter().collect::<Vec<_>>();
+    let addresses = advertisement
+        .addresses
+        .iter()
+        .copied()
+        .map(IpAddr::V4)
+        .collect::<Vec<_>>();
+    ServiceInfo::new(
+        &advertisement.service_type,
+        &advertisement.instance,
+        &advertisement.hostname,
+        addresses.as_slice(),
+        advertisement.port,
+        properties.as_slice(),
+    )
+    .inspect_err(|_| dns_failure("build_advertisement"))
+    .map_err(convert_error)
 }
 
 fn convert_error(error: mdns_sd::Error) -> Error {
