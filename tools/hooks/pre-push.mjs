@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -112,12 +112,40 @@ async function main() {
       cwd: ROOT,
     });
     const worktree = prepareVerificationWorktree(cache, safeCommit);
+    const record = {
+      artifacts: [],
+      gates: [],
+      sha: safeCommit,
+      status: "failed",
+    };
     try {
       const env = exactEnvironment();
-      run("make", ["verify"], { cwd: worktree, env });
-      run("make", ["build"], { cwd: worktree, env });
+      for (const target of ["verify", "build"]) {
+        const gate = {
+          durationMs: 0,
+          name: `make ${target}`,
+          status: "failed",
+        };
+        record.gates.push(gate);
+        const started = performance.now();
+        try {
+          run("make", [target], { cwd: worktree, env });
+          gate.status = "passed";
+        } finally {
+          gate.durationMs = performance.now() - started;
+        }
+      }
+      record.artifacts = ["target"];
+      record.status = "passed";
     } finally {
-      cleanVerificationWorktree(worktree, true);
+      try {
+        writeFileSync(
+          join(cache, `pre-push-${safeCommit}.json`),
+          `${JSON.stringify(record, null, 2)}\n`,
+        );
+      } finally {
+        cleanVerificationWorktree(worktree, true);
+      }
     }
   }
 }
