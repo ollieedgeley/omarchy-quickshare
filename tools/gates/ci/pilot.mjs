@@ -407,6 +407,11 @@ function startReport(profile, attempt, root) {
 }
 
 function prepareCore(root, work) {
+  // Docker cannot create a nested mountpoint inside the read-only source bind.
+  mkdirSync(join(root, "node_modules"), {
+    mode: PRIVATE_MODE,
+    recursive: true,
+  });
   for (const child of ["npm", "cargo", "target"]) {
     mkdirSync(join(work, child), { mode: PRIVATE_MODE, recursive: true });
   }
