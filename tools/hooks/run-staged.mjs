@@ -1,17 +1,7 @@
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  writeFileSync,
-} from "node:fs";
-import { join, relative } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 
-import {
-  output,
-  run,
-  withoutRepositoryGitEnvironment,
-} from "../gates/lib/process.mjs";
+import { output, run } from "../gates/lib/process.mjs";
 import {
   listProjectFiles,
   runAnalysis,
@@ -27,6 +17,15 @@ import {
   partitionRustTestPackages,
   selectRustPackages,
 } from "./affected.mjs";
+import { planAffectedGates } from "./test-gates.mjs";
+import { updateReport } from "./records.mjs";
+import {
+  cachedSelection,
+  executionEnvironment,
+  recordedStep,
+  runIntegrations,
+  verifySnapshot,
+} from "./run-staged/execution.mjs";
 
 const ROOT = output("git", ["rev-parse", "--show-toplevel"]);
 const metadataPath = join(ROOT, ".cache", "gates", "staged.json");
@@ -34,10 +33,6 @@ if (!existsSync(metadataPath)) {
   throw new Error("staged metadata is missing; run `make pre-commit-prepare`");
 }
 const staged = JSON.parse(readFileSync(metadataPath, "utf8"));
-const currentTree = output("git", ["write-tree"], { cwd: ROOT });
-if (currentTree !== staged.tree) {
-  throw new Error("the Git index changed; rerun `make pre-commit-prepare`");
-}
 
 const [, , mode] = process.argv;
 const paths = staged.changes
@@ -51,16 +46,14 @@ const direct = computeSelectionRecord(existing, []);
 const sourcePaths = direct.stagedSources.map((record) => record.path);
 const testPaths = direct.stagedTests.map((record) => record.path);
 
-const nodeBin = process.env.NODE_BIN ?? join(ROOT, "node_modules", ".bin");
+const nodeBin = resolve(ROOT, process.env.NODE_BIN ?? "node_modules/.bin");
 const tool = (name) => join(nodeBin, name);
-const codegraph = process.env.CODEGRAPH ?? tool("codegraph");
-const ruff =
-  process.env.RUFF ?? join(ROOT, ".cache", "tools", "ruff-0.16.5", "ruff");
-const astGrep = process.env.AST_GREP ?? tool("ast-grep");
+const codegraph = resolve(ROOT, process.env.CODEGRAPH ?? tool("codegraph"));
+const ruff = resolve(ROOT, process.env.RUFF ?? ".cache/tools/ruff-0.16.5/ruff");
+const astGrep = resolve(ROOT, process.env.AST_GREP ?? tool("ast-grep"));
 const JS_SOURCE_EXT = /\.[cm]?[jt]sx?$/u;
 const PRETTIER_SUPPORTED_EXT = /\.(?:[cm]?[jt]sx?|jsonc?|markdown|md|ya?ml)$/u;
 const PYTHON_EXT = /\.pyi?$/u;
-const TEST_FILE_EXT = /\.(?:test|spec)\.(?:js|mjs|cjs)$/u;
 const RUST_FILE_EXT = /\.rs$/u;
 
 function runStructure() {
@@ -246,64 +239,9 @@ function runCodeGraphAffected(indexable) {
   }
 }
 
-function listTestFilesUnder(directory) {
-  const full = join(staged.mirror, directory);
-  if (!existsSync(full)) {
-    return [];
-  }
-  const out = [];
-  function walk(currentDirectory) {
-    for (const entry of readdirSync(currentDirectory, {
-      withFileTypes: true,
-    })) {
-      const entryPath = join(currentDirectory, entry.name);
-      if (entry.isDirectory()) {
-        walk(entryPath);
-      } else if (TEST_FILE_EXT.test(entry.name)) {
-        out.push(relative(staged.mirror, entryPath));
-      }
-    }
-  }
-  walk(full);
-  return out;
-}
-
-function domainTests(selection) {
-  const tests = new Set();
-  const domains = new Set([
-    ...selection.stagedSources.map((record) => record.domain),
-    ...selection.stagedTests.map((record) => record.domain),
-  ]);
-  for (const domain of domains) {
-    if (domain === "tooling") {
-      listTestFilesUnder("tools/gates/tests").forEach((testPath) =>
-        tests.add(testPath),
-      );
-    } else if (domain === "plugin-release") {
-      listTestFilesUnder("tools/release/tests").forEach((testPath) =>
-        tests.add(testPath),
-      );
-    } else if (
-      domain.startsWith("tests/environments/") ||
-      domain.startsWith("tests/suites/")
-    ) {
-      listTestFilesUnder(domain).forEach((testPath) => tests.add(testPath));
-    } else if (domain === "oracle") {
-      listTestFilesUnder("tests/environments/oracle").forEach((testPath) =>
-        tests.add(testPath),
-      );
-      listTestFilesUnder("tools/gates/tests").forEach((testPath) => {
-        if (testPath.includes("oracle")) {
-          tests.add(testPath);
-        }
-      });
-    }
-  }
-  return [...tests].sort();
-}
-
 function writeSelectionReport(reportParams) {
-  const { selection, graph, packages, nodeTests } = reportParams;
+  const { selection, graph, packages, nodeTests, gates, rustInputs } =
+    reportParams;
   const report = {
     codegraphCandidates: graph.paths,
     codegraphFallback: graph.fallback,
@@ -317,6 +255,7 @@ function writeSelectionReport(reportParams) {
       ),
     ],
     extendedTests: selection.extendedTests,
+    gates,
     languages: [
       ...new Set(
         [...selection.stagedSources, ...selection.stagedTests].map(
@@ -325,90 +264,120 @@ function writeSelectionReport(reportParams) {
       ),
     ],
     nodeTestPaths: nodeTests,
+    packages,
+    rustInputs,
     selectedRustPackages: packages.map((pkg) => pkg.name),
     stagedFiles: paths,
     stagedSources: selection.stagedSources,
     stagedTests: selection.stagedTests,
   };
-  const reportDirectory = join(ROOT, ".cache", "gates");
-  mkdirSync(reportDirectory, { recursive: true });
-  writeFileSync(
-    join(reportDirectory, "pre-commit-selection.json"),
-    `${JSON.stringify(report, null, 2)}\n`,
-  );
+  updateReport(staged.reportPath, { selection: report });
+  return report;
+}
+function testEnvironment() {
+  return executionEnvironment(staged, {
+    AST_GREP: astGrep,
+    CODEGRAPH: codegraph,
+    NODE_BIN: nodeBin,
+    RUFF: ruff,
+  });
 }
 function runPackageTests(packages) {
   if (!packages.length) {
     return;
   }
-  const cargoEnv = {
-    ...withoutRepositoryGitEnvironment(process.env),
-    CARGO_TARGET_DIR: join(ROOT, "target"),
-  };
   const packageFlags = packages.flatMap((pkg) => ["--package", pkg.name]);
-  run(
-    "cargo",
-    ["test", ...packageFlags, "--all-targets", "--all-features", "--locked"],
-    { cwd: staged.mirror, env: cargoEnv },
-  );
+  recordedStep(staged, {
+    args: [
+      "test",
+      ...packageFlags,
+      "--all-targets",
+      "--all-features",
+      "--locked",
+    ],
+    command: "cargo",
+    env: testEnvironment(),
+    id: `cargo-${mode}`,
+    kind: "cargo",
+    reasons: packages.map((pkg) => ({ kind: "cargo-package", path: pkg.name })),
+  });
   const libraries = packages.filter((pkg) => pkg.hasLibrary);
   if (libraries.length) {
-    run(
-      "cargo",
-      [
+    recordedStep(staged, {
+      args: [
         "test",
         ...libraries.flatMap((pkg) => ["--package", pkg.name]),
         "--doc",
         "--all-features",
         "--locked",
       ],
-      { cwd: staged.mirror, env: cargoEnv },
-    );
+      command: "cargo",
+      env: testEnvironment(),
+      id: `cargo-doc-${mode}`,
+      kind: "cargo",
+      reasons: libraries.map((pkg) => ({
+        kind: "cargo-package",
+        path: pkg.name,
+      })),
+    });
   }
 }
 
-function runTests(scope) {
+function selectTests() {
   const indexable = existing.filter(isCodeGraphIndexableSource);
   const graph = runCodeGraphAffected(indexable);
-  const stagedSelection = computeSelectionRecord(paths);
-  const ownedTests = domainTests(stagedSelection);
-  const selection = computeSelectionRecord(paths, [
-    ...graph.paths,
-    ...ownedTests,
-  ]);
-  const rustInputs = [...paths, ...graph.paths].filter(isRustInput);
-  const hasRustInput = rustInputs.length > 0;
+  updateReport(staged.reportPath, { selectionInputs: { graph, paths } });
+  const {
+    gates,
+    fastNodeTests: nodeTests,
+    rustInputs: mappedRustInputs,
+  } = planAffectedGates({
+    affectedTests: graph.paths,
+    changedPaths: paths,
+    repositoryFiles: listProjectFiles(staged.mirror),
+  });
+  const rustInputs = [
+    ...new Set(
+      [...paths, ...graph.paths, ...mappedRustInputs].filter(isRustInput),
+    ),
+  ];
   let packages = [];
-  if (hasRustInput) {
+  if (rustInputs.length) {
     packages = selectRustPackages(cargoMetadata(), rustInputs, staged.mirror);
   }
-  const directNode = [...selection.stagedTests, ...selection.extendedTests]
-    .filter((record) => TEST_FILE_EXT.test(record.path))
-    .map((record) => record.path)
-    .filter((testPath) => existsSync(join(staged.mirror, testPath)));
-  const nodeTests = [...new Set(directNode)].sort();
-  writeSelectionReport({
+  const selection = computeSelectionRecord(paths, [
+    ...graph.paths,
+    ...nodeTests,
+    ...mappedRustInputs,
+    ...gates.flatMap((gate) => gate.testPaths),
+  ]);
+  return writeSelectionReport({
+    gates,
     graph,
     nodeTests,
     packages,
+    rustInputs,
     selection,
   });
-  if (scope !== "tooling") {
-    runPackageTests(partitionRustTestPackages(packages)[scope]);
-    return;
-  }
-  const testEnvironment = {
-    ...withoutRepositoryGitEnvironment(process.env),
-    AST_GREP: astGrep,
-    CODEGRAPH: codegraph,
-    NODE_BIN: nodeBin,
-    RUFF: ruff,
-  };
-  for (const testPath of nodeTests) {
-    run("node", ["--test", testPath], {
-      cwd: staged.mirror,
-      env: testEnvironment,
-    });
+}
+
+function runTests(scope) {
+  const selection = cachedSelection(staged) ?? selectTests();
+  if (scope === "integrations") {
+    runIntegrations(staged, selection.gates, testEnvironment());
+  } else if (scope === "tooling") {
+    for (const testPath of selection.nodeTestPaths) {
+      recordedStep(staged, {
+        args: ["--test", testPath],
+        command: process.execPath,
+        env: testEnvironment(),
+        id: testPath,
+        kind: "node",
+        reasons: [{ kind: "selected-test", path: testPath }],
+      });
+    }
+  } else {
+    runPackageTests(partitionRustTestPackages(selection.packages)[scope]);
   }
 }
 
@@ -424,6 +393,7 @@ const handlers = {
   "lint-tests": () => runLint(testPaths, "test"),
   structure: runStructure,
   "test-app": () => runTests("app"),
+  "test-integrations": () => runTests("integrations"),
   "test-libraries": () => runTests("libraries"),
   "test-tooling": () => runTests("tooling"),
 };
@@ -431,4 +401,13 @@ const handlers = {
 if (!handlers[mode]) {
   throw new Error(`unknown staged gate: ${mode ?? "<missing>"}`);
 }
-handlers[mode]();
+try {
+  verifySnapshot(staged);
+  handlers[mode]();
+} catch (error) {
+  updateReport(staged.reportPath, {
+    failure: { message: error.message, phase: mode },
+    status: "failed",
+  });
+  throw error;
+}

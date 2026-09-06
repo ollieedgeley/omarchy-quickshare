@@ -4,6 +4,7 @@
 .PHONY: pre-commit-test-format pre-commit-test-lint pre-commit-test-ast
 .PHONY: pre-commit-domain-analysis pre-commit-test
 .PHONY: pre-commit-test-libraries pre-commit-test-app pre-commit-test-tooling
+.PHONY: pre-commit-test-integrations
 
 commit-msg: ## Validate COMMIT_MSG_FILE as a Conventional Commit message.
 	@$(TIMEOUT) node tools/hooks/commit-msg.mjs "$(COMMIT_MSG_FILE)"
@@ -50,8 +51,11 @@ pre-commit-test-app: ## Run selected Rust application tests.
 pre-commit-test-tooling: ## Run staged and affected Node tests.
 	@$(TIMEOUT) node tools/hooks/run-staged.mjs test-tooling
 
+pre-commit-test-integrations: ## Run affected prepared-environment child gates.
+	@node tools/hooks/run-staged.mjs test-integrations
+
 pre-commit-test: pre-commit-test-libraries pre-commit-test-app \
-	pre-commit-test-tooling
+	pre-commit-test-tooling pre-commit-test-integrations
 pre-commit-test: ## Run staged and conservatively affected domain tests.
 
 pre-commit: pre-commit-prepare pre-commit-structure \

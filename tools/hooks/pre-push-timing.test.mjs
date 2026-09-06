@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -46,18 +47,16 @@ function fixtureGit(root, args) {
   return result.stdout.trim();
 }
 
-function prepareRepository(root, script = "") {
+function prepareRepository(root, script, makefile) {
   for (const file of [
     "tools/hooks/pre-push.mjs",
+    "tools/hooks/records.mjs",
     "tools/gates/lib/process.mjs",
   ]) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
     copyFileSync(join(ROOT, file), join(root, file));
   }
-  writeFileSync(
-    join(root, "Makefile"),
-    ["verify build:", `\t@${process.execPath} fixture.cjs $@`, ""].join("\n"),
-  );
+  writeFileSync(join(root, "Makefile"), makefile);
   writeFileSync(
     join(root, "fixture.cjs"),
     [
@@ -97,12 +96,25 @@ function prepareRepository(root, script = "") {
   return git(["rev-parse", "HEAD"]);
 }
 
-function fixture(context, { directory = "", script = "" } = {}) {
+function readReports(root, sha) {
+  const parent = join(root, ".cache", "gates", "runs", "pre-push", sha);
+  return readdirSync(parent).map((attempt) => {
+    const text = readFileSync(join(parent, attempt, "report.json"), "utf8");
+    assert.ok(!text.includes(SECRET));
+    return JSON.parse(text);
+  });
+}
+function fixture(context, { directory = "", script = "", makefile } = {}) {
   const base = mkdtempSync(join(tmpdir(), "pre-push-timing-"));
   context.after(() => rmSync(base, { recursive: true, force: true }));
   const root = join(base, directory);
   mkdirSync(root, { recursive: true });
-  const sha = prepareRepository(root, script);
+  const defaultMakefile = [
+    "verify build:",
+    `\t@${process.execPath} fixture.cjs $@`,
+    "",
+  ].join("\n");
+  const sha = prepareRepository(root, script, makefile ?? defaultMakefile);
   const deletion = "0".repeat(sha.length);
   const update = `refs/heads/main ${sha} refs/heads/main ${deletion}\n`;
   const log = join(root, "calls.log");
@@ -128,12 +140,10 @@ function fixture(context, { directory = "", script = "" } = {}) {
     },
     log,
     record() {
-      const text = readFileSync(
-        join(root, ".cache", "gates", `pre-push-${sha}.json`),
-        "utf8",
-      );
-      assert.ok(!text.includes(SECRET));
-      return JSON.parse(text);
+      const reports = readReports(root, sha);
+      return reports.toSorted((left, right) =>
+        right.startedAt.localeCompare(left.startedAt),
+      )[0];
     },
     root,
     sha,
@@ -141,13 +151,13 @@ function fixture(context, { directory = "", script = "" } = {}) {
 }
 
 function assertRecord(record, sha, { names, status }) {
-  assert.equal(record.sha, sha);
+  assert.equal(record.revision, sha);
   assert.equal(record.status, status);
   assert.deepEqual(
-    record.gates.map((gate) => gate.name),
+    record.steps.map((gate) => [gate.command, ...gate.args].join(" ")),
     names,
   );
-  for (const gate of record.gates) {
+  for (const gate of record.steps) {
     assert.ok(Number.isFinite(gate.durationMs) && gate.durationMs >= 0);
   }
 }
@@ -173,7 +183,7 @@ test("pre-push records tip timings without reusing results", (context) => {
     status: "passed",
   });
   assert.deepEqual(
-    record.gates.map((gate) => gate.status),
+    record.steps.map((gate) => gate.status),
     ["passed", "passed"],
   );
   assert.deepEqual(record.artifacts, ["target"]);
@@ -191,6 +201,56 @@ test("pre-push records tip timings without reusing results", (context) => {
   );
 });
 
+test("pre-push retains retries and nested failures", (context) => {
+  const repo = fixture(context, {
+    makefile: [
+      "verify:",
+      "\t@$(MAKE) --no-print-directory child-check",
+      "child-check:",
+      `\t@${process.execPath} fixture.cjs verify`,
+      "build:",
+      `\t@${process.execPath} fixture.cjs build`,
+      "",
+    ].join("\n"),
+  });
+  assert.equal(repo.invoke().status, 0);
+  const failed = repo.invoke("verify");
+  assert.notEqual(failed.status, 0);
+  assert.equal(readFileSync(repo.log, "utf8"), "verify\nbuild\nverify\n");
+  const attempts = join(
+    repo.root,
+    ".cache",
+    "gates",
+    "runs",
+    "pre-push",
+    repo.sha,
+  );
+  assert.ok(existsSync(attempts), "revision-keyed attempt history must exist");
+  const reports = readdirSync(attempts).map((attempt) =>
+    JSON.parse(readFileSync(join(attempts, attempt, "report.json"), "utf8")),
+  );
+  assert.equal(
+    reports.length,
+    2,
+    "a failed retry must not erase prior evidence",
+  );
+  assert.deepEqual(reports.map((report) => report.status).sort(), [
+    "failed",
+    "passed",
+  ]);
+  const failure = reports.find((report) => report.status === "failed");
+  assert.equal(failure.revision, repo.sha);
+  assert.equal(failure.steps.length, 1);
+  assert.equal(failure.steps[0].failedMakeTarget, "child-check");
+  assert.equal(
+    failure.steps[0].cwd,
+    join(repo.root, ".cache", "gates", "pre-push-worktree"),
+  );
+  assert.ok(
+    readFileSync(failure.steps[0].logPath, "utf8").includes("child-check"),
+  );
+});
+
 test("pre-push records verify failure and skips build", (context) => {
   const repo = fixture(context);
   const result = repo.invoke("verify");
@@ -201,11 +261,11 @@ test("pre-push records verify failure and skips build", (context) => {
     names: ["make verify"],
     status: "failed",
   });
-  assert.equal(record.gates[0].status, "failed");
+  assert.equal(record.steps[0].status, "failed");
   assert.deepEqual(record.artifacts, []);
 });
 
-test("pre-push replaces success with build failure", (context) => {
+test("pre-push records build failure after success", (context) => {
   const repo = fixture(context);
   assert.equal(repo.invoke().status, 0);
   assert.equal(repo.record().status, "passed");
@@ -217,7 +277,7 @@ test("pre-push replaces success with build failure", (context) => {
     status: "failed",
   });
   assert.deepEqual(
-    record.gates.map((gate) => gate.status),
+    record.steps.map((gate) => gate.status),
     ["passed", "failed"],
   );
   assert.deepEqual(record.artifacts, []);

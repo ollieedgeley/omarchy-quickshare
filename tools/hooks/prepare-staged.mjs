@@ -9,6 +9,7 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { output, run } from "../gates/lib/process.mjs";
+import { createReport } from "./records.mjs";
 
 const ROOT = output("git", ["rev-parse", "--show-toplevel"]);
 const CACHE = join(ROOT, ".cache", "gates");
@@ -16,6 +17,7 @@ const MIRROR = join(CACHE, "pre-commit-tree");
 const METADATA = join(CACHE, "staged.json");
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const RENAME_FIELD_COUNT = 3;
+const PRIVATE_FILE_MODE = 0o600;
 const CODEGRAPH =
   process.env.CODEGRAPH ?? join(ROOT, "node_modules", ".bin", "codegraph");
 
@@ -126,6 +128,23 @@ function ensureCodeGraph(initialize) {
   run(CODEGRAPH, ["sync", "--quiet", MIRROR], { cwd: ROOT });
 }
 
+function saveMetadata(changes, tree) {
+  const reportPath = createReport({
+    kind: "pre-commit",
+    revision: tree,
+    root: ROOT,
+  });
+  writeFileSync(
+    METADATA,
+    `${JSON.stringify(
+      { changes, mirror: MIRROR, reportPath, root: ROOT, tree },
+      null,
+      2,
+    )}\n`,
+    { mode: PRIVATE_FILE_MODE },
+  );
+}
+
 function main() {
   const initialize = process.argv.includes("--initialize");
   mkdirSync(CACHE, { recursive: true });
@@ -150,6 +169,7 @@ function main() {
   }
   run("git", ["diff", "--cached", "--check"], { cwd: ROOT });
   assertNoPartialRustFiles(changes);
+  const tree = output("git", ["write-tree"], { cwd: ROOT });
   clearMirrorSources();
   run("git", ["checkout-index", "--all", "--force", `--prefix=${MIRROR}/`], {
     cwd: ROOT,
@@ -158,15 +178,10 @@ function main() {
   verifyMirror(stagedPaths);
   ensureCodeGraph(initialize);
 
-  const tree = output("git", ["write-tree"], { cwd: ROOT });
-  writeFileSync(
-    METADATA,
-    `${JSON.stringify(
-      { changes, mirror: MIRROR, root: ROOT, tree },
-      null,
-      2,
-    )}\n`,
-  );
+  if (output("git", ["write-tree"], { cwd: ROOT }) !== tree) {
+    throw new Error("the Git index changed while preparing the staged mirror");
+  }
+  saveMetadata(changes, tree);
   let action = "Refreshed";
   if (initialize) {
     action = "Initialized";

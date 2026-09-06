@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -152,13 +153,15 @@ function writeToolAwareMarkerTest(testPath, markerPath) {
   );
 }
 
-function readSelection(root) {
-  return JSON.parse(
-    readFileSync(
-      join(root, ".cache", "gates", "pre-commit-selection.json"),
-      "utf8",
-    ),
+function readReport(root) {
+  const metadata = JSON.parse(
+    readFileSync(join(root, ".cache/gates/staged.json"), "utf8"),
   );
+  return JSON.parse(readFileSync(metadata.reportPath, "utf8"));
+}
+
+function readSelection(root) {
+  return readReport(root).selection;
 }
 
 test("staged mirror uses index bytes and reuses its CodeGraph database", () => {
@@ -314,10 +317,7 @@ test("affected tests receive every staged input and fail fast", () => {
       encoding: "utf8",
       env: childEnvironment({ CODEGRAPH: fake.executable }),
     });
-    const selectionJson = readFileSync(
-      join(root, ".cache", "gates", "pre-commit-selection.json"),
-      "utf8",
-    );
+    const selectionJson = JSON.stringify(readSelection(root));
     assert.notEqual(
       result.status,
       0,
@@ -466,6 +466,260 @@ test("staged tooling Git fixtures leave their parent unchanged", () => {
     assert.equal(git(["rev-parse", "--show-toplevel"], child), child);
     assert.equal(git(["log", "-1", "--format=%s"], child), "test: child");
     assert.equal(git(["ls-tree", "--name-only", "HEAD"], child), "child.txt");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function fakeMake(root, scenario) {
+  const bin = join(root, ".fake-make");
+  const log = join(root, "make-calls.jsonl");
+  mkdirSync(bin);
+  const executable = join(bin, "make");
+  writeFileSync(
+    executable,
+    [
+      "#!/usr/bin/env node",
+      'const { appendFileSync, readFileSync } = require("node:fs");',
+      `const scenario = ${JSON.stringify(scenario)};`,
+      `const log = ${JSON.stringify(log)};`,
+      "const record = { args: process.argv.slice(2), cwd: process.cwd(),",
+      "  source: readFileSync(scenario, 'utf8') };",
+      "appendFileSync(log, JSON.stringify(record) + '\\n');",
+      "if (record.args.includes(process.env.FAIL_MAKE_TARGET)) {",
+      "  process.stderr.write(",
+      '    "make[1]: *** [Makefile:42: child-proof] Error 1\\n");',
+      "  process.exitCode = 1;",
+      "}",
+    ].join("\n"),
+  );
+  chmodSync(executable, EXECUTABLE_MODE);
+  return { bin, log };
+}
+
+function readMakeCalls(log) {
+  if (!existsSync(log)) {
+    return [];
+  }
+  return readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+}
+
+test("staged e2e runs its prepared Make gate from index bytes", () => {
+  const root = repository();
+  try {
+    const scenario =
+      "tests/environments/diverse-lan/rust/scenarios/rust-lan-inbound.e2e.mjs";
+    const rawMarker = join(root, "raw-e2e-ran");
+    mkdirSync(dirname(join(root, scenario)), { recursive: true });
+    writeMarkerTest(join(root, scenario), rawMarker);
+    run("git", ["add", scenario], root);
+    run("node", [PREPARE, "--initialize"], root);
+    writeFileSync(join(root, scenario), "throw new Error('dirty checkout');\n");
+    symlinkSync(join(ROOT, "tools"), join(root, "tools"), "dir");
+    const { bin, log } = fakeMake(root, scenario);
+    const result = spawnSync(
+      "/usr/bin/make",
+      ["-f", join(ROOT, "tools/gates/hooks.mk"), "pre-commit-test"],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: childEnvironment({
+          CODEGRAPH: fakeCodeGraph(root).executable,
+          PATH: `${bin}:${process.env.PATH}`,
+        }),
+      },
+    );
+    assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    const calls = readMakeCalls(log);
+    assert.ok(
+      calls.some((call) => call.args.includes("test-rust-lan-inbound")),
+      `staged executable test was not run: ${JSON.stringify(calls)}`,
+    );
+    const provision = calls.findIndex((call) =>
+      call.args.includes("rust-lan-provision"),
+    );
+    const child = calls.findIndex((call) =>
+      call.args.includes("test-rust-lan-inbound"),
+    );
+    assert.ok(provision >= 0 && provision < child);
+    assert.ok(
+      calls.every(
+        (call) =>
+          call.cwd === join(root, ".cache/gates/pre-commit-tree") &&
+          !call.source.includes("dirty checkout"),
+      ),
+    );
+    assert.equal(existsSync(rawMarker), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function runIntegrationFixture(root, path, options = {}) {
+  const { bin, log } = fakeMake(root, path);
+  const result = spawnSync("node", [RUN_STAGED, "test-integrations"], {
+    cwd: root,
+    encoding: "utf8",
+    env: childEnvironment({
+      CODEGRAPH: fakeCodeGraph(root, options.affectedTests ?? []).executable,
+      FAIL_MAKE_TARGET: options.failTarget ?? "",
+      PATH: `${bin}:${process.env.PATH}`,
+    }),
+  });
+  return { calls: readMakeCalls(log), report: readReport(root), result };
+}
+
+test("graph-selected e2e runs for an unrelated staged source", () => {
+  const root = repository();
+  try {
+    const path =
+      "tests/environments/diverse-lan/rust/scenarios/rust-lan-outbound.e2e.mjs";
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(
+      join(root, path),
+      "throw new Error('raw node is forbidden');",
+    );
+    const secondPath = path.replace("outbound", "inbound");
+    writeFileSync(join(root, secondPath), "// second graph-selected scenario");
+    run("git", ["add", path, secondPath], root);
+    run("git", ["commit", "-m", "test: seed scenario"], root);
+    writeFileSync(join(root, "source.mjs"), "export const value = true;");
+    run("git", ["add", "source.mjs"], root);
+    run("node", [PREPARE, "--initialize"], root);
+    const { result, calls } = runIntegrationFixture(root, path, {
+      affectedTests: [path, secondPath],
+    });
+    assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    assert.ok(
+      calls.some((call) => call.args.includes("test-rust-lan-outbound")),
+    );
+    assert.equal(
+      calls.filter((call) => call.args.includes("rust-lan-provision")).length,
+      1,
+    );
+    assert.equal(
+      calls.filter((call) => call.args.includes("nearby-linux-provision"))
+        .length,
+      1,
+    );
+    assert.equal(
+      calls.filter((call) =>
+        call.args.some((arg) => arg.startsWith("test-rust-lan-")),
+      ).length,
+      2,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("failed integration cleans up and retains its failing child log", () => {
+  const root = repository();
+  try {
+    const path = "tests/environments/oracle/selected-gtest.mjs";
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), "// staged oracle input");
+    run("git", ["add", path], root);
+    run("node", [PREPARE, "--initialize"], root);
+    const { result, calls, report } = runIntegrationFixture(root, path, {
+      failTarget: "test-oracle-ble",
+    });
+    assert.notEqual(result.status, 0);
+    const targets = calls.flatMap((call) => call.args);
+    assert.equal(
+      targets.filter((item) => item === "oracle-reference-up").length,
+      1,
+    );
+    assert.equal(targets.at(-1), "oracle-reference-down");
+    assert.equal(targets.filter((item) => item.startsWith("test-")).length, 1);
+    assert.equal(report.status, "failed");
+    const failure = report.steps.find((step) => step.status === "failed");
+    assert.equal(failure.failedMakeTarget, "child-proof");
+    assert.ok(readFileSync(failure.logPath, "utf8").includes("child-proof"));
+    assert.ok(
+      report.steps.some(
+        (step) => step.kind === "cleanup" && step.status === "passed",
+      ),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unmapped executables fail closed with revision evidence", () => {
+  const root = repository();
+  try {
+    const path = "tests/unmapped.e2e.mjs";
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), "// cannot silently skip this executable");
+    run("git", ["add", path], root);
+    run("node", [PREPARE, "--initialize"], root);
+    const { result, calls, report } = runIntegrationFixture(root, path);
+    assert.notEqual(result.status, 0);
+    assert.deepEqual(calls, []);
+    assert.equal(report.status, "failed");
+    assert.ok(report.failure.message.includes(path));
+    assert.equal(
+      report.revision,
+      run("git", ["write-tree"], root).stdout.trim(),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("changed mirror blocks execution and attempt history survives", () => {
+  const root = repository();
+  try {
+    writeFileSync(join(root, "source.mjs"), "export const value = true;");
+    run("git", ["add", "source.mjs"], root);
+    run("node", [PREPARE, "--initialize"], root);
+    const metadataPath = join(root, ".cache/gates/staged.json");
+    const first = JSON.parse(readFileSync(metadataPath, "utf8"));
+    writeFileSync(join(first.mirror, "source.mjs"), "// tampered snapshot");
+    const { result, calls, report } = runIntegrationFixture(root, "source.mjs");
+    assert.notEqual(result.status, 0);
+    assert.deepEqual(calls, []);
+    assert.equal(report.status, "failed");
+    const saved = readFileSync(first.reportPath, "utf8");
+    run("node", [PREPARE], root);
+    const next = JSON.parse(readFileSync(metadataPath, "utf8"));
+    assert.notEqual(next.reportPath, first.reportPath);
+    assert.equal(next.tree, first.tree);
+    assert.equal(readFileSync(first.reportPath, "utf8"), saved);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("mirror mode changes cannot reuse unchanged blob bytes", () => {
+  const root = repository();
+  try {
+    const source = join(root, "source.mjs");
+    writeFileSync(source, "export const value = true;");
+    run("git", ["add", source], root);
+    const mutations = [
+      (file) => chmodSync(file, EXECUTABLE_MODE),
+      (file) => {
+        rmSync(file);
+        symlinkSync(source, file);
+      },
+    ];
+    for (const mutate of mutations) {
+      run("node", [PREPARE, "--initialize"], root);
+      const metadata = JSON.parse(
+        readFileSync(join(root, ".cache/gates/staged.json"), "utf8"),
+      );
+      mutate(join(metadata.mirror, "source.mjs"));
+      const result = spawnSync("node", [RUN_STAGED, "test-integrations"], {
+        cwd: root,
+        encoding: "utf8",
+        env: childEnvironment(),
+      });
+      assert.notEqual(result.status, 0);
+      assert.equal(readReport(root).status, "failed");
+      assert.deepEqual(readReport(root).steps, []);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

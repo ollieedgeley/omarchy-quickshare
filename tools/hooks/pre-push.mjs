@@ -1,10 +1,4 @@
-import {
-  existsSync,
-  mkdirSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,6 +7,7 @@ import {
   run,
   withoutRepositoryGitEnvironment,
 } from "../gates/lib/process.mjs";
+import { createReport, runRecorded, updateReport } from "./records.mjs";
 
 const GIT_ENV = withoutRepositoryGitEnvironment(process.env);
 const ROOT = output("git", ["rev-parse", "--show-toplevel"], { env: GIT_ENV });
@@ -84,16 +79,14 @@ export function verificationWorktree(cache) {
   return worktree;
 }
 
-function cleanVerificationWorktree(worktree, allowFailure = false) {
+function cleanVerificationWorktree(worktree) {
   run("git", ["-C", worktree, "reset", "--hard", "HEAD"], {
     cwd: ROOT,
     env: GIT_ENV,
-    allowFailure,
   });
   run("git", ["-C", worktree, "clean", "-ffdx"], {
     cwd: ROOT,
     env: GIT_ENV,
-    allowFailure,
   });
 }
 
@@ -116,6 +109,18 @@ function prepareVerificationWorktree(cache, safeCommit) {
   return worktree;
 }
 
+function finishWorktree(worktree, reportPath, failure) {
+  try {
+    cleanVerificationWorktree(worktree);
+  } catch (error) {
+    updateReport(reportPath, { cleanupError: error.message, status: "failed" });
+    if (failure === null) {
+      throw error;
+    }
+    process.stderr.write(`Cleanup also failed: ${error.message}\n`);
+  }
+}
+
 async function main() {
   const input = await readInput();
   const commits = pushedCommits(input);
@@ -128,40 +133,33 @@ async function main() {
       env: GIT_ENV,
     });
     const worktree = prepareVerificationWorktree(cache, safeCommit);
-    const record = {
-      artifacts: [],
-      gates: [],
-      sha: safeCommit,
-      status: "failed",
-    };
+    const reportPath = createReport({
+      kind: "pre-push",
+      revision: safeCommit,
+      root: ROOT,
+      selection: { targets: ["verify", "build"] },
+    });
+    let failure = null;
     try {
       const env = exactEnvironment();
       for (const target of ["verify", "build"]) {
-        const gate = {
-          durationMs: 0,
-          name: `make ${target}`,
-          status: "failed",
-        };
-        record.gates.push(gate);
-        const started = performance.now();
-        try {
-          run("make", [target], { cwd: worktree, env });
-          gate.status = "passed";
-        } finally {
-          gate.durationMs = performance.now() - started;
-        }
+        runRecorded({
+          args: [target],
+          command: "make",
+          cwd: worktree,
+          env,
+          id: target,
+          kind: "gate",
+          reportPath,
+        });
       }
-      record.artifacts = ["target"];
-      record.status = "passed";
+      updateReport(reportPath, { artifacts: ["target"], status: "passed" });
+    } catch (error) {
+      failure = error;
+      updateReport(reportPath, { artifacts: [], status: "failed" });
+      throw error;
     } finally {
-      try {
-        writeFileSync(
-          join(cache, `pre-push-${safeCommit}.json`),
-          `${JSON.stringify(record, null, 2)}\n`,
-        );
-      } finally {
-        cleanVerificationWorktree(worktree, true);
-      }
+      finishWorktree(worktree, reportPath, failure);
     }
   }
 }

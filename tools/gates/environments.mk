@@ -1,4 +1,5 @@
 .PHONY: oracle-provision oracle-reference-provision oracle-up oracle-down
+.PHONY: oracle-reference-up oracle-reference-down
 .PHONY: nearshare-provision nearshare-up nearshare-down
 .PHONY: nearby-linux-provision nearby-linux-up nearby-linux-down
 .PHONY: diverse-lan-up diverse-lan-down test-diverse-lan
@@ -18,6 +19,12 @@ oracle-provision: ## Build the pinned oracle toolchain image.
 
 oracle-reference-provision: ## Build the pinned Google UKEY2 artifacts.
 	@node tests/environments/oracle/environment.mjs reference-provision
+
+oracle-reference-up: ## Start and readiness-check prepared reference peers.
+	@node tests/environments/oracle/environment.mjs reference-up
+
+oracle-reference-down: ## Stop prepared reference peers outside the test budget.
+	@node tests/environments/oracle/environment.mjs reference-down
 
 oracle-up: ## Start and readiness-check the prepared oracle environment.
 	@node tests/environments/oracle/environment.mjs up

@@ -75,7 +75,7 @@ Git does not activate repository hook files merely because they are tracked. A d
 Hooks are non-interactive, check-only, and fail on the first unhandled error. They must not format files, update snapshots, stage changes, create commits, contact GitHub, or push. A nonzero pre-commit result aborts the commit, while a nonzero pre-push result aborts the push, as defined by the [official Git hook contract](https://git-scm.com/docs/githooks).
 
 Pre-commit retains the caller's exact Git index context internally, but removes
-repository-local Git environment variables from Cargo and Node test children.
+repository-local Git environment variables from Cargo, Node, and Make children.
 Pre-push removes the same variables from commands targeting its explicit
 worktree. The shared helper uses `git rev-parse --local-env-vars` to identify
 them, preserving transport and authentication variables. This prevents inherited
@@ -114,18 +114,18 @@ defects.
 Staged quality paths are the added, copied, modified, renamed, or type-changed entries whose after-snapshot exists in the index. Staged source files are the non-test members of that set. Staged tests are directly staged test files. Extended tests are additional test endpoints selected by impact analysis.
 
 `make hooks-install` creates the mirror from `HEAD`, or Git's empty tree before the first commit, and performs its initial full CodeGraph index. At the start of each pre-commit run, the hook refreshes the mirror's tracked files from the exact staged snapshot while preserving its local `.codegraph/` database, then runs `codegraph sync --quiet` inside the mirror. Routine pre-commit runs never perform a full re-index. A missing, corrupt, or incompatible mirror index fails with the exact setup command needed to rebuild it.
-The hook checks that the mirror tree matches the Git index before trusting analysis. CodeGraph and compiler-backed staged gates run only inside that mirror. The dirty working tree and the repository root's developer-facing CodeGraph index are not pre-commit inputs.
+The hook checks that the mirror tree matches the Git index before trusting analysis. Before each staged phase and prepared-environment command, it rechecks the index tree and every tracked mirror blob's bytes and Git file mode. Changed inputs stop the attempt. CodeGraph and compiler-backed staged gates run only inside that mirror. The dirty working tree and the repository root's developer-facing CodeGraph index are not pre-commit inputs.
 
 Deleted files remain impact-analysis inputs even though exact-file formatting and linting cannot read them. Renames contribute both old and new paths.
 
 ## Pre-commit gate order
 
-The top-level `make pre-commit` and affected-test `make pre-commit-test`
-commands are aggregates and may exceed one minute. Each real child test gate
-remains directly runnable, appears in `make help`, and retains one 60-second
-timeout around its entire invocation. Neither aggregate adds a timeout.
-Prepared-environment lifecycle time is measured separately under the
-connection-test policy.
+The top-level `make pre-commit`, affected-test `make pre-commit-test`, and
+`make pre-commit-test-integrations` commands are aggregates and may exceed
+one minute. Each real child test gate remains directly runnable, appears in
+`make help`, and retains its existing 60-second timeout around test execution.
+The aggregates add no timeout. Provisioning, prepared-environment startup,
+and teardown remain outside child test budgets under the connection-test policy.
 
 The public pre-commit sequence is prepare, structure, exact-file source
 format/lint/ast/analysis, exact-file test format/lint/ast/analysis,
@@ -145,19 +145,19 @@ Run child gates in this fail-fast order:
 5. `pre-commit-domain-analysis` reruns applicable analyzers over every file in
    each repository domain touched by the staged change.
 6. Affected tests via the `pre-commit-test` aggregate, serially and fail-fast:
-   `pre-commit-test-libraries`, `pre-commit-test-app`, then
-   `pre-commit-test-tooling`. Each computes the same full selection using
-   `computeSelectionRecord` (records `{path,language,domain}` in
-   stagedSources/stagedTests/extendedTests), `parseAffectedJson` (only affected
-   test paths), and `packageSelection` (Rust owner/downstream packages).
+   `pre-commit-test-libraries`, `pre-commit-test-app`,
+   `pre-commit-test-tooling`, then `pre-commit-test-integrations`.
+   The first child computes one complete selection from staged inputs,
+   CodeGraph candidates, domain ownership, executable-gate registration, and
+   Cargo metadata. Later children reuse that plan from the same attempt report.
 
 The library/shared-contract child runs every selected Rust package outside
 `crates/app`, including integration-only suites. The application child runs
 the selected `crates/app` package, including its library target. Both retain
 all-target, all-feature, locked Cargo tests and doc tests for packages with
-libraries. The tooling child runs the selected runnable Node tests.
-This split preserves the complete selected test union and the existing
-60-second limit for each real child; it drops no selected tests.
+libraries. The tooling child runs selected runnable Node `.test` and `.spec`
+files. The integrations aggregate runs registered Make gates with their
+required prerequisites. It never runs `.e2e` scenarios as raw Node tests.
 
 Behavior development begins with the smallest in-process test at an external
 seam. Deterministic fakes, stubs, and mocks provide routine feedback, while the
@@ -166,7 +166,9 @@ simulator or oracle suite. Broaden to those slower layers after the behavior is
 green; use their results to correct a drifting test double rather than weakening
 the shared scenario.
 
-The hook prints each selected command before running it. It records staged sources, staged tests, extended tests, CodeGraph inputs and candidates, traversal count, fallback reason, selected Cargo packages, languages, domains, and runnable Node test paths in `.cache/gates/pre-commit-selection.json`.
+The hook prints each recorded command and its result/log path. Its private report lives at `.cache/gates/runs/pre-commit/<tree>/<attempt>/report.json`; `.cache/gates/staged.json` points to that attempt. The selection records staged sources and tests, extended tests, CodeGraph inputs and candidates, traversal count, fallback reason, languages, domains, Cargo packages and Rust inputs, Node paths, and affected gates with reasons and prerequisites. Each executed Cargo, Node, preparation, integration, and cleanup step records its command, arguments, cwd, status, duration, full private log path, and the actual failed Make child when the log identifies one. Reports never serialize environment values.
+
+Preparing the same revision again creates a new attempt instead of overwriting history. A failed selection or snapshot check records its phase and error. A full successful test sequence marks the attempt passed; a failed step marks it failed. An interrupted attempt may remain started and must not be treated as successful verification.
 
 ### Formatting and linting granularity
 
@@ -244,7 +246,8 @@ Start with every staged test file. For staged production files, take the union o
 
 1. Run `codegraph affected --json` inside the synced staged-tree mirror, passing every staged path in a language CodeGraph indexes. It walks transitive dependents from each changed path and returns candidate test-file paths. The hook sets the traversal depth to 32 rather than relying on CodeGraph's default depth of five.
 2. Repository-domain ownership always contributes its executable test suites. This supplies conservative coverage for unindexed files, empty CodeGraph results, query failures, deletions, and renames, and it may cross languages; for example, a QML plugin change selects its JavaScript release contracts.
-3. Cargo metadata maps changed Rust files and candidate Rust tests to owning and downstream workspace packages.
+3. Explicit gate registrations map executable scenarios and environment inputs to existing Make targets, prerequisites, and cleanup. Runtime crate changes, workspace inputs, and shipped configuration select all ten Rust LAN reference-peer gates. Environment and fixture ownership adds its registered checks without treating unchanged reference-only C++ suites as Rust runtime consumers.
+4. Cargo metadata maps changed Rust files and candidate Rust tests to owning and downstream workspace packages. Fixture mappings also contribute their existing Rust consumer tests, including control, sharing-scenario, and Google wire fixtures. These inputs join Cargo selection rather than creating separate Cargo runner gates.
 
 The installed CodeGraph 1.6.0 implementation walks dependent files through resolved cross-file symbol edges. It does not walk dependencies, inspect Git, refresh its database, understand Cargo targets, or run tests. Its default path matcher also misses a relative path beginning with `tests/`. Pre-commit uses no `--filter` because `**/*.rs` makes the changed source a terminal match that prevents traversal. See [CodeGraph affected-test semantics](research/codegraph-affected-semantics.md) for the pinned behavior and sources.
 
@@ -259,8 +262,11 @@ Fall back conservatively:
 - A Rust path without a package owner, or a workspace manifest, lockfile, toolchain file, or shared Rust input, selects every workspace package.
 - A production Rust change always runs its owning and downstream packages even when CodeGraph returns no test endpoint.
 - A hook, impact-selector, or gate change selects the tooling contract tests.
+- Executable test markers without a registered runner fail closed with the path that needs a mapping. This includes `.e2e`, unsupported `.test`/`.spec` extensions, `test_*`, and `*_test` names. Ordinary helper files under test directories are not automatically executable tests. Experimental Android checks remain unadmitted; this selector does not promote them.
 
-Cargo runs every selected package with `--all-targets --all-features --locked`, followed by documentation tests for packages that expose a library. Node runs each selected test file separately. Both loops stop at the first failure.
+Cargo runs every selected package with `--all-targets --all-features --locked`, followed by documentation tests for packages that expose a library. Node runs each selected fast test file separately. Registered integration gates run through Make from the verified staged mirror, with absolute pinned tool paths, a canonical shared `TEST_ENV_CACHE`, and the shared Cargo target cache. Rust LAN provisioning builds the daemon image from staged sources before executing the selected scenarios; a preexisting working-tree or HEAD binary is not the test input.
+
+Prerequisites run just before the first selected gate that needs them and run only once per attempt's integration sequence. Existing child targets keep ownership of their lifecycle and test timeouts. Registered cleanup runs in `finally`, including after preparation or test failure. The first failure stops later tests; a cleanup failure is recorded without replacing the primary failure.
 
 Contract fixtures cover staged-mirror reuse, exact index bytes, partial Rust staging rejection, source/test phase separation, affected-response parsing, repository-domain union when CodeGraph returns candidates, cross-language selection records, Cargo owner/downstream mapping, workspace fallback logic, and exact pre-commit target order.
 
@@ -288,7 +294,7 @@ fast in-process tests before oracle, simulator, and virtual-system tests.
 
 `make verify` is the complete non-release suite defined by the Makefile policy. It includes formatting, compiler checks, Clippy, rustdoc, ast-grep, rule tests, unit tests, integration tests, oracle checks, fixture checks, packaging checks, and every reproducible simulator or virtual-system check described by the connection-test policy. Checks that need Linux capabilities or virtual radios must run non-interactively through a prepared local VM, container, or namespace. Physical-phone checks are manual only. Hooks, `make verify`, and `make build` must never attempt them.
 
-The hook stops on the first failed child gate and aborts the push. It writes `.cache/gates/pre-push-<sha>.json` with the commit SHA, aggregate durations and statuses for `make verify` and `make build`, and artifact paths. Gate failures also overwrite the record. The record does not cache successful verification or measure individual child gates. A successful result is the final automated quality decision before GitHub receives the commit. After it passes, push normally to the approved GitHub remote. Never force-push as part of this workflow.
+The hook stops on the first failed child gate and aborts the push. Each attempt writes a private `.cache/gates/runs/pre-push/<sha>/<attempt>/report.json` with the exact commit, `make verify` then `make build` commands, durations, statuses, and full log paths. A failure records the actual failed Make child when present in the output. Repeated attempts retain earlier evidence; reports are not a verification cache. An interrupted attempt may remain started and is not success. A successful result is the final automated quality decision before GitHub receives the commit. After it passes, push normally to the approved GitHub remote. Never force-push as part of this workflow.
 
 ## Gate documentation
 
@@ -324,13 +330,15 @@ The initial hook change must include contract fixtures for staged-only behavior,
   files with applicable tools, in that order.
 - `make pre-commit-domain-analysis` reruns applicable analyzers across every
   complete repository domain touched by the staged change.
-- `make pre-commit-test` runs all selected tests through the library,
-  application, and tooling children, serially and fail-fast in that order.
+- `make pre-commit-test` runs selected library, application, tooling, and
+  prepared integration checks, serially and fail-fast in that order.
 - `make pre-commit-test-libraries` runs selected Rust library/shared-contract
   packages outside `crates/app`, including integration-only suites, within 60s.
 - `make pre-commit-test-app` runs the selected `crates/app` package's tests,
   including its library target and doc tests, within 60s.
 - `make pre-commit-test-tooling` runs selected runnable Node tests within 60s.
+- `make pre-commit-test-integrations` provisions and runs affected registered
+  environment gates, with cleanup and no aggregate timeout.
 - `make lint-android` validates Android SDK, probe, and AVD pins; `make android-preflight` checks host and KVM support.
 - `make android-bootstrap` fetches pinned host tools; `make android-orchestrator-provision` prepares the pinned Mobly controller.
 - After `make android-license`, `make android-provision` prepares the SDK, probe, and AVDs; `make android-seed` records clean first boots.
@@ -350,6 +358,8 @@ The initial hook change must include contract fixtures for staged-only behavior,
 - `make test-network-lan`, `make test-network-hotspot-client`, and `make test-network-hotspot-owner` check real Wi-Fi association and bidirectional TCP paths.
 - `make test-network-wifi-direct-client` checks the supported Linux-client P2P role against a simulated remote group owner.
 - `make oracle-reference-provision` builds the pinned Google oracle; `make test-oracle-reference` checks UKEY2 both ways.
+- `make oracle-reference-up` and `make oracle-reference-down` start and stop
+  prepared reference peers outside their child test budgets.
 - `make test-oracle-{bluetooth,ble,lan,hotspot,wifi-direct}` checks one pinned Google simulated connection family.
 - `make test-oracle-bwu-handler` checks selected Bluetooth, Wi-Fi Direct, and LAN simulated semantics; `make test-oracle-bwu-fallback` checks selected fallback semantics, not cross-peer transfer interoperability.
 - `make test-rust` runs workspace Rust tests; `make test-tooling` runs

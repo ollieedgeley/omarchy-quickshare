@@ -391,6 +391,7 @@ test("pre-commit uses ordered source and test phase commands", () => {
     "test-libraries",
     "test-app",
     "test-tooling",
+    "test-integrations",
   ]);
 });
 
@@ -405,12 +406,16 @@ test("staged test children each have one 60s bound and appear in help", () => {
     assert.equal(output.trim(), expected[index]);
   }
   const aggregate = makeOutput(["-n", "pre-commit-test"]);
-  assert.deepEqual(aggregate.trim().split("\n"), expected);
+  assert.deepEqual(aggregate.trim().split("\n"), [
+    ...expected,
+    "node tools/hooks/run-staged.mjs test-integrations",
+  ]);
   const help = makeOutput(["help"]);
   for (const mode of modes) {
     assert.ok(help.includes(`pre-commit-${mode}`), help);
   }
   assert.ok(help.includes("pre-commit-test "), help);
+  assert.ok(help.includes("pre-commit-test-integrations "), help);
 });
 
 test("staged test aggregate stops before children after a failure", () => {

@@ -1,23 +1,43 @@
 import { spawnSync } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
+
+const PRIVATE_FILE_MODE = 0o600;
+
+function spawn(command, args, options) {
+  let standardIo = "inherit";
+  if (options.capture) {
+    standardIo = "pipe";
+  }
+  let log = null;
+  try {
+    if (options.logPath) {
+      log = openSync(options.logPath, "wx", PRIVATE_FILE_MODE);
+      let stdin = "inherit";
+      if (Object.hasOwn(options, "input")) {
+        stdin = "pipe";
+      }
+      standardIo = [stdin, log, log];
+    }
+    return spawnSync(command, args, {
+      cwd: options.cwd,
+      encoding: "utf8",
+      env: options.env ?? process.env,
+      input: options.input,
+      stdio: standardIo,
+    });
+  } finally {
+    if (log !== null) {
+      closeSync(log);
+    }
+  }
+}
 
 export function run(command, args, options = {}) {
   const rendered = [command, ...args].join(" ");
   if (!options.quiet) {
     process.stdout.write(`+ ${rendered}\n`);
   }
-
-  let standardIo = "inherit";
-  if (options.capture) {
-    standardIo = "pipe";
-  }
-  const result = spawnSync(command, args, {
-    cwd: options.cwd,
-    encoding: "utf8",
-    env: options.env ?? process.env,
-    input: options.input,
-    stdio: standardIo,
-  });
-
+  const result = spawn(command, args, options);
   if (result.error) {
     throw new Error(`${rendered}: ${result.error.message}`);
   }
