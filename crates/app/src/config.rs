@@ -12,8 +12,8 @@ use toml_edit::{DocumentMut, Item, Value};
 
 /// Default outbound search window.
 pub const DEFAULT_DISCOVERY_TIMEOUT_SECS: u64 = 15;
-/// Default inbound visibility window.
-pub const DEFAULT_VISIBILITY_TIMEOUT_SECS: u64 = 300;
+/// Default pending inbound consent deadline.
+pub const DEFAULT_CONSENT_TIMEOUT_SECS: u64 = 300;
 /// Default active-transfer deadline.
 pub const DEFAULT_TRANSFER_TIMEOUT_SECS: u64 = 120;
 
@@ -39,15 +39,13 @@ pub struct Config {
     pub receive_directory: PathBuf,
     /// Active-transfer deadline in seconds.
     pub transfer_timeout_secs: u64,
-    /// Inbound visibility window in seconds.
-    pub visibility_timeout_secs: u64,
 }
 
 impl Default for Config {
     #[inline]
     fn default() -> Self {
         Self {
-            consent_timeout_secs: DEFAULT_VISIBILITY_TIMEOUT_SECS,
+            consent_timeout_secs: DEFAULT_CONSENT_TIMEOUT_SECS,
             device_name: None,
             discoverable: false,
             discovery_timeout_secs: DEFAULT_DISCOVERY_TIMEOUT_SECS,
@@ -55,7 +53,6 @@ impl Default for Config {
             read_clipboard_on_select: false,
             receive_directory: default_receive_directory(),
             transfer_timeout_secs: DEFAULT_TRANSFER_TIMEOUT_SECS,
-            visibility_timeout_secs: DEFAULT_VISIBILITY_TIMEOUT_SECS,
         }
     }
 }
@@ -77,14 +74,13 @@ impl Config {
             "consent_timeout_secs = {}\ndiscoverable = {}\n\
              read_clipboard_on_select = {}\n\
              discovery_timeout_secs = {}\nreceive_directory = {}\n\
-             transfer_timeout_secs = {}\nvisibility_timeout_secs = {}\n",
+             transfer_timeout_secs = {}\n",
             self.consent_timeout_secs,
             self.discoverable,
             self.read_clipboard_on_select,
             self.discovery_timeout_secs,
             Value::from(self.receive_directory.display().to_string()),
             self.transfer_timeout_secs,
-            self.visibility_timeout_secs,
         );
         if let Some(device_name) = &self.device_name {
             body.push_str(&format!(
@@ -288,16 +284,15 @@ fn from_document(document: &DocumentMut) -> io::Result<Config> {
                         config.discovery_timeout_secs = timeout;
                     }
                     "visibility_timeout_secs" => {
-                        config.visibility_timeout_secs = timeout;
+                        if !document.contains_key("consent_timeout_secs") {
+                            config.consent_timeout_secs = timeout;
+                        }
                     }
                     _ => config.transfer_timeout_secs = timeout,
                 }
             }
             _ => return Err(unknown_key(key)),
         }
-    }
-    if !document.contains_key("consent_timeout_secs") {
-        config.consent_timeout_secs = config.visibility_timeout_secs;
     }
     Ok(config)
 }
@@ -321,7 +316,6 @@ fn patch_value(key: &str, value: &str) -> io::Result<Value> {
         }
         "consent_timeout_secs"
         | "discovery_timeout_secs"
-        | "visibility_timeout_secs"
         | "transfer_timeout_secs" => {
             let timeout =
                 i64::try_from(parse_timeout(value)?).map_err(|error| {

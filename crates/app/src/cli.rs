@@ -4,6 +4,7 @@ mod args;
 mod classify;
 mod dispatch;
 mod log;
+mod visibility;
 
 #[cfg(test)]
 #[expect(

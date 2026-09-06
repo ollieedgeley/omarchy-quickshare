@@ -1,3 +1,5 @@
+mod visibility;
+
 use super::{
     NetworkCommand, NetworkEvent, TransferCancellation, emit_peer_lost,
     inbound::receive_share, remember_seen, transfer::outbound_event,
@@ -5,6 +7,7 @@ use super::{
 use crate::config::Config;
 use crate::daemon::media::PeerRoute;
 use crate::daemon::outbound::OutboundState;
+use crate::daemon::visibility::{Resources, Visibility};
 use core::net::{Ipv4Addr, SocketAddrV4};
 use quickshare_connections::Medium;
 use std::fs;
@@ -51,11 +54,19 @@ fn receive_directory() -> std::path::PathBuf {
     path
 }
 
+fn open_test_visibility() -> Visibility {
+    let visibility = Visibility::default();
+    let generation = visibility.request_open().expect("activation request");
+    visibility.complete_activation(generation, Ok(Resources::default()));
+    visibility
+}
+
 fn receive_once(
     listener: TcpListener,
     command_receiver: mpsc::Receiver<NetworkCommand>,
     inbound_sender: mpsc::Sender<NetworkEvent>,
     receive_directory: std::path::PathBuf,
+    visibility: &Visibility,
 ) -> NetworkEvent {
     let (stream, _) = listener.accept().expect("inbound accept");
     receive_share(
@@ -71,20 +82,22 @@ fn receive_once(
             ..Config::default()
         },
         None,
+        visibility,
+        visibility.generation_if_open().expect("open visibility"),
         &mut |_| true,
     )
 }
 
 fn accept_until_completed(
     inbound_receiver: mpsc::Receiver<NetworkEvent>,
-    command_sender: mpsc::Sender<NetworkCommand>,
+    visibility: &Visibility,
 ) {
     loop {
         match inbound_receiver.recv() {
-            Ok(NetworkEvent::InboundOffered { .. }) => {
-                command_sender
-                    .send(NetworkCommand::AcceptInbound { share_id: 1 })
-                    .expect("accept inbound");
+            Ok(NetworkEvent::InboundOffered { consent, .. }) => {
+                assert!(visibility.admit(&consent));
+                consent.bind(1);
+                assert!(consent.accept(1));
             }
             Ok(NetworkEvent::InboundCompleted { kind, bytes, .. }) => {
                 assert!(bytes > 0);
@@ -137,18 +150,21 @@ fn send_payload_family(payload: fn(&mut OutboundState, u64)) {
         std::net::SocketAddr::V6(_) => Ipv4Addr::LOCALHOST,
     };
     let receive_directory = receive_directory();
-    let (command_sender, command_receiver) = mpsc::channel();
+    let (_command_sender, command_receiver) = mpsc::channel();
     let (inbound_sender, inbound_receiver) = mpsc::channel();
+    let visibility = open_test_visibility();
+    let inbound_visibility = visibility.clone();
     let inbound = thread::spawn(move || {
         receive_once(
             listener,
             command_receiver,
             inbound_sender,
             receive_directory,
+            &inbound_visibility,
         )
     });
     let consent = thread::spawn(move || {
-        accept_until_completed(inbound_receiver, command_sender);
+        accept_until_completed(inbound_receiver, &visibility);
     });
     let mut outbound = OutboundState::default();
     payload(&mut outbound, 7);
@@ -194,14 +210,14 @@ fn text_url_and_file_payloads_complete_once_over_the_worker() {
 
 fn reject_until_finished(
     inbound_receiver: mpsc::Receiver<NetworkEvent>,
-    command_sender: mpsc::Sender<NetworkCommand>,
+    visibility: &Visibility,
 ) {
     loop {
         match inbound_receiver.recv() {
-            Ok(NetworkEvent::InboundOffered { .. }) => {
-                command_sender
-                    .send(NetworkCommand::RejectInbound { share_id: 1 })
-                    .expect("reject inbound");
+            Ok(NetworkEvent::InboundOffered { consent, .. }) => {
+                assert!(visibility.admit(&consent));
+                consent.bind(1);
+                assert!(consent.reject(1));
             }
             Ok(NetworkEvent::InboundRejected { .. }) | Err(_) => break,
             Ok(_) => {}
@@ -221,18 +237,21 @@ fn rejected_offer_does_not_retry_another_route() {
         std::net::SocketAddr::V6(_) => Ipv4Addr::LOCALHOST,
     };
     let receive_directory = receive_directory();
-    let (command_sender, command_receiver) = mpsc::channel();
+    let (_command_sender, command_receiver) = mpsc::channel();
     let (inbound_sender, inbound_receiver) = mpsc::channel();
+    let visibility = open_test_visibility();
+    let inbound_visibility = visibility.clone();
     let inbound = thread::spawn(move || {
         receive_once(
             listener,
             command_receiver,
             inbound_sender,
             receive_directory,
+            &inbound_visibility,
         )
     });
     let consenter = thread::spawn(move || {
-        reject_until_finished(inbound_receiver, command_sender);
+        reject_until_finished(inbound_receiver, &visibility);
     });
     let mut outbound = OutboundState::default();
     outbound.remember_text(7, String::from("hello"));
@@ -283,6 +302,7 @@ fn receive_with_diagnostics(
     command_receiver: mpsc::Receiver<NetworkCommand>,
     inbound_sender: mpsc::Sender<NetworkEvent>,
     receive_directory: std::path::PathBuf,
+    visibility: &Visibility,
 ) -> NetworkEvent {
     tracing::dispatcher::with_default(&dispatch, || {
         receive_once(
@@ -290,19 +310,20 @@ fn receive_with_diagnostics(
             command_receiver,
             inbound_sender,
             receive_directory,
+            visibility,
         )
     })
 }
 
 fn accept_inbound_offer(
     inbound_receiver: mpsc::Receiver<NetworkEvent>,
-    command_sender: mpsc::Sender<NetworkCommand>,
+    visibility: &Visibility,
 ) {
     while let Ok(event) = inbound_receiver.recv() {
-        if matches!(event, NetworkEvent::InboundOffered { .. }) {
-            command_sender
-                .send(NetworkCommand::AcceptInbound { share_id: 41 })
-                .expect("accept inbound");
+        if let NetworkEvent::InboundOffered { consent, .. } = event {
+            assert!(visibility.admit(&consent));
+            consent.bind(41);
+            assert!(consent.accept(41));
             break;
         }
     }
@@ -399,8 +420,10 @@ fn inbound_connection_span_correlates_handshake_assignment_and_terminal() {
     let address = listener.local_addr().expect("listen address");
     let receive_directory = receive_directory();
     let private_directory = receive_directory.to_string_lossy().into_owned();
-    let (command_sender, command_receiver) = mpsc::channel();
+    let (_command_sender, command_receiver) = mpsc::channel();
     let (inbound_sender, inbound_receiver) = mpsc::channel();
+    let visibility = open_test_visibility();
+    let inbound_visibility = visibility.clone();
     let diagnostic_path = receive_directory.join("diagnostics.log");
     let diagnostic_file =
         fs::File::create(&diagnostic_path).expect("diagnostic file");
@@ -415,10 +438,11 @@ fn inbound_connection_span_correlates_handshake_assignment_and_terminal() {
             command_receiver,
             inbound_sender,
             receive_directory,
+            &inbound_visibility,
         )
     });
     let consent = thread::spawn(move || {
-        accept_inbound_offer(inbound_receiver, command_sender);
+        accept_inbound_offer(inbound_receiver, &visibility);
     });
     assert!(address.is_ipv4(), "listener was not IPv4: {address}");
     let std::net::SocketAddr::V4(address) = address else {

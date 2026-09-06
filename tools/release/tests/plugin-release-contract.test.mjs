@@ -45,8 +45,8 @@ const QUICKSHELL_VERSION_PATTERN = /^Quickshell 0\.3\.1\b/u;
 const SUCCESS_PATTERN = /HARNESS_OK/u;
 const SOURCE_COMMIT = "a".repeat(COMMIT_LENGTH);
 const SHA256_LENGTH = 64;
-const CONTROL_PROTOCOL = 4;
-const REJECTED_PROTOCOL = 3;
+const CONTROL_PROTOCOL = 5;
+const REJECTED_PROTOCOL = 4;
 const EXPECTED_FILES = [
   "AttachmentBadge.qml",
   "BarWidget.qml",
@@ -129,12 +129,15 @@ function prepareHarness(root) {
     `#!/usr/bin/env bash
 set -Eeuo pipefail
 case "\${1-}" in
-  protocol-version) printf '4' ;;
+  protocol-version) printf '5' ;;
   health) ;;
   status)
-    printf '%s' '{"response":{"type":"snapshot","snapshot":{},' \\
+    printf '%s' '{"response":{"type":"snapshot","snapshot":{' \\
+      '"visibility_status":{"discoverable":false,"requested":false,' \\
+      '"temporary":false,"remaining_secs":null,"available_media":[],' \\
+      '"error":null}},' \\
       '"preferences":{"saved":null,"applied":null,' \\
-      '"pending":false,"error":null}},"version":4}'
+      '"pending":false,"error":null}},"version":5}'
     ;;
   *)
     printf '%s\\n' "$*" >> "\${QUICKSHARE_TEST_LOG:?}"

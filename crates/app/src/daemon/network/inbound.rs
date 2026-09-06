@@ -1,6 +1,8 @@
 mod consent;
 
+use crate::daemon::visibility::{PendingConsent, Visibility};
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use core::{net::Ipv4Addr, time::Duration};
 use std::sync::mpsc::{Receiver, Sender};
 use std::{env, io};
@@ -73,6 +75,8 @@ pub(super) fn receive_share<Stream>(
     cancellation: &TransferCancellation,
     config: &Config,
     manager: Option<&quickshare_network::NetworkManager>,
+    visibility: &Visibility,
+    generation: u64,
     on_other: &mut dyn FnMut(NetworkCommand) -> bool,
 ) -> NetworkEvent
 where
@@ -81,6 +85,7 @@ where
     let connection_span = connection_span("inbound", medium_name(medium), None);
     let _connection_guard = connection_span.enter();
     trace_protocol("connection", "receive", "started", None, None);
+    let mut proposal = None;
     let event = match (|| -> Result<NetworkEvent, (String, Option<u64>)> {
         let mut connection = accept_connection(
             stream,
@@ -125,22 +130,37 @@ where
             );
             (String::from(error.reason()), None)
         })?;
-        announce_offer(&offer, session.verification_code(), events).map_err(
-            |error| {
-                trace_protocol(
-                    "consent",
-                    "announce_offer",
-                    "failed",
-                    Some("disconnected"),
-                    Some(crate::daemon::observations::io_error_kind(&error)),
-                );
-                (String::from("disconnected"), None)
-            },
-        )?;
+        let Some(token) = visibility.propose(
+            generation,
+            Duration::from_secs(config.consent_timeout_secs),
+        ) else {
+            session
+                .reject_incoming_offer()
+                .map_err(|error| (String::from(error.reason()), None))?;
+            return Err((String::from("cancelled"), None));
+        };
+        proposal = Some(Arc::clone(&token));
+        announce_offer(
+            &offer,
+            session.verification_code(),
+            events,
+            Arc::clone(&token),
+        )
+        .map_err(|error| {
+            trace_protocol(
+                "consent",
+                "announce_offer",
+                "failed",
+                Some("disconnected"),
+                Some(crate::daemon::observations::io_error_kind(&error)),
+            );
+            (String::from("disconnected"), None)
+        })?;
         let consent = wait_for_consent(
             commands,
-            Duration::from_secs(config.consent_timeout_secs),
+            &token,
             on_other,
+            || visibility.generation_if_open() == Some(generation),
             || session.poll_pending_consent_control(),
         )?;
         let share_id = match consent {
@@ -157,6 +177,12 @@ where
                 })?;
                 cancellation.finish(share_id);
                 return Ok(NetworkEvent::InboundRejected { share_id });
+            }
+            Consent::Cancelled => {
+                session.reject_incoming_offer().map_err(|error| {
+                    (String::from(error.reason()), token.share_id())
+                })?;
+                return Err((String::from("cancelled"), token.share_id()));
             }
             Consent::TimedOut => {
                 trace_protocol(
@@ -244,7 +270,12 @@ where
     })() {
         Ok(event) => event,
         Err((reason, share_id)) => {
-            NetworkEvent::InboundFailed { reason, share_id }
+            let share_id = share_id.or_else(|| proposal.as_ref()?.share_id());
+            NetworkEvent::InboundFailed {
+                reason,
+                share_id,
+                consent: proposal,
+            }
         }
     };
     let (outcome, reason) = match &event {
@@ -345,11 +376,13 @@ fn announce_offer(
     offer: &IncomingOffer,
     verification_code: &str,
     events: &Sender<NetworkEvent>,
+    consent: Arc<PendingConsent>,
 ) -> io::Result<()> {
     let size_bytes = u64::try_from(offer.size_bytes())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     events
         .send(NetworkEvent::InboundOffered {
+            consent,
             kind: offer.kind(),
             name: offer.name().to_owned(),
             size_bytes,

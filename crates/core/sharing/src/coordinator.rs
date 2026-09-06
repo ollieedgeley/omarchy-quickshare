@@ -1,6 +1,7 @@
 use crate::attachment::Attachment;
 use crate::snapshot::{
     Direction, EndpointSnapshot, Phase, ShareId, ShareSnapshot,
+    VisibilityState, VisibilityStatus,
 };
 
 /// Owns the user-visible lifecycle of local shares.
@@ -59,12 +60,6 @@ impl Coordinator {
         }
         active.set_phase(Phase::Completed);
         true
-    }
-
-    /// Closes inbound discoverability.
-    #[inline]
-    pub const fn close_visibility(&mut self) {
-        self.snapshot.close_visibility();
     }
 
     /// Ends the running peer search after its daemon-owned deadline.
@@ -146,12 +141,6 @@ impl Coordinator {
         share.select_peer(peer, Phase::AwaitingLocalConsent);
         self.snapshot.set_active(share);
         Some(share_id)
-    }
-
-    /// Opens inbound discoverability.
-    #[inline]
-    pub const fn open_visibility(&mut self) {
-        self.snapshot.open_visibility();
     }
 
     /// Pins exactly one observed peer for future outbound shares.
@@ -324,6 +313,16 @@ impl Coordinator {
         active.select_peer(peer, Phase::AwaitingPeerConsent);
         self.snapshot.stop_discovery();
         true
+    }
+
+    /// Publishes the daemon's inbound policy and activation observations.
+    #[inline]
+    pub fn set_visibility_status(
+        &mut self,
+        state: VisibilityState,
+        status: VisibilityStatus,
+    ) {
+        self.snapshot.set_visibility_status(state, status);
     }
 
     /// Returns the current public endpoint state.

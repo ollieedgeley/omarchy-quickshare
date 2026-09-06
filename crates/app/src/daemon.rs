@@ -8,6 +8,7 @@ mod observations;
 mod outbound;
 mod preferences;
 mod production;
+mod visibility;
 
 pub use self::lifecycle::{run, run_simulated};
 
@@ -52,8 +53,10 @@ pub struct Daemon {
     timeouts: lifecycle::OperationTimeouts,
     /// When the active share entered the transferring phase.
     transfer_started_at: Option<std::time::Instant>,
-    /// When inbound discoverability was opened.
-    visibility_opened_at: Option<std::time::Instant>,
+    /// Shared permission, listener leases, and suspend-inclusive expiry.
+    visibility: visibility::Visibility,
+    /// Admitted inbound consent retained independently of visibility.
+    pending_consent: Option<alloc::sync::Arc<visibility::PendingConsent>>,
 }
 
 #[expect(
@@ -72,20 +75,7 @@ impl Daemon {
         request: &Request,
     ) -> io::Result<Option<ResponseEnvelope>> {
         match request {
-            Request::CloseVisibility => {
-                self.sharing.close_visibility();
-                tracing::info!(
-                    target: "omarchy_quickshare::protocol",
-                    stage = "local_control",
-                    operation = "close_visibility",
-                    outcome = "completed",
-                    phase = "closed",
-                    "visibility closed"
-                );
-                if let Some(network) = &self.network {
-                    network.close_visibility()?;
-                }
-            }
+            Request::CloseVisibility => self.visibility.close(),
             Request::Discover => {
                 self.sharing.start_discovery();
                 tracing::info!(
@@ -101,17 +91,8 @@ impl Daemon {
                 }
             }
             Request::OpenVisibility => {
-                self.sharing.open_visibility();
-                tracing::info!(
-                    target: "omarchy_quickshare::protocol",
-                    stage = "local_control",
-                    operation = "open_visibility",
-                    outcome = "completed",
-                    phase = "open",
-                    "visibility opened"
-                );
-                if let Some(network) = &self.network {
-                    network.open_visibility()?;
+                if let Some(generation) = self.visibility.request_open() {
+                    self.activate_visibility(generation);
                 }
             }
             Request::StopDiscovery => {
@@ -130,6 +111,7 @@ impl Daemon {
             }
             _ => return Ok(None),
         }
+        self.sync_visibility();
         Ok(Some(ResponseEnvelope::applied()))
     }
 
@@ -149,7 +131,8 @@ impl Daemon {
             simulated: false,
             timeouts: lifecycle::OperationTimeouts::default(),
             transfer_started_at: None,
-            visibility_opened_at: None,
+            visibility: visibility::Visibility::default(),
+            pending_consent: None,
         }
     }
 
@@ -220,6 +203,7 @@ impl Daemon {
         &mut self,
         request: &Request,
     ) -> io::Result<ResponseEnvelope> {
+        self.apply_timeouts()?;
         if let Some(response) = self.endpoint_response(request)? {
             return Ok(response);
         }
@@ -277,6 +261,7 @@ impl Daemon {
     #[inline]
     pub fn serve_next(&mut self, listener: &UnixListener) -> io::Result<()> {
         self.apply_network_events()?;
+        self.apply_timeouts()?;
         let (mut stream, _address) = listener.accept()?;
         let mut reader = BufReader::new(stream.try_clone()?);
         let request = read_request(&mut reader)?;
@@ -340,7 +325,7 @@ impl Daemon {
     ) -> io::Result<Option<ResponseEnvelope>> {
         let response = match request {
             Request::Accept { share_id } => {
-                let accepted = self.sharing.accept_inbound(*share_id);
+                let accepted = self.accept_pending(*share_id);
                 if accepted {
                     tracing::info!(
                         target: "omarchy_quickshare::protocol",
@@ -353,14 +338,16 @@ impl Daemon {
                         "share phase"
                     );
                     self.transfer_started_at = Some(std::time::Instant::now());
-                    if let Some(network) = &self.network {
-                        network.accept_inbound(*share_id)?;
-                    }
                 }
                 action_response(accepted)
             }
             Request::Cancel { share_id } => {
                 if self.sharing.cancel(*share_id) {
+                    if let Some(pending) = self.pending_consent.as_ref()
+                        && pending.share_id() == Some(*share_id)
+                    {
+                        pending.cancel();
+                    }
                     tracing::info!(
                         target: "omarchy_quickshare::protocol",
                         stage = "local_control",
@@ -401,7 +388,7 @@ impl Daemon {
             }
             Request::UnpinPeer => self.patch_preferences("pinned_peer_id", ""),
             Request::Reject { share_id } => {
-                let rejected = self.sharing.reject_inbound(*share_id);
+                let rejected = self.reject_pending(*share_id);
                 if rejected {
                     tracing::info!(
                         target: "omarchy_quickshare::protocol",
@@ -413,9 +400,6 @@ impl Daemon {
                         phase = "rejected",
                         "share phase"
                     );
-                    if let Some(network) = &self.network {
-                        network.reject_inbound(*share_id)?;
-                    }
                 }
                 action_response(rejected)
             }
@@ -432,18 +416,8 @@ impl Daemon {
     #[inline]
     pub fn simulated() -> Self {
         let mut endpoint = Self {
-            config: crate::config::Config::default(),
-            config_watch: None,
-            discovery_started_at: None,
-            network: None,
-            outbound: OutboundState::default(),
-            preferences: PreferenceStatus::default(),
-            queued: Vec::new(),
-            sharing: Coordinator::new(),
             simulated: true,
-            timeouts: lifecycle::OperationTimeouts::default(),
-            transfer_started_at: None,
-            visibility_opened_at: None,
+            ..Self::new()
         };
         endpoint.sharing.observe_peer("pixel-8", "Ollie's Pixel");
         endpoint.sharing.observe_peer("galaxy-tab", "Galaxy Tab");
@@ -459,12 +433,16 @@ impl Daemon {
     }
 
     /// Attaches the production network worker to an otherwise empty daemon.
-    #[expect(
-        clippy::single_call_fn,
-        reason = "Only production startup attaches the real worker"
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::single_call_fn,
+            reason = "Only production startup attaches the real worker"
+        )
     )]
     fn with_network_worker(network: NetworkWorker) -> Self {
         Self {
+            visibility: network.visibility(),
             network: Some(network),
             ..Self::new()
         }

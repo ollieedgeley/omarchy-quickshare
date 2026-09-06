@@ -52,6 +52,7 @@ ShellRoot {
       "discovery": "searching",
       "peers": peers || [],
       "visibility": "closed",
+      "visibility_status": visibilityStatus(false),
     }
   }
 
@@ -79,6 +80,18 @@ ShellRoot {
       },
       "peers": [],
       "visibility": "open",
+      "visibility_status": visibilityStatus(true),
+    }
+  }
+
+  function visibilityStatus(requested) {
+    return {
+      "discoverable": false,
+      "requested": requested,
+      "temporary": requested,
+      "remaining_secs": requested ? 600 : null,
+      "available_media": [],
+      "error": null,
     }
   }
 
@@ -250,7 +263,10 @@ ShellRoot {
       && panel.terminalTitle === "Could not receive"
       && panel.terminalDetail === detail
       && rendersPlainText(panel, detail)
-    panel.snapshot = {"visibility": "closed"}
+    panel.snapshot = {
+      "visibility": "closed",
+      "visibility_status": visibilityStatus(false),
+    }
     panel.actionError = "<b>Native command failed</b>"
     var nativeError = rendersPlainText(panel, "<b>Native command failed</b>")
     var staleInstructionAbsent = !rendersPlainText(
@@ -281,6 +297,23 @@ ShellRoot {
       && root.stopDiscoveryRequests === 2
   }
 
+  function verifyVisibilityStop() {
+    panel.snapshot = {
+      "visibility": "starting",
+      "visibility_status": visibilityStatus(true),
+    }
+    root.visibilityRequested = true
+    panel.toggleVisibility()
+    var startingStopped = !root.visibilityRequested && !panel.visibilityOpen
+    panel.snapshot = {
+      "visibility": "unavailable",
+      "visibility_status": visibilityStatus(true),
+    }
+    root.visibilityRequested = true
+    panel.toggleVisibility()
+    return startingStopped && !root.visibilityRequested && !panel.visibilityOpen
+  }
+
   function verifyPanel() {
     var attachments = verifyAttachmentTypes() && verifyPeerChoice()
     var discovery = verifyDiscovery()
@@ -289,7 +322,7 @@ ShellRoot {
     var terminal = verifyTerminalAndIdle()
     var browsing = verifyClipboardBrowsing()
     var valid = attachments && discovery && consent
-      && transfer && terminal && browsing
+      && transfer && terminal && browsing && verifyVisibilityStop()
     if (valid) {
       console.log("HARNESS_OK")
       Qt.quit()

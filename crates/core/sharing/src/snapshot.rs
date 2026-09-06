@@ -71,6 +71,32 @@ pub enum VisibilityState {
     Closed,
     /// The endpoint is discoverable for inbound offers.
     Open,
+    /// Permission is active while inbound media are being prepared.
+    Starting,
+    /// Permission is active but no inbound medium is available.
+    Unavailable,
+}
+
+/// Daemon-owned inbound policy, permission, and medium availability.
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "Visibility status is a closed versioned local wire encoding"
+)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct VisibilityStatus {
+    /// Successfully applied durable discoverability policy.
+    pub discoverable: bool,
+    /// Whether the daemon currently permits new inbound offers.
+    pub requested: bool,
+    /// Whether permission comes from the fixed ten-minute action.
+    pub temporary: bool,
+    /// Suspend-inclusive seconds left on temporary permission.
+    pub remaining_secs: Option<u64>,
+    /// Inbound media currently advertised and ready for admission.
+    pub available_media: Vec<String>,
+    /// Current inbound activation failure, when present.
+    pub error: Option<String>,
 }
 
 /// Public state for one active share.
@@ -126,6 +152,8 @@ pub struct EndpointSnapshot {
     /// Current inbound discoverability state.
     #[serde(default, skip_serializing_if = "VisibilityState::is_closed")]
     visibility: VisibilityState,
+    /// Authoritative daemon policy and activation observations.
+    visibility_status: VisibilityStatus,
 }
 
 impl EndpointSnapshot {
@@ -152,11 +180,6 @@ impl EndpointSnapshot {
         }
         active.set_phase(Phase::Cancelled);
         true
-    }
-
-    /// Closes inbound discoverability.
-    pub(crate) const fn close_visibility(&mut self) {
-        self.visibility = VisibilityState::Closed;
     }
 
     /// Returns the current outbound peer-search state.
@@ -206,6 +229,14 @@ impl EndpointSnapshot {
             discovery: DiscoveryState::Idle,
             peers: Vec::new(),
             visibility: VisibilityState::Closed,
+            visibility_status: VisibilityStatus {
+                discoverable: false,
+                requested: false,
+                temporary: false,
+                remaining_secs: None,
+                available_media: Vec::new(),
+                error: None,
+            },
         }
     }
 
@@ -218,11 +249,6 @@ impl EndpointSnapshot {
             return;
         }
         self.peers.push(PeerSnapshot::new(peer_id, name));
-    }
-
-    /// Opens inbound discoverability.
-    pub(crate) const fn open_visibility(&mut self) {
-        self.visibility = VisibilityState::Open;
     }
 
     /// Returns the peer with this stable identifier.
@@ -290,6 +316,22 @@ impl EndpointSnapshot {
     #[must_use]
     pub const fn visibility(&self) -> VisibilityState {
         self.visibility
+    }
+
+    /// Returns authoritative daemon visibility observations.
+    #[must_use]
+    pub const fn visibility_status(&self) -> &VisibilityStatus {
+        &self.visibility_status
+    }
+
+    /// Publishes policy and activation state together.
+    pub(crate) fn set_visibility_status(
+        &mut self,
+        state: VisibilityState,
+        status: VisibilityStatus,
+    ) {
+        self.visibility = state;
+        self.visibility_status = status;
     }
 }
 

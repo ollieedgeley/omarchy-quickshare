@@ -1,27 +1,28 @@
 //! Background DNS-SD, Bluetooth, and inbound scheduling for the network worker.
+mod activation;
+#[cfg(test)]
+pub(super) use activation::TestActivation;
 
 use alloc::sync::Arc;
 use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::Instant;
 
-use super::inbound::{advertisement, open_listener, receive_share};
+use super::inbound::{advertisement, receive_share};
 use super::transfer::outbound_event;
 use super::{NetworkCommand, NetworkEvent, TransferCancellation};
 use crate::config::Config;
 use crate::daemon::media::{
-    DiscoveryLeases, PeerRoute, VisibilityLeases, endpoint_name,
-    open_visibility, start_discovery,
+    DiscoveryLeases, PeerRoute, endpoint_name, start_discovery,
 };
 use core::time::Duration;
 use quickshare_bluez::Adapter;
 use quickshare_connections::Medium;
-use quickshare_network::{
-    Browser, DnsSd, NetworkManager, ResolvedService, lan::PublishedLanListener,
-};
+use quickshare_network::{Browser, DnsSd, NetworkManager, ResolvedService};
 use quickshare_sharing::{EndpointInfo, MdnsInstance};
 
-use crate::daemon::observations::{io_error_kind, trace_protocol};
+use crate::daemon::observations::trace_protocol;
+use crate::daemon::visibility::Visibility;
 
 /// Maximum wait before processing another worker command.
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -36,25 +37,32 @@ const BLUETOOTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
     clippy::needless_pass_by_value,
     reason = "The detached worker owns its DNS-SD adapter and channels"
 )]
-#[expect(
-    clippy::single_call_fn,
-    reason = "The worker loop is named for its long-running lifecycle"
+#[cfg_attr(
+    not(test),
+    expect(
+        clippy::single_call_fn,
+        reason = "The worker loop is named for its long-running lifecycle"
+    )
 )]
 /// Owns DNS-SD browsing until the daemon drops its command channel.
 pub(super) fn run_worker(
-    dns_sd: DnsSd,
+    dns_sd: Option<DnsSd>,
     commands: Receiver<NetworkCommand>,
     events: Sender<NetworkEvent>,
     cancellation: TransferCancellation,
     config: Config,
+    visibility: Visibility,
+    #[cfg(test)] mut activation: Option<TestActivation>,
 ) {
     let mut config = Arc::new(config);
-    let mut bluetooth = system_stage("bluez_adapter", Adapter::system());
-    let manager = system_stage("network_manager", NetworkManager::system());
+    let mut bluetooth = dns_sd
+        .as_ref()
+        .and_then(|_| system_stage("bluez_adapter", Adapter::system()));
+    let manager = dns_sd.as_ref().and_then(|_| {
+        system_stage("network_manager", NetworkManager::system())
+    });
     let mut browser: Option<Browser> = None;
     let mut discovering = false;
-    let mut inbound: Option<PublishedLanListener> = None;
-    let mut visibility = VisibilityLeases::default();
     let mut discovery = DiscoveryLeases::default();
     let mut restart_at = Instant::now();
     let mut next_bluetooth_poll = Instant::now();
@@ -65,24 +73,25 @@ pub(super) fn run_worker(
         ($command:expr) => {
             handle_command(
                 $command,
-                &dns_sd,
+                dns_sd.as_ref(),
                 &mut bluetooth,
                 manager.as_ref(),
                 &events,
                 &cancellation,
                 &mut discovering,
                 &mut restart_at,
-                &mut inbound,
-                &mut visibility,
+                &visibility,
                 &mut discovery,
                 &mut browser,
                 &mut seen,
                 &mut config,
+                #[cfg(test)]
+                &mut activation,
             )
         };
     }
     macro_rules! receive_inbound {
-        ($stream:expr, $medium:expr) => {{
+        ($stream:expr, $medium:expr, $generation:expr) => {{
             let admitted = Arc::clone(&config);
             receive_share(
                 $stream,
@@ -92,14 +101,19 @@ pub(super) fn run_worker(
                 &cancellation,
                 &admitted,
                 manager.as_ref(),
+                &visibility,
+                $generation,
                 &mut |command| process_command!(command),
             )
         }};
     }
     loop {
-        if discovering && (browser.is_none() || Instant::now() >= restart_at) {
+        if discovering
+            && (browser.is_none() || Instant::now() >= restart_at)
+            && let Some(dns_sd) = dns_sd.as_ref()
+        {
             restart_browser(
-                &dns_sd,
+                dns_sd,
                 &mut browser,
                 &mut mdns_browse_ok,
                 &mut restart_at,
@@ -132,19 +146,29 @@ pub(super) fn run_worker(
                 }
             }
         }
-        if let Some(stream) = inbound
-            .as_ref()
-            .and_then(|listener| listener.accept().ok().flatten())
-        {
-            let event = receive_inbound!(stream, Medium::WifiLan);
-            if events.send(event).is_err() {
-                break;
+        if let Some(generation) = visibility.generation_if_open() {
+            let stream = visibility
+                .with_resources(|resources| resources.accept_lan())
+                .flatten();
+            if let Some(stream) = stream {
+                let event =
+                    receive_inbound!(stream, Medium::WifiLan, generation);
+                if events.send(event).is_err() {
+                    break;
+                }
             }
         }
-        if let Some((stream, medium)) = visibility.accept_next() {
-            let event = receive_inbound!(stream, medium);
-            if events.send(event).is_err() {
-                break;
+        if let Some(generation) = visibility.generation_if_open() {
+            let stream = visibility
+                .with_resources(|resources| {
+                    resources.bluetooth_mut().accept_next()
+                })
+                .flatten();
+            if let Some((stream, medium)) = stream {
+                let event = receive_inbound!(stream, medium, generation);
+                if events.send(event).is_err() {
+                    break;
+                }
             }
         }
         let command = match commands.recv_timeout(POLL_INTERVAL) {
@@ -158,7 +182,7 @@ pub(super) fn run_worker(
     }
     tracing::debug!(stage = "network_worker", "network worker stopped");
     core::mem::take(&mut discovery).close();
-    core::mem::take(&mut visibility).close();
+    visibility.close();
     if let Some(active_browser) = browser.take() {
         let _result = active_browser.stop();
     }
@@ -172,42 +196,39 @@ pub(super) fn run_worker(
 )]
 fn handle_command(
     command: NetworkCommand,
-    dns_sd: &DnsSd,
+    dns_sd: Option<&DnsSd>,
     bluetooth: &mut Option<Adapter>,
     manager: Option<&NetworkManager>,
     events: &Sender<NetworkEvent>,
     cancellation: &TransferCancellation,
     discovering: &mut bool,
     restart_at: &mut Instant,
-    inbound: &mut Option<PublishedLanListener>,
-    visibility: &mut VisibilityLeases,
+    visibility: &Visibility,
     discovery: &mut DiscoveryLeases,
     browser: &mut Option<Browser>,
     seen: &mut HashSet<String>,
     current: &mut Arc<Config>,
+    #[cfg(test)] activation: &mut Option<TestActivation>,
 ) -> bool {
     match command {
-        NetworkCommand::AcceptInbound { .. }
-        | NetworkCommand::RejectInbound { .. } => true,
-        NetworkCommand::CloseVisibility => {
-            if let Some(listener) = inbound.take() {
-                let _result = listener.stop();
-            }
-            core::mem::take(visibility).close();
-            trace_protocol("visibility", "close", "completed", None, None);
-            true
-        }
         NetworkCommand::Configure { config } => {
             let error = (|| {
                 std::fs::create_dir_all(&config.receive_directory)?;
-                if config.device_name != current.device_name
-                    && let Some(listener) = inbound.as_mut()
-                {
-                    let candidate = advertisement(
-                        listener.port(),
-                        endpoint_name(config.device_name.as_deref()),
-                    )?;
-                    listener.republish(&candidate)?;
+                if config.device_name != current.device_name {
+                    let _republished = visibility
+                        .with_resources(|resources| {
+                            if let Some(listener) = resources.lan_mut() {
+                                let candidate = advertisement(
+                                    listener.port(),
+                                    endpoint_name(
+                                        config.device_name.as_deref(),
+                                    ),
+                                )?;
+                                listener.republish(&candidate)?;
+                            }
+                            Ok::<(), std::io::Error>(())
+                        })
+                        .transpose()?;
                 }
                 Ok::<(), std::io::Error>(())
             })()
@@ -224,39 +245,30 @@ fn handle_command(
             *discovering = true;
             *restart_at = Instant::now();
             core::mem::take(discovery).close();
-            *discovery =
-                start_discovery(refresh_adapter(bluetooth), DISCOVERY_LEASE);
+            if dns_sd.is_some() {
+                *discovery = start_discovery(
+                    refresh_adapter(bluetooth),
+                    DISCOVERY_LEASE,
+                );
+            }
             trace_protocol("discovery", "start", "completed", None, None);
             true
         }
-        NetworkCommand::OpenVisibility => {
-            if inbound.is_none() {
-                match open_listener(
-                    dns_sd,
-                    endpoint_name(current.device_name.as_deref()),
-                ) {
-                    Ok(listener) => *inbound = Some(listener),
-                    Err(error) => {
-                        trace_protocol(
-                            "visibility",
-                            "open",
-                            "failed",
-                            Some("io"),
-                            Some(io_error_kind(&error)),
-                        );
-                        return events
-                            .send(NetworkEvent::InboundFailed {
-                                reason: error.to_string(),
-                                share_id: None,
-                            })
-                            .is_ok();
-                    }
-                }
+        NetworkCommand::OpenVisibility { generation } => {
+            if !visibility.activation_requested(generation) {
+                return true;
             }
-            core::mem::take(visibility).close();
-            *visibility = open_visibility(refresh_adapter(bluetooth));
-            trace_protocol("visibility", "open", "completed", None, None);
-            true
+            let result = activation::activate(
+                dns_sd,
+                bluetooth,
+                current.device_name.as_deref(),
+                #[cfg(test)]
+                generation,
+                #[cfg(test)]
+                activation,
+            );
+            visibility.complete_activation(generation, result);
+            events.send(NetworkEvent::VisibilityChanged).is_ok()
         }
         NetworkCommand::SendShare { share_id, transfer } => {
             trace_protocol("local_control", "send", "started", None, None);

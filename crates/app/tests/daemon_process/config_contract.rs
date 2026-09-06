@@ -119,6 +119,25 @@ fn snapshot(root: &Path) -> io::Result<EndpointSnapshot> {
 }
 
 #[test]
+fn durable_discoverable_activates_on_daemon_start() -> io::Result<()> {
+    let root = fixture_root();
+    let config_directory = root.join("config/omarchy-quickshare");
+    fs::create_dir_all(&config_directory)?;
+    fs::write(
+        config_directory.join("config.toml"),
+        "discoverable = true\n",
+    )?;
+    let fixture = Fixture::start(root)?;
+    let endpoint = snapshot(&fixture.root)?;
+    fixture.stop()?;
+    assert_eq!(
+        endpoint.visibility(),
+        quickshare_sharing::VisibilityState::Open
+    );
+    Ok(())
+}
+
+#[test]
 fn missing_config_uses_documented_defaults() {
     let root = fixture_root();
     let created = fs::create_dir_all(&root);
@@ -138,7 +157,7 @@ fn missing_config_uses_documented_defaults() {
         ))
     );
     assert!(body.contains("discovery_timeout_secs = 15"));
-    assert!(body.contains("visibility_timeout_secs = 300"));
+    assert!(body.contains("consent_timeout_secs = 300"));
     assert!(body.contains("transfer_timeout_secs = 120"));
     let cleaned = fs::remove_dir_all(&root);
     assert!(cleaned.is_ok(), "cleanup");
@@ -260,10 +279,11 @@ fn live_preferences_preserves_document_settings() -> io::Result<()> {
     let body = String::from_utf8_lossy(&inspected.stdout);
     assert!(body.contains("receive_directory = \"/cases/inbox\""));
     assert!(body.contains("discovery_timeout_secs = 27"));
-    assert!(body.contains("visibility_timeout_secs = 301"));
+    assert!(body.contains("consent_timeout_secs = 301"));
     assert!(body.contains("transfer_timeout_secs = 121"));
     assert!(body.contains("pinned_peer_id = \"peer-7\""));
     assert!(body.contains("device_name = \"new-name\""));
+    assert!(saved.contains("visibility_timeout_secs = 301"));
     fs::remove_dir_all(root)
 }
 
@@ -390,12 +410,13 @@ fn live_preferences_separates_legacy_consent_timeout() -> io::Result<()> {
     );
     let visibility =
         run(&root, &["config", "set", "visibility_timeout_secs", "31"])?;
-    assert!(visibility.status.success());
+    assert!(!visibility.status.success());
+    let device = run(&root, &["config", "set", "device_name", "patched"])?;
+    assert!(device.status.success());
     let inspected = run(&root, &["config", "show"])?;
     assert!(inspected.status.success());
     let body = String::from_utf8_lossy(&inspected.stdout);
     assert!(body.contains("consent_timeout_secs = 17"));
-    assert!(body.contains("visibility_timeout_secs = 31"));
     assert!(fs::read_to_string(&path)?.contains("# Legacy deadline"));
     let consent = run(&root, &["config", "set", "consent_timeout_secs", "42"])?;
     assert!(consent.status.success());
@@ -403,8 +424,18 @@ fn live_preferences_separates_legacy_consent_timeout() -> io::Result<()> {
     assert!(updated.status.success());
     let body = String::from_utf8_lossy(&updated.stdout);
     assert!(body.contains("consent_timeout_secs = 42"));
-    assert!(body.contains("visibility_timeout_secs = 31"));
-    fs::remove_dir_all(root)
+    let fixture = Fixture::start(root)?;
+    let opened = run(&fixture.root, &["visibility", "open"])?;
+    assert!(opened.status.success());
+    let endpoint = snapshot(&fixture.root)?;
+    fixture.stop()?;
+    assert!(
+        endpoint
+            .visibility_status()
+            .remaining_secs
+            .is_some_and(|remaining| remaining > 300 && remaining <= 600)
+    );
+    Ok(())
 }
 
 #[test]

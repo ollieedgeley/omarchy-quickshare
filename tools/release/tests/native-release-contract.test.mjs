@@ -19,7 +19,7 @@ import { hashFile } from "../source-build.mjs";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const temporaryDirectories = new Set();
 const COMMIT_LENGTH = 40;
-const CONTROL_PROTOCOL = 4;
+const CONTROL_PROTOCOL = 5;
 const SOURCE_COMMIT = "b".repeat(COMMIT_LENGTH);
 const PKGVER_PATTERN = /^pkgver=0\.0\.0$/mu;
 const ARCH_BINARY_PATTERN = /usr\/bin\/omarchy-quickshare/u;

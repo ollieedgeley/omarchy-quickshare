@@ -38,6 +38,7 @@ impl Daemon {
     )]
     fn apply_network_event(&mut self, event: NetworkEvent) {
         match event {
+            NetworkEvent::VisibilityChanged => self.sync_visibility(),
             NetworkEvent::PreferencesConfigured { config, error } => {
                 self.preferences_configured(config, error);
             }
@@ -75,8 +76,14 @@ impl Daemon {
                 );
                 self.notify_if_completed(recorded, NotifyKind::Received);
             }
-            NetworkEvent::InboundFailed { reason, share_id } => {
-                self.apply_inbound_failure(share_id, &reason);
+            NetworkEvent::InboundFailed {
+                reason,
+                share_id,
+                consent,
+            } => {
+                let identified =
+                    share_id.or_else(|| consent.as_ref()?.share_id());
+                self.apply_inbound_failure(identified, &reason);
             }
             NetworkEvent::InboundRejected { share_id } => {
                 let _rejected = self.sharing.reject_inbound(share_id);
@@ -92,6 +99,7 @@ impl Daemon {
                 name,
                 size_bytes,
                 verification_code,
+                consent,
             } => {
                 self.sharing
                     .observe_peer(INBOUND_PEER_ID, INBOUND_PEER_NAME);
@@ -102,21 +110,21 @@ impl Daemon {
                     OfferKind::Text => Attachment::text(""),
                     OfferKind::Url => Attachment::url(""),
                 };
-                if let Some(share_id) = self.sharing.offer_inbound_sized(
+                if let Some(share_id) = self.admit_inbound(
                     attachment,
                     INBOUND_PEER_ID,
                     Some(size_bytes),
+                    consent,
                 ) {
                     tracing::info!(
-                        share_id = share_id.get(),
+                        share_id,
                         direction = "inbound",
                         phase = "awaiting_local_consent",
                         "share phase"
                     );
-                    let _recorded = self.sharing.record_verification_code(
-                        share_id.get(),
-                        &verification_code,
-                    );
+                    let _recorded = self
+                        .sharing
+                        .record_verification_code(share_id, &verification_code);
                 }
             }
             NetworkEvent::OutboundAccepted { share_id } => {
@@ -292,9 +300,7 @@ impl Daemon {
             error_class = "network",
             "share ended"
         );
-        if let Some(share_id) =
-            candidate_share_id.or_else(|| self.active_inbound_consent_id())
-        {
+        if let Some(share_id) = candidate_share_id {
             let transitioned = if cancelled {
                 self.sharing.cancel(share_id)
             } else {
@@ -314,13 +320,6 @@ impl Daemon {
         if !cancelled {
             notify::notify(NotifyKind::Error);
         }
-    }
-
-    fn active_inbound_consent_id(&self) -> Option<u64> {
-        let share = self.sharing.snapshot().active_share()?;
-        (share.direction() == Direction::Inbound
-            && share.phase() == Phase::AwaitingLocalConsent)
-            .then(|| share.id().get())
     }
 
     fn notify_if_completed(&self, recorded: bool, kind: NotifyKind) {

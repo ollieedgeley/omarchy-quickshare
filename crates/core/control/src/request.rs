@@ -72,7 +72,7 @@ impl Envelope {
         }
     }
 
-    /// Creates a request to open inbound discoverability.
+    /// Requests ten minutes of inbound permission when durable policy is off.
     #[must_use]
     #[inline]
     pub const fn open_visibility() -> Self {
@@ -284,7 +284,7 @@ pub enum Request {
         /// Stable local share identifier.
         share_id: u64,
     },
-    /// Open inbound discoverability.
+    /// Request ten minutes of inbound permission, without extending a lease.
     OpenVisibility,
     /// Persist and activate one preference.
     PatchPreferences {

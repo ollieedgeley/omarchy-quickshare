@@ -159,6 +159,18 @@ omarchy-quickshare share reject 1
 omarchy-quickshare visibility close
 ```
 
+With durable discoverability off, `visibility open` requests one ten-minute
+receive window. Its 600 seconds start after successful activation, not while
+waiting for receive media to start. Suspend counts against an active window;
+wall-clock changes do not. Repeating the request while starting or open does
+not extend it.
+`visibility close` stops inbound discovery and new offers without changing the
+saved policy. Outbound discovery never opens inbound visibility.
+
+Passive window expiry preserves an already admitted consent prompt until its
+captured consent deadline. Explicit Stop or durable Off cancels pending inbound
+consent. Accepted transfers continue in every case.
+
 Cancel or clear a finished share:
 
 ```sh
@@ -174,7 +186,7 @@ omarchy-quickshare health
 omarchy-quickshare status --json
 ```
 
-`protocol-version` prints `4`. That is the only control protocol this tree
+`protocol-version` prints `5`. That is the only control protocol this tree
 speaks. `status --json` writes one versioned envelope. Selected fields for a
 transferring file look like:
 
@@ -195,10 +207,18 @@ transferring file look like:
         "transferred_bytes": 1
       },
       "discovery": "idle",
-      "visibility": "closed"
+      "visibility": "closed",
+      "visibility_status": {
+        "discoverable": false,
+        "requested": false,
+        "temporary": false,
+        "remaining_secs": null,
+        "available_media": [],
+        "error": null
+      }
     }
   },
-  "version": 4
+  "version": 5
 }
 ```
 
@@ -207,6 +227,16 @@ transferring file look like:
 `verification_code` appears while consent is open.
 The response also includes `preferences` with `saved`, `applied`, `pending`,
 and `error`, described below.
+
+The daemon reports inbound state as `closed`, `starting`, `open`, or
+`unavailable`. Only `open` means a receive medium is ready. `visibility_status`
+separates the applied durable policy, `discoverable`, from current permission,
+`requested`. `temporary` identifies a ten-minute request; `remaining_secs`
+reports its daemon-owned countdown, or `null` before activation and when no
+temporary countdown applies. A failed activation reports `unavailable` without
+active permission. `available_media` lists ready inbound media, and `error`
+describes an activation failure. These observations remain
+authoritative while the complete preference set is awaiting activation.
 
 `daemon` and `daemon --simulate` belong to the service, not daily use.
 Hidden `simulate` subcommands work only when the service was started with
@@ -288,13 +318,15 @@ The canonical config path is
 `${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-quickshare/config.toml`.
 Missing files use defaults. Unknown keys are rejected.
 
-Keys are `device_name`, `receive_directory`, `pinned_peer_id`, `discoverable`,
-`read_clipboard_on_select`, `discovery_timeout_secs`,
-`visibility_timeout_secs`, `consent_timeout_secs`, and `transfer_timeout_secs`.
+Supported keys are `device_name`, `receive_directory`, `pinned_peer_id`,
+`discoverable`, `read_clipboard_on_select`, `discovery_timeout_secs`,
+`consent_timeout_secs`, and `transfer_timeout_secs`.
 `device_name` overrides the system hostname advertised to nearby devices.
-`discoverable` and `read_clipboard_on_select` default to `false` and are stored
-preferences only. Later tickets own their visibility and clipboard policy;
-these flags do not change the current plugin behavior.
+`discoverable` defaults to `false`. Turning it on permits inbound discovery
+without a countdown; turning it off closes inbound permission and cancels
+pending consent. Neither action interrupts an accepted transfer.
+`read_clipboard_on_select` remains a stored preference for the later clipboard
+policy change.
 
 ```sh
 omarchy-quickshare config show
@@ -319,13 +351,16 @@ The CLI distinguishes applied, saved-offline, pending, and saved-but-unavailable
 outcomes. A successful save does not guarantee activation. Invalid external
 edits leave the last applied settings running; correcting the file allows reload.
 
-Already admitted discovery, visibility, consent, and transfer operations keep
-their settings, including receive destinations and timeouts. New settings do
-not reset their deadlines. `visibility_timeout_secs` limits a receive visibility
-window; `consent_timeout_secs` separately limits consent, defaulting to 300.
-When the consent key is absent, it inherits the legacy visibility timeout.
-The first product edit writes that inherited consent value before changing
-another key, so changing visibility does not silently change consent.
+Already admitted discovery, consent, and transfer operations keep their captured
+settings, including receive destinations and deadlines. New settings do not
+reset those deadlines. Consent is independent of visibility and defaults to
+300 seconds.
+
+The legacy TOML key `visibility_timeout_secs` is accepted only as migration
+input when `consent_timeout_secs` is absent. An explicit consent value always
+wins. The first product edit writes the inherited consent value and preserves
+the legacy key and its comments. The legacy key no longer controls visibility,
+is omitted from effective settings, and cannot be changed with `config set`.
 
 Product edits preserve comments and unchanged values' TOML escapes, and refuse
 to overwrite invalid TOML. Product writers share a lock and use atomic file

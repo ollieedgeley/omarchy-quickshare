@@ -113,5 +113,5 @@ pub use protocol::{
 };
 pub use snapshot::{
     Direction, DiscoveryState, EndpointSnapshot, Phase, ShareId, ShareSnapshot,
-    VisibilityState,
+    VisibilityState, VisibilityStatus,
 };

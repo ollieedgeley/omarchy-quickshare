@@ -2,7 +2,6 @@
 mod tests {
     use quickshare_sharing::{
         Attachment, Coordinator, Direction, DiscoveryState, Phase,
-        VisibilityState,
     };
 
     #[test]
@@ -343,15 +342,34 @@ mod tests {
     }
 
     #[test]
-    fn inbound_visibility_can_be_opened_and_closed() {
-        let mut coordinator = Coordinator::new();
-
-        coordinator.open_visibility();
-        assert_eq!(coordinator.snapshot().visibility(), VisibilityState::Open,);
-        coordinator.close_visibility();
-        assert_eq!(
-            coordinator.snapshot().visibility(),
-            VisibilityState::Closed,
-        );
+    fn visibility_status_decodes_starting_and_unavailable_snapshots() {
+        for (state, error) in [
+            ("starting", None),
+            ("unavailable", Some("No inbound medium is available")),
+        ] {
+            let document = serde_json::json!({
+                "active_share": null,
+                "visibility": state,
+                "visibility_status": {
+                    "discoverable": false,
+                    "requested": true,
+                    "temporary": true,
+                    "remaining_secs": 600_u64,
+                    "available_media": [],
+                    "error": error
+                }
+            });
+            let decoded = serde_json::from_value::<
+                quickshare_sharing::EndpointSnapshot,
+            >(document.clone());
+            assert!(
+                decoded.is_ok(),
+                "{state} visibility snapshot was rejected: {decoded:?}",
+            );
+            let Ok(snapshot) = decoded else {
+                return;
+            };
+            assert_eq!(serde_json::to_value(snapshot).ok(), Some(document));
+        }
     }
 }

@@ -260,7 +260,7 @@ pub(crate) fn open_visibility(adapter: Option<&Adapter>) -> VisibilityLeases {
     let Some(adapter) = adapter else {
         return VisibilityLeases::default();
     };
-    let advertisement = optional_lease(
+    let mut advertisement = optional_lease(
         "ble_advertise",
         adapter.advertise_receiver(ReceiverAdvertisement::new(
             ENDPOINT_ID.as_bytes().to_vec(),
@@ -270,7 +270,11 @@ pub(crate) fn open_visibility(adapter: Option<&Adapter>) -> VisibilityLeases {
         "classic_listen",
         adapter.listen_classic(QUICK_SHARE_BLE_UUID),
     );
-    let gatt = optional_lease("gatt_weave", adapter.serve_gatt_weave());
+    let mut gatt = optional_lease("gatt_weave", adapter.serve_gatt_weave());
+    if advertisement.is_none() || gatt.is_none() {
+        advertisement = None;
+        gatt = None;
+    }
     let l2cap = optional_lease("l2cap_listen", adapter.listen_l2cap(0x1001));
     VisibilityLeases {
         advertisement,
@@ -315,6 +319,16 @@ pub(crate) struct DiscoveryLeases {
 }
 
 impl VisibilityLeases {
+    pub(crate) fn media(&self) -> Vec<String> {
+        let mut media = Vec::new();
+        if self.advertisement.is_some() && self.gatt.is_some() {
+            media.push(String::from(BLE));
+        }
+        if self.classic.is_some() {
+            media.push(String::from(BLUETOOTH));
+        }
+        media
+    }
     pub(crate) fn close(self) {
         drop(self);
     }
@@ -323,7 +337,6 @@ impl VisibilityLeases {
     pub(crate) fn accept_next(
         &mut self,
     ) -> Option<(quickshare_bluez::BluetoothIo, Medium)> {
-        let _advertising = self.advertisement.is_some();
         if let Some(server) = self.gatt.as_mut()
             && let Ok(Some(socket)) = server.accept()
             && let Ok(io) = socket.into_io()
@@ -480,16 +493,4 @@ fn bluetooth_error(error: quickshare_bluez::Error) -> ProtocolError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::normalized_endpoint_name;
-
-    #[test]
-    fn endpoint_name_uses_trimmed_hostname_or_fallback() {
-        assert_eq!(
-            normalized_endpoint_name(Some("omarchy-macbook\n")),
-            "omarchy-macbook"
-        );
-        assert_eq!(normalized_endpoint_name(Some(" \n")), "Omarchy");
-        assert_eq!(normalized_endpoint_name(None), "Omarchy");
-    }
-}
+mod tests;

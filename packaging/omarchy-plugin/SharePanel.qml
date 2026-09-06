@@ -49,6 +49,14 @@ Item {
     return "terminal"
   }
   readonly property bool visibilityOpen: snapshot.visibility === "open"
+  readonly property bool visibilityRequestedByDaemon:
+    (snapshot.visibility_status || {}).requested === true
+  readonly property string visibilityMessage: {
+    if (visibilityOpen) return "Ready to receive"
+    if (snapshot.visibility === "starting") return "Starting receive visibility"
+    if (snapshot.visibility === "unavailable") return "Receive unavailable"
+    return "Receive visibility closed"
+  }
   readonly property var previewAttachment: hasActiveShare
     ? attachment
     : ({
@@ -195,7 +203,7 @@ Item {
   }
   function toggleVisibility() {
     if (!actionBusy && viewState === "idle") {
-      visibilityRequested(!visibilityOpen)
+      visibilityRequested(!visibilityRequestedByDaemon)
     }
   }
   function attachmentIcon(value) {
@@ -302,9 +310,7 @@ Item {
       PanelHero {
         width: parent.width
         title: "Quick Share"
-        meta: root.visibilityOpen
-          ? "Ready to receive"
-          : "Receive visibility closed"
+        meta: root.visibilityMessage
         foreground: Color.foreground
         fontFamily: Style.font.family
         iconComponent: Component {
@@ -334,10 +340,10 @@ Item {
         enabled: !root.actionBusy
         opacity: enabled ? 1 : 0.5
         Accessible.role: Accessible.CheckBox
-        Accessible.name: root.visibilityOpen
+        Accessible.name: root.visibilityRequestedByDaemon
           ? "Close Quick Share visibility"
           : "Open Quick Share visibility"
-        Accessible.checked: root.visibilityOpen
+        Accessible.checked: root.visibilityRequestedByDaemon
         Accessible.onPressAction: root.toggleVisibility()
 
         RowLayout {
@@ -351,9 +357,7 @@ Item {
 
           Text {
             Layout.fillWidth: true
-            text: root.visibilityOpen
-              ? "Visible to nearby devices"
-              : "Not visible to nearby devices"
+            text: root.visibilityMessage
             color: Color.foreground
             font.family: Style.font.family
             font.pixelSize: Style.font.body
@@ -361,7 +365,7 @@ Item {
             textFormat: Text.PlainText
           }
           ToggleSwitch {
-            checked: root.visibilityOpen
+            checked: root.visibilityRequestedByDaemon
             busy: root.actionBusy
             interactive: false
             foreground: Color.foreground

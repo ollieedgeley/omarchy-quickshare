@@ -402,7 +402,7 @@ where
         writeln!(output, "receive_directory={directory}")?;
     }
     writeln!(output, "discovery={:?}", snapshot.discovery())?;
-    writeln!(output, "visibility={:?}", snapshot.visibility())?;
+    super::visibility::write_status(output, snapshot)?;
     if let Some(peer) = snapshot.peers().iter().find(|peer| peer.is_pinned()) {
         writeln!(output, "pinned_peer={}", peer.id())?;
     } else if let Some(peer_id) =

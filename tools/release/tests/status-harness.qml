@@ -15,9 +15,12 @@ ShellRoot {
   property string snapshotJson: '{"response":{"type":"snapshot",'
     + '"snapshot":{"active_share":{"id":7,'
     + '"id_string":"18446744073709551615","medium":"wifi_lan",'
-    + '"phase":"transferring","remaining_seconds":12}},'
+    + '"phase":"transferring","remaining_seconds":12},'
+    + '"visibility_status":{"discoverable":false,"requested":false,'
+    + '"temporary":false,"remaining_secs":null,"available_media":[],'
+    + '"error":null}},'
     + '"preferences":{"saved":null,"applied":null,'
-    + '"pending":false,"error":null}},"version":4}'
+    + '"pending":false,"error":null}},"version":5}'
 
   function statesSettled() {
     return ready.protocolState !== "checking"
@@ -155,14 +158,14 @@ ShellRoot {
 
   StatusProbe {
     id: ready
-    versionCommand: ["printf", "4"]
+    versionCommand: ["printf", "5"]
     runtimeCommand: ["true"]
     statusCommand: ["printf", root.snapshotJson]
   }
 
   StatusProbe {
     id: unavailable
-    versionCommand: ["printf", "4"]
+    versionCommand: ["printf", "5"]
     runtimeCommand: ["false"]
   }
 
@@ -180,7 +183,7 @@ ShellRoot {
 
   StatusProbe {
     id: unsupported
-    versionCommand: ["printf", "3"]
+    versionCommand: ["printf", "4"]
     runtimeCommand: ["true"]
   }
 

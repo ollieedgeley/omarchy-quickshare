@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use quickshare_control::request::Request;
-use quickshare_sharing::{Attachment, DiscoveryState, Phase, VisibilityState};
+use quickshare_sharing::{Attachment, DiscoveryState, Phase};
 use quickshare_storage::OutboundSource;
 
 use super::Daemon;
@@ -27,7 +27,6 @@ pub(super) struct OperationTimeouts {
     discovery: Duration,
     transfer: Duration,
     transfer_share_id: Option<u64>,
-    visibility: Duration,
 }
 
 fn open_source(path: &Path) -> io::Result<OutboundSource> {
@@ -48,6 +47,12 @@ impl Daemon {
     pub(super) fn install_config(&mut self, config: Config) {
         self.preferences.saved = Some(super::preferences::values(&config));
         self.preferences_configured(config, None);
+        if let Some(generation) =
+            self.visibility.set_policy(self.config.discoverable)
+        {
+            self.activate_visibility(generation);
+        }
+        self.sync_visibility();
     }
 
     /// Pins a newly observed peer when it matches persisted preference.
@@ -62,7 +67,8 @@ impl Daemon {
         self.capture_timeout_settings();
         self.timeout_discovery()?;
         self.timeout_transfer()?;
-        self.timeout_visibility()
+        self.sync_visibility();
+        Ok(())
     }
 
     /// Queues a file or a ZIP of a folder and remembers temporary archives.
@@ -129,35 +135,6 @@ impl Daemon {
         Ok(())
     }
 
-    fn timeout_visibility(&mut self) -> io::Result<()> {
-        if self.sharing.snapshot().visibility() != VisibilityState::Open {
-            self.visibility_opened_at = None;
-            return Ok(());
-        }
-        let started =
-            *self.visibility_opened_at.get_or_insert_with(Instant::now);
-        if Instant::now().saturating_duration_since(started)
-            < self.timeouts.visibility
-        {
-            return Ok(());
-        }
-        self.sharing.close_visibility();
-        tracing::info!(
-            target: "omarchy_quickshare::protocol",
-            stage = "visibility",
-            operation = "deadline",
-            outcome = "completed",
-            reason = "timed_out",
-            phase = "closed",
-            "visibility closed"
-        );
-        if let Some(network) = &self.network {
-            network.close_visibility()?;
-        }
-        self.visibility_opened_at = None;
-        Ok(())
-    }
-
     fn timeout_transfer(&mut self) -> io::Result<()> {
         let Some(active) = self.sharing.snapshot().active_share() else {
             self.transfer_started_at = None;
@@ -215,15 +192,6 @@ impl Daemon {
         } else {
             self.discovery_started_at = None;
         }
-        if snapshot.visibility() == VisibilityState::Open {
-            if self.visibility_opened_at.is_none() {
-                self.visibility_opened_at = Some(Instant::now());
-                self.timeouts.visibility =
-                    Duration::from_secs(self.config.visibility_timeout_secs);
-            }
-        } else {
-            self.visibility_opened_at = None;
-        }
         if let Some(share) = snapshot.active_share()
             && matches!(
                 share.phase(),
@@ -275,18 +243,15 @@ impl Daemon {
                 }
                 failed
             }
-            Request::SimulateIncomingFile { name, size_bytes } => self
-                .sharing
-                .offer_inbound(Attachment::file(name, *size_bytes), "pixel-8")
-                .is_some(),
-            Request::SimulateIncomingText { text } => self
-                .sharing
-                .offer_inbound(Attachment::text(text), "pixel-8")
-                .is_some(),
-            Request::SimulateIncomingUrl { url } => self
-                .sharing
-                .offer_inbound(Attachment::url(url), "pixel-8")
-                .is_some(),
+            Request::SimulateIncomingFile { name, size_bytes } => {
+                self.simulate_inbound(Attachment::file(name, *size_bytes))
+            }
+            Request::SimulateIncomingText { text } => {
+                self.simulate_inbound(Attachment::text(text))
+            }
+            Request::SimulateIncomingUrl { url } => {
+                self.simulate_inbound(Attachment::url(url))
+            }
             Request::SimulatePeerAccept { share_id } => {
                 self.sharing.accept_by_peer(*share_id)
             }

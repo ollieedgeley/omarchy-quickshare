@@ -126,9 +126,10 @@ pub(super) enum DiscoverAction {
 /// Inbound visibility action.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub(super) enum VisibilityAction {
-    /// Advertise this endpoint to nearby senders.
+    /// Receive for ten minutes when discoverability is off; repeat calls do
+    /// not extend it.
     Open,
-    /// Stop advertising this endpoint.
+    /// Stop new inbound shares without interrupting accepted transfers.
     Close,
 }
 

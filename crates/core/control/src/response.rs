@@ -27,8 +27,6 @@ pub struct PreferenceValues {
     pub receive_directory: PathBuf,
     /// Transfer deadline in seconds.
     pub transfer_timeout_secs: u64,
-    /// Inbound visibility deadline in seconds.
-    pub visibility_timeout_secs: u64,
 }
 
 /// Saved preferences and the last successfully activated values.

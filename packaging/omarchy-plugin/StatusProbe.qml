@@ -112,10 +112,23 @@ QtObject {
     }
     var response = envelope.response
     var snapshot = response && response.snapshot
-    if (envelope.version < minimumProtocol
+    var visibility = snapshot && snapshot.visibility_status
+    if (!Number.isInteger(envelope.version)
+        || envelope.version < minimumProtocol
         || envelope.version > maximumProtocol
         || !response || response.type !== "snapshot"
-        || !snapshot || typeof snapshot !== "object") {
+        || !snapshot || typeof snapshot !== "object"
+        || !visibility || typeof visibility !== "object"
+        || typeof visibility.discoverable !== "boolean"
+        || typeof visibility.requested !== "boolean"
+        || typeof visibility.temporary !== "boolean"
+        || !Array.isArray(visibility.available_media)
+        || (visibility.remaining_secs !== null
+          && (!Number.isInteger(visibility.remaining_secs)
+            || visibility.remaining_secs < 0))
+        || (visibility.error !== null && typeof visibility.error !== "string")
+        || ["closed", "starting", "open", "unavailable"].indexOf(
+          snapshot.visibility || "closed") < 0) {
       protocolState = "incompatible"
       return
     }

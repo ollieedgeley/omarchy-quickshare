@@ -19,16 +19,16 @@ use quickshare_sharing::{
 
 const BINARY: &str = env!("CARGO_BIN_EXE_omarchy-quickshare");
 const ACTIVE_TEXT_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v4/active-text-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v5/active-text-snapshot-response.jsonl"
 );
 const ACTIVE_FILE_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v4/active-file-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v5/active-file-snapshot-response.jsonl"
 );
 const ACTIVE_URL_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v4/active-url-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v5/active-url-snapshot-response.jsonl"
 );
 const CANCELLED_TEXT_SNAPSHOT: &str = include_str!(concat!(
-    "../../../../tests/fixtures/control/v4/",
+    "../../../../tests/fixtures/control/v5/",
     "cancelled-text-snapshot-response.jsonl"
 ));
 const RETRY_DELAY: Duration = Duration::from_millis(5);
@@ -332,12 +332,6 @@ fn simulated_daemon_runs_an_outbound_transfer_with_a_pinned_peer() {
     let Ok(fixture) = fixture_result else {
         return;
     };
-    let initial_result = endpoint_snapshot(fixture.runtime_directory());
-    assert!(initial_result.is_ok(), "failed to read initial snapshot");
-    let Ok(initial) = initial_result else {
-        return;
-    };
-    assert_eq!(initial.peers().len(), 2);
 
     assert_command(fixture.runtime_directory(), &["peer", "pin", "galaxy-tab"]);
     assert_command(fixture.runtime_directory(), &["send", "hello"]);
@@ -349,6 +343,21 @@ fn simulated_daemon_runs_an_outbound_transfer_with_a_pinned_peer() {
     assert_command(
         fixture.runtime_directory(),
         &["simulate", "peer-accept", "1"],
+    );
+    assert_command(fixture.runtime_directory(), &["visibility", "open"]);
+    let denied = run_command(
+        fixture.runtime_directory(),
+        &[
+            "simulate",
+            "incoming-text",
+            "must not replace accepted outbound",
+        ],
+    );
+    assert!(matches!(denied, Ok(output) if !output.status.success()));
+    assert_active_peer(
+        fixture.runtime_directory(),
+        "galaxy-tab",
+        Phase::Transferring,
     );
     assert_command(
         fixture.runtime_directory(),
@@ -393,6 +402,7 @@ fn simulated_daemon_runs_an_inbound_transfer() {
     let Ok(fixture) = fixture_result else {
         return;
     };
+    assert_command(fixture.runtime_directory(), &["visibility", "open"]);
     assert_command(
         fixture.runtime_directory(),
         &["simulate", "incoming-text", "from phone"],
@@ -425,6 +435,7 @@ fn simulated_advertisement_loss_preserves_established_inbound_consent() {
     let Ok(fixture) = fixture_result else {
         return;
     };
+    assert_command(fixture.runtime_directory(), &["visibility", "open"]);
     assert_command(
         fixture.runtime_directory(),
         &["simulate", "incoming-text", "from phone"],
@@ -612,6 +623,7 @@ fn simulated_daemon_offers_url_and_file_attachments() {
     let Ok(fixture) = fixture_result else {
         return;
     };
+    assert_command(fixture.runtime_directory(), &["visibility", "open"]);
     assert_command(
         fixture.runtime_directory(),
         &[

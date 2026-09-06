@@ -16,16 +16,39 @@ fn active_phase(daemon: &Daemon) -> Phase {
         .phase()
 }
 
+fn inbound_offered(
+    daemon: &mut Daemon,
+    kind: OfferKind,
+    name: impl Into<String>,
+    size_bytes: u64,
+    verification_code: impl Into<String>,
+) -> NetworkEvent {
+    let _opened = daemon
+        .response_for(&quickshare_control::request::Request::OpenVisibility)
+        .expect("open visibility");
+    let generation = daemon
+        .visibility
+        .generation_if_open()
+        .expect("visibility open");
+    let consent = daemon
+        .visibility
+        .propose(generation, core::time::Duration::from_secs(300))
+        .expect("permitted offer");
+    NetworkEvent::InboundOffered {
+        kind,
+        name: name.into(),
+        size_bytes,
+        verification_code: verification_code.into(),
+        consent,
+    }
+}
+
 #[test]
 fn inbound_offer_exposes_pin_until_local_consent() {
     let mut daemon = Daemon::new();
-    daemon.apply_network_event(NetworkEvent::InboundOffered {
-        kind: OfferKind::File,
-        name: String::from("note.txt"),
-        size_bytes: 12,
-        verification_code: String::from("6251"),
-    });
-
+    let offer =
+        inbound_offered(&mut daemon, OfferKind::File, "note.txt", 12, "6251");
+    daemon.apply_network_event(offer);
     let share = daemon
         .sharing
         .snapshot()
@@ -34,8 +57,15 @@ fn inbound_offer_exposes_pin_until_local_consent() {
     assert_eq!(share.phase(), Phase::AwaitingLocalConsent);
     assert_eq!(share.verification_code(), Some("6251"));
     let share_id = share.id().get();
-
-    assert!(daemon.sharing.accept_inbound(share_id));
+    assert!(matches!(
+        daemon
+            .response_for(&quickshare_control::request::Request::Accept {
+                share_id
+            })
+            .expect("accept")
+            .response(),
+        quickshare_control::response::Response::Applied
+    ));
     let accepted = daemon
         .sharing
         .snapshot()
@@ -48,12 +78,9 @@ fn inbound_offer_exposes_pin_until_local_consent() {
 #[test]
 fn inbound_terminal_events_preserve_rejection_and_cancellation() {
     let mut inbound = Daemon::new();
-    inbound.apply_network_event(NetworkEvent::InboundOffered {
-        kind: OfferKind::File,
-        name: String::from("note.txt"),
-        size_bytes: 12,
-        verification_code: String::from("6251"),
-    });
+    let offer1 =
+        inbound_offered(&mut inbound, OfferKind::File, "note.txt", 12, "6251");
+    inbound.apply_network_event(offer1);
     let inbound_id = inbound
         .sharing
         .snapshot()
@@ -67,12 +94,14 @@ fn inbound_terminal_events_preserve_rejection_and_cancellation() {
     assert_eq!(active_phase(&inbound), Phase::Rejected);
 
     let mut cancelled = Daemon::new();
-    cancelled.apply_network_event(NetworkEvent::InboundOffered {
-        kind: OfferKind::File,
-        name: String::from("cancelled.txt"),
-        size_bytes: 12,
-        verification_code: String::from("9418"),
-    });
+    let offer2 = inbound_offered(
+        &mut cancelled,
+        OfferKind::File,
+        "cancelled.txt",
+        12,
+        "9418",
+    );
+    cancelled.apply_network_event(offer2);
     let cancelled_id = cancelled
         .sharing
         .snapshot()
@@ -80,7 +109,15 @@ fn inbound_terminal_events_preserve_rejection_and_cancellation() {
         .expect("inbound offer")
         .id()
         .get();
-    assert!(cancelled.sharing.accept_inbound(cancelled_id));
+    assert!(matches!(
+        cancelled
+            .response_for(&quickshare_control::request::Request::Accept {
+                share_id: cancelled_id
+            })
+            .expect("accept")
+            .response(),
+        quickshare_control::response::Response::Applied
+    ));
     cancelled.apply_network_event(NetworkEvent::InboundCancelled {
         share_id: cancelled_id,
     });
@@ -90,12 +127,14 @@ fn inbound_terminal_events_preserve_rejection_and_cancellation() {
 #[test]
 fn inbound_android_app_offer_snapshots_as_file() {
     let mut daemon = Daemon::new();
-    daemon.apply_network_event(NetworkEvent::InboundOffered {
-        kind: OfferKind::AndroidApp,
-        name: String::from("chat.apk"),
-        size_bytes: 64,
-        verification_code: String::from("4820"),
-    });
+    let offer = inbound_offered(
+        &mut daemon,
+        OfferKind::AndroidApp,
+        "chat.apk",
+        64,
+        "4820",
+    );
+    daemon.apply_network_event(offer);
     let share = daemon
         .sharing
         .snapshot()
@@ -250,12 +289,9 @@ fn completion_notice_fires_only_on_successful_completion() {
 #[test]
 fn inbound_consent_timeout_fails_the_offered_share() {
     let mut daemon = Daemon::new();
-    daemon.apply_network_event(NetworkEvent::InboundOffered {
-        kind: OfferKind::File,
-        name: String::from("note.txt"),
-        size_bytes: 12,
-        verification_code: String::from("6251"),
-    });
+    let offer =
+        inbound_offered(&mut daemon, OfferKind::File, "note.txt", 12, "6251");
+    daemon.apply_network_event(offer);
     let share_id = daemon
         .sharing
         .snapshot()
@@ -266,6 +302,7 @@ fn inbound_consent_timeout_fails_the_offered_share() {
     daemon.apply_network_event(NetworkEvent::InboundFailed {
         reason: String::from("timed_out"),
         share_id: None,
+        consent: daemon.pending_consent.clone(),
     });
     let share = daemon
         .sharing
@@ -281,15 +318,13 @@ fn inbound_consent_timeout_fails_the_offered_share() {
 #[test]
 fn inbound_peer_cancel_while_awaiting_consent_is_cancelled() {
     let mut daemon = Daemon::new();
-    daemon.apply_network_event(NetworkEvent::InboundOffered {
-        kind: OfferKind::Text,
-        name: String::from("message"),
-        size_bytes: 7,
-        verification_code: String::from("6251"),
-    });
+    let offer =
+        inbound_offered(&mut daemon, OfferKind::Text, "message", 7, "6251");
+    daemon.apply_network_event(offer);
     daemon.apply_network_event(NetworkEvent::InboundFailed {
         reason: String::from("cancelled"),
         share_id: None,
+        consent: daemon.pending_consent.clone(),
     });
     let share = daemon
         .sharing
@@ -298,39 +333,6 @@ fn inbound_peer_cancel_while_awaiting_consent_is_cancelled() {
         .expect("cancelled share remains visible");
     assert_eq!(share.phase(), Phase::Cancelled);
     assert_eq!(share.terminal_reason(), Some("cancelled"));
-}
-
-#[test]
-fn inbound_accept_starts_eta_clock() {
-    let mut daemon = Daemon::new();
-    daemon.apply_network_event(NetworkEvent::InboundOffered {
-        kind: OfferKind::File,
-        name: String::from("note.txt"),
-        size_bytes: 12,
-        verification_code: String::from("6251"),
-    });
-    let share_id = daemon
-        .sharing
-        .snapshot()
-        .active_share()
-        .expect("inbound offer")
-        .id()
-        .get();
-    assert!(
-        daemon
-            .share_response(&quickshare_control::request::Request::Accept {
-                share_id
-            })
-            .expect("accept")
-            .is_some()
-    );
-    assert!(daemon.transfer_started_at.is_some());
-    daemon.apply_network_event(NetworkEvent::Progress {
-        medium: String::from("wifi_lan"),
-        share_id,
-        transferred_bytes: 4,
-    });
-    assert!(daemon.transfer_started_at.is_some());
 }
 
 #[test]

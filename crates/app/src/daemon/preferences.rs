@@ -104,7 +104,12 @@ impl super::Daemon {
         value: &str,
     ) -> ResponseEnvelope {
         match Config::patch(key, value) {
-            Ok(config) => self.configure_preferences(config),
+            Ok(config) => {
+                if key == "discoverable" && !config.discoverable {
+                    self.visibility.close();
+                }
+                self.configure_preferences(config);
+            }
             Err(error) => {
                 match Config::load() {
                     Ok(config) => {
@@ -129,6 +134,8 @@ impl super::Daemon {
     fn configure_preferences(&mut self, config: Config) {
         self.preferences.saved = Some(values(&config));
         self.preferences.error = None;
+        let activation = self.visibility.set_policy(config.discoverable);
+        self.sync_visibility();
         if let Some(network) = &self.network {
             self.preferences.pending = true;
             if let Err(error) = network.configure(config) {
@@ -142,6 +149,10 @@ impl super::Daemon {
                 .map(|error| error.to_string());
             self.preferences_configured(config, error);
         }
+        if let Some(generation) = activation {
+            self.activate_visibility(generation);
+        }
+        self.sync_visibility();
     }
 
     pub(super) fn preferences_configured(
@@ -182,7 +193,6 @@ pub(super) fn values(config: &Config) -> PreferenceValues {
         read_clipboard_on_select: config.read_clipboard_on_select,
         receive_directory: config.receive_directory.clone(),
         discovery_timeout_secs: config.discovery_timeout_secs,
-        visibility_timeout_secs: config.visibility_timeout_secs,
         transfer_timeout_secs: config.transfer_timeout_secs,
         pinned_peer_id: config.pinned_peer_id.clone(),
     }

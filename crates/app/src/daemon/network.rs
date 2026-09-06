@@ -27,19 +27,15 @@ use self::worker::run_worker;
 use self::worker::{emit_peer_lost, remember_seen};
 use super::media::PeerRoute;
 use super::outbound::OutboundTransfer;
+#[cfg(test)]
+use super::visibility::Resources;
+use super::visibility::{PendingConsent, Visibility};
 use crate::config::Config;
 use quickshare_network::DnsSd;
 
 /// Commands sent from the local-control owner to the network worker.
 #[derive(Debug)]
 pub(super) enum NetworkCommand {
-    /// Accepts the currently offered inbound attachment.
-    AcceptInbound {
-        /// Stable local share identifier assigned after the offer appeared.
-        share_id: u64,
-    },
-    /// Stops advertising this endpoint to nearby senders.
-    CloseVisibility,
     /// Applies saved preferences to future inbound admissions.
     Configure {
         /// Complete saved preferences acknowledged after application.
@@ -48,12 +44,7 @@ pub(super) enum NetworkCommand {
     /// Starts Nearby Sharing LAN, BLE, and Classic discovery.
     Discover,
     /// Advertises this endpoint and listens for incoming connections.
-    OpenVisibility,
-    /// Rejects the currently offered inbound attachment.
-    RejectInbound {
-        /// Stable local share identifier assigned after the offer appeared.
-        share_id: u64,
-    },
+    OpenVisibility { generation: u64 },
     /// Sends one queued share to its selected peer.
     SendShare {
         /// Stable local share identifier.
@@ -68,6 +59,8 @@ pub(super) enum NetworkCommand {
 /// Observations sent from the network worker to the local-control owner.
 #[derive(Debug)]
 pub(super) enum NetworkEvent {
+    /// Shared visibility activation or cleanup changed.
+    VisibilityChanged,
     /// Either endpoint cancelled an inbound transfer.
     InboundCancelled {
         /// Stable local share identifier.
@@ -90,9 +83,13 @@ pub(super) enum NetworkEvent {
         reason: String,
         /// Share identifier when local consent had already been given.
         share_id: Option<u64>,
+        /// Proposal identity for failures before acceptance.
+        consent: Option<Arc<PendingConsent>>,
     },
     /// A validated inbound attachment is waiting for local consent.
     InboundOffered {
+        /// Shared admission and consent authority.
+        consent: Arc<PendingConsent>,
         /// Attachment kind advertised by the peer.
         kind: quickshare_sharing::OfferKind,
         /// Safe file basename or text title advertised by the peer.
@@ -226,6 +223,9 @@ pub(super) struct NetworkWorker {
     commands: Option<Sender<NetworkCommand>>,
     /// Peer observations delivered to the control-loop owner.
     events: Receiver<NetworkEvent>,
+    visibility: Visibility,
+    #[cfg(test)]
+    test_events: Sender<NetworkEvent>,
     /// Background thread that stops after its command sender is dropped.
     worker: Option<thread::JoinHandle<()>>,
 }
@@ -235,18 +235,9 @@ pub(super) struct NetworkWorker {
     reason = "Worker commands are grouped before event polling and startup"
 )]
 impl NetworkWorker {
-    /// Accepts the inbound offer currently waiting in the worker.
-    pub(super) fn accept_inbound(&self, share_id: u64) -> io::Result<()> {
-        self.send(NetworkCommand::AcceptInbound { share_id })
-    }
     /// Requests cancellation at the next encrypted transfer-frame boundary.
     pub(super) fn cancel_transfer(&self, share_id: u64) {
         self.cancellation.cancel(share_id);
-    }
-
-    /// Stops advertising this endpoint to nearby senders.
-    pub(super) fn close_visibility(&self) -> io::Result<()> {
-        self.send(NetworkCommand::CloseVisibility)
     }
 
     /// Queues preferences without replacing the worker or active transfer.
@@ -265,8 +256,12 @@ impl NetworkWorker {
     }
 
     /// Advertises this endpoint and listens for an incoming connection.
-    pub(super) fn open_visibility(&self) -> io::Result<()> {
-        self.send(NetworkCommand::OpenVisibility)
+    pub(super) fn open_visibility(&self, generation: u64) -> io::Result<()> {
+        self.send(NetworkCommand::OpenVisibility { generation })
+    }
+
+    pub(super) fn visibility(&self) -> Visibility {
+        self.visibility.clone()
     }
 
     /// Returns the next completed network observation without waiting.
@@ -288,11 +283,6 @@ impl NetworkWorker {
         transfer: OutboundTransfer,
     ) -> io::Result<()> {
         self.send(NetworkCommand::SendShare { share_id, transfer })
-    }
-
-    /// Rejects the inbound offer currently waiting in the worker.
-    pub(super) fn reject_inbound(&self, share_id: u64) -> io::Result<()> {
-        self.send(NetworkCommand::RejectInbound { share_id })
     }
 
     /// Sends one command after confirming that the worker remains available.
@@ -317,10 +307,14 @@ impl NetworkWorker {
     pub(super) fn start(config: Config) -> io::Result<Self> {
         let (command_sender, command_receiver) = mpsc::channel();
         let (event_sender, event_receiver) = mpsc::channel();
+        #[cfg(test)]
+        let test_events = event_sender.clone();
         let (ready_sender, ready_receiver) =
             mpsc::channel::<Result<(), String>>();
         let cancellation = TransferCancellation::default();
         let worker_cancellation = cancellation.clone();
+        let visibility = Visibility::default();
+        let worker_visibility = visibility.clone();
         let worker = thread::spawn(move || {
             let dns_sd = match DnsSd::new() {
                 Ok(dns_sd) => {
@@ -343,11 +337,14 @@ impl NetworkWorker {
                 }
             };
             run_worker(
-                dns_sd,
+                Some(dns_sd),
                 command_receiver,
                 event_sender,
                 worker_cancellation,
                 config,
+                worker_visibility,
+                #[cfg(test)]
+                None,
             );
         });
         ready_receiver
@@ -358,8 +355,52 @@ impl NetworkWorker {
             cancellation,
             commands: Some(command_sender),
             events: event_receiver,
+            visibility,
+            #[cfg(test)]
+            test_events,
             worker: Some(worker),
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn start_test<Activation>(
+        visibility: Visibility,
+        config: Config,
+        activation: Activation,
+    ) -> io::Result<Self>
+    where
+        Activation: FnMut(u64) -> Result<Resources, String> + Send + 'static,
+    {
+        let (commands, command_receiver) = mpsc::channel();
+        let (event_sender, events) = mpsc::channel();
+        let test_events = event_sender.clone();
+        let cancellation = TransferCancellation::default();
+        let worker_cancellation = cancellation.clone();
+        let worker_visibility = visibility.clone();
+        let worker = thread::Builder::new().spawn(move || {
+            run_worker(
+                None,
+                command_receiver,
+                event_sender,
+                worker_cancellation,
+                config,
+                worker_visibility,
+                Some(Box::new(activation)),
+            );
+        })?;
+        Ok(Self {
+            cancellation,
+            commands: Some(commands),
+            events,
+            visibility,
+            test_events,
+            worker: Some(worker),
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_events(&self) -> Sender<NetworkEvent> {
+        self.test_events.clone()
     }
 }
 
@@ -369,6 +410,7 @@ impl NetworkWorker {
 )]
 impl Drop for NetworkWorker {
     fn drop(&mut self) {
+        self.visibility.close();
         drop(self.commands.take());
         if let Some(worker) = self.worker.take() {
             drop(worker.join());
