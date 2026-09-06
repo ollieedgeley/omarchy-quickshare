@@ -41,8 +41,6 @@ test("Rust peer build context excludes non-build repository trees", () => {
     source("Dockerfile.rust-peer.dockerignore").trim().split(LINE_BREAK),
   );
   for (const directory of [
-    "tests",
-    "tools",
     "fuzz",
     ".cache",
     "docs",
@@ -55,6 +53,18 @@ test("Rust peer build context excludes non-build repository trees", () => {
     "dist",
   ]) {
     assert.ok(ignored.has(directory), `${directory} must stay outside COPY`);
+  }
+});
+
+test("Rust peer build context keeps Cargo workspace members", () => {
+  const ignored = new Set(
+    source("Dockerfile.rust-peer.dockerignore").trim().split(LINE_BREAK),
+  );
+  for (const member of ["tests", "tools"]) {
+    assert.ok(
+      !ignored.has(member),
+      `${member} remains a Cargo workspace member`,
+    );
   }
 });
 
