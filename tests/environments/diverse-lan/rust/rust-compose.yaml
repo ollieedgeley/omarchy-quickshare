@@ -49,6 +49,7 @@ services:
     image: omarchy-quickshare/rust-lan-peer:development
     command: [infinity]
     environment:
+      XDG_CONFIG_HOME: /cases/config
       XDG_DOWNLOAD_DIR: /cases/received
       XDG_RUNTIME_DIR: /run/quickshare
     hostname: Omarchy-Rust
