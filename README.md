@@ -1,404 +1,93 @@
-# Omarchy Quick Share
+# Omarchy Quick Share plugin
 
-Account-free Quick Share for Omarchy. One native daemon, one CLI, and a
-separate shell plugin. The daemon can search for LAN peers, queue text,
-URLs, files, and folders, pin one peer, take inbound consent, and move
-file bytes on LAN. Folders are zipped before they are sent.
+This is the Omarchy shell frontend for the native `omarchy-quickshare`
+binary. The bar icon opens a panel for outbound peer choice, inbound PIN
+consent, receive visibility, progress, cancellation, and terminal errors.
+Right-clicking a discovered peer pins or unpins it; only the native daemon
+stores the single preferred peer and performs transfers.
 
-The plugin never downloads or installs the binary. The native Arch package
-is not published. Physical-phone compatibility is not a development claim.
+The plugin reports missing, incompatible, and unavailable native runtimes
+separately. It never downloads, installs, archives, or transfers content.
 
-## Native install
+## Install
 
-User-local. No root.
+Install a published plugin repository with Omarchy:
 
 ```sh
-make install-local
+omarchy plugin add <plugin-repository-url> --enable
 ```
 
-That builds the locked release binary, installs it to `~/.local/bin`,
-writes `omarchy-quickshare.service` under `~/.config/systemd/user`, copies
-a default config to `~/.config/omarchy-quickshare/config.toml` if that
-file is missing, then reloads, enables, and starts the user service. The
-unit runs `omarchy-quickshare daemon` and restarts after failures.
+For a local source checkout, build and install the native binary. Commit plugin
+changes before exporting; the exporter records the exact commit and refuses
+source drift.
 
 ```sh
-make install-local-simulation
-make uninstall-local
-```
-
-Simulation starts `daemon --simulate` with fake peers.
-`make install-local` restores the normal service. Uninstall stops and
-removes the user unit and binary. It leaves the config file in place.
-
-Quick Share discovers and advertises peers over mDNS on UDP port `5353`, then
-accepts inbound phone transfers on TCP port `53318`. If a host firewall is
-active, allow both ports only from the trusted LAN. For UFW:
-
-```sh
-sudo ufw allow from <lan-subnet> to any port 5353 proto udp
-sudo ufw allow from <lan-subnet> to any port 53318 proto tcp
-```
-
-Put `~/.local/bin` on `PATH` if it is not already.
-
-Local release artifacts, still unpublished:
-
-```sh
-make release-native
-make release-arch
-make release
-```
-
-`make release-native` writes the stripped binary, unit, default config,
-license, and checksums under `dist/native`. `make release-arch` depends on
-that native tree and writes a pacman package plus `PKGBUILD` under
-`dist/arch`. `make release` runs native, source, sparse, Arch, then plugin
-export. None of these publish a repository.
-
-## Plugin
-
-The plugin lives in `packaging/omarchy-plugin`. It is a bar widget. It
-calls the installed binary through the CLI and shows missing, incompatible,
-and stopped-service states as distinct messages.
-
-Export a local Git repository after plugin sources are committed:
-
-```sh
+cargo build --release --locked -p omarchy-quickshare
+install -Dm755 target/release/omarchy-quickshare \
+  "$HOME/.local/bin/omarchy-quickshare"
 make plugin-export
 omarchy plugin add "file://$PWD/dist/omarchy-plugin" --enable --yes
 ```
 
-`omarchy plugin add` clones and validates. It does not run an installer.
-This tree does not name a published plugin URL.
-
-## Source build
-
-One allowlist, `tools/release/source-allowlist.json`, drives both lean
-routes. Runtime artifacts are the locked Cargo workspace, crates,
-generated code, README, systemd unit, default config, and license. Tests,
-tools, upstream trees, and caches stay out.
+For local UI testing without a phone, install the deterministic peer mode:
 
 ```sh
-make release-source
-make release-sparse
+make install-local-simulation
 ```
 
-`make release-source` writes
-`dist/source/omarchy-quickshare-source-<commit>.tar.gz` and proves a
-clean extract plus locked build. Unpack it yourself with:
+Running `make install-local` again restores the normal service mode.
 
-```sh
-mkdir -p /tmp/omarchy-quickshare-src
-tar -xzf dist/source/omarchy-quickshare-source-*.tar.gz \
-  -C /tmp/omarchy-quickshare-src
-cd /tmp/omarchy-quickshare-src
-cargo build --release --locked --package omarchy-quickshare
-```
+## Preferences
 
-`make release-sparse` materializes `dist/sparse` from this checkout with
-the same path set. From a Git remote, the same allowlist is:
+The native config is
+`${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-quickshare/config.toml`.
+Valid CLI or editor changes apply automatically without restarting the daemon.
+Use `omarchy-quickshare config show` to inspect saved preferences and
+`omarchy-quickshare config set device_name "My laptop"` to edit them.
+The CLI distinguishes applied, saved-offline, pending, and activation-error
+outcomes. Operations already admitted keep their settings until they finish.
 
-```sh
-git clone --filter=blob:none --sparse --depth 1 \
-  <repository> omarchy-quickshare-src
-cd omarchy-quickshare-src
-git sparse-checkout init --no-cone
-git sparse-checkout set \
-  Cargo.lock Cargo.toml LICENSE README.md rust-toolchain.toml \
-  crates/app crates/core/connections crates/core/control \
-  crates/core/crypto crates/core/sharing crates/core/wire \
-  crates/platform/bluez crates/platform/network \
-  crates/platform/storage \
-  packaging/systemd/omarchy-quickshare.service \
-  packaging/systemd/omarchy-quickshare.toml
-cargo build --release --locked --package omarchy-quickshare
-```
+The plugin uses control protocol 4. Native status includes saved and applied
+preferences, pending activation, and errors. Pin/unpin actions require the
+daemon; `omarchy-quickshare config set pinned_peer_id pixel-8` also works offline.
+`discoverable` and `read_clipboard_on_select` default to `false` and are stored
+only. Later tickets own their policy; they do not yet change the panel or
+clipboard behavior described below.
 
-Replace `<repository>` with a clone URL you actually have. This project
-does not publish one. A full checkout can run the same Cargo command.
+## Terminal sharing
 
-## CLI
-
-The CLI talks to `$XDG_RUNTIME_DIR/omarchy-quickshare/control.sock`. Start
-the user service first for sharing commands. Config reads and edits also work
-while the daemon is stopped.
-
-Submit one argument directly, or use the explicit `send` command. An existing
-file or directory is a file share. Directories are zipped first. `http://` or
-`https://` is a URL. Anything else is text.
+Pass one text value, URL, file, or folder directly to the native CLI. The
+explicit `send` form is equivalent.
 
 ```sh
 omarchy-quickshare "hello from Omarchy"
-omarchy-quickshare https://example.test/share
-omarchy-quickshare ./note.txt
-omarchy-quickshare send ./photos
+omarchy-quickshare ./photo.jpg
+omarchy-quickshare "https://example.test/share"
 ```
 
-Successful submits print `Share N queued.` If a peer is pinned, the share
-selects that peer. If not, discovery starts and you pick one. `--peer` keeps
-clipboard content and the clicked recipient in one request.
+## Shell actions and keybindings
+
+Opening the panel starts discovery immediately. Nearby devices appear as they
+are found. Clicking a device reads the current clipboard and submits its text,
+URL, or single copied file/folder to that exact peer.
 
 ```sh
-omarchy-quickshare discover start
-omarchy-quickshare send --peer pixel-8 "current clipboard"
-omarchy-quickshare peer pin galaxy-tab
-omarchy-quickshare share select 1 pixel-8
-omarchy-quickshare discover stop
+omarchy shell io.github.ollieedgeley.omarchy-quickshare open
 ```
 
-Live LAN file transfer starts after a peer is selected and has a LAN route.
-Simulated mode can drive consent without that step.
-
-Receive:
+The plugin also accepts Omarchy's universal-paste IPC action. If the panel is
+open, this only shows an attachment badge; clicking a device reads the current
+clipboard. If the panel is closed, the action submits immediately to a visible
+pinned peer or opens the chooser while discovery continues.
 
 ```sh
-omarchy-quickshare visibility open
-omarchy-quickshare share accept 1
-omarchy-quickshare share reject 1
-omarchy-quickshare visibility close
+sh -c 'value=$(wl-paste --type text/uri-list --no-newline 2>/dev/null || wl-paste --no-newline); omarchy shell io.github.ollieedgeley.omarchy-quickshare paste "$value"'
 ```
 
-Cancel or clear a finished share:
+For a file or folder, `wl-paste` supplies one `file://` URI. Plain text,
+including line breaks, remains one quoted argument. The plugin forwards the
+value as an argument array rather than evaluating peer names or attachment
+text as shell input.
 
-```sh
-omarchy-quickshare share cancel 1
-omarchy-quickshare share dismiss 1
-```
-
-Status:
-
-```sh
-omarchy-quickshare protocol-version
-omarchy-quickshare health
-omarchy-quickshare status --json
-```
-
-`protocol-version` prints `4`. That is the only control protocol this tree
-speaks. `status --json` writes one versioned envelope. Selected fields for a
-transferring file look like:
-
-```json
-{
-  "response": {
-    "type": "snapshot",
-    "snapshot": {
-      "active_share": {
-        "attachment": { "name": "note.txt", "size_bytes": 4, "type": "file" },
-        "direction": "outbound",
-        "id": 1,
-        "id_string": "1",
-        "medium": "wifi_lan",
-        "phase": "transferring",
-        "remaining_seconds": 12,
-        "total_bytes": 4,
-        "transferred_bytes": 1
-      },
-      "discovery": "idle",
-      "visibility": "closed"
-    }
-  },
-  "version": 4
-}
-```
-
-`id_string` is the lossless share id. `medium`, `remaining_seconds`,
-`terminal_reason`, and `recovery_guidance` appear when the daemon has them.
-`verification_code` appears while consent is open.
-The response also includes `preferences` with `saved`, `applied`, `pending`,
-and `error`, described below.
-
-`daemon` and `daemon --simulate` belong to the service, not daily use.
-Hidden `simulate` subcommands work only when the service was started with
-`--simulate` and `OMARCHY_QUICKSHARE_ALLOW_SIMULATION=1`.
-
-### Daemon diagnostics
-
-The installed release daemon supports debug logging. Use a user-service drop-in
-to enable it on the same daemon that normally handles shares:
-
-```sh
-systemctl --user edit --drop-in=quickshare-debug.conf omarchy-quickshare.service
-```
-
-Add:
-
-```ini
-[Service]
-Environment=RUST_LOG=omarchy_quickshare=debug
-```
-
-Then reload the unit, restart it, and follow its stderr in the journal:
-
-```sh
-systemctl --user daemon-reload
-systemctl --user restart omarchy-quickshare.service
-journalctl --user -u omarchy-quickshare.service -f
-```
-
-This changes the log level of the installed service. It does not start a second
-daemon or replace the release binary with a Rust debug build. `--log-level`
-accepts `error`, `warn`, `info` (default), `debug`, or `trace`, but `RUST_LOG`
-overrides that CLI setting. `RUST_LOG=omarchy_quickshare=debug` includes the
-`omarchy_quickshare::protocol` target.
-
-Debug logs record privacy-safe transitions through discovery, connection and
-UKEY2, paired-key exchange, introduction, consent, payload transfer, terminal
-outcome, and cleanup. A `connection_id` correlates events before a share exists;
-a `share_id` is added later. Stable fields such as `operation`, `outcome`, and
-`reason` describe failures. When available, `io_error_kind` names the local I/O
-classification and `disconnect_origin` distinguishes a local close, an explicit
-disconnection frame, stream EOF, a truncated frame, or a connection event.
-Those origins describe what the daemon observed. A proprietary peer may
-disconnect without disclosing its internal reason.
-
-Rejected Connections frames also report `frame_type_present`, the received
-`frame_type_code` when present, and `frame_type` as the known protobuf enum
-name, `unrecognized` for an unknown number, or `missing` for an absent field.
-
-`locally_written` and `staged` report local progress, not successful delivery.
-Only a terminal `completed` outcome reports completion. `trace` adds per-frame,
-chunk, and keepalive metadata when debug is not enough. Neither level logs
-keys, verification codes, identities, addresses, filenames, paths, URLs, or
-payload contents.
-
-To restore the default log level, remove the dedicated drop-in, reload, and
-restart:
-
-```sh
-rm "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/omarchy-quickshare.service.d/quickshare-debug.conf"
-systemctl --user daemon-reload
-systemctl --user restart omarchy-quickshare.service
-```
-
-For an optional foreground run, stop the user service first so only one daemon
-owns discovery and the socket. Start the service again after the foreground
-daemon exits:
-
-```sh
-systemctl --user stop omarchy-quickshare.service
-omarchy-quickshare daemon --log-level debug
-# After exiting the foreground daemon:
-systemctl --user start omarchy-quickshare.service
-```
-
-## Config and downloads
-
-The canonical config path is
-`${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-quickshare/config.toml`.
-Missing files use defaults. Unknown keys are rejected.
-
-Keys are `device_name`, `receive_directory`, `pinned_peer_id`, `discoverable`,
-`read_clipboard_on_select`, `discovery_timeout_secs`,
-`visibility_timeout_secs`, `consent_timeout_secs`, and `transfer_timeout_secs`.
-`device_name` overrides the system hostname advertised to nearby devices.
-`discoverable` and `read_clipboard_on_select` default to `false` and are stored
-preferences only. Later tickets own their visibility and clipboard policy;
-these flags do not change the current plugin behavior.
-
-```sh
-omarchy-quickshare config show
-omarchy-quickshare config set device_name "My laptop"
-omarchy-quickshare config set consent_timeout_secs 120
-omarchy-quickshare config set pinned_peer_id pixel-8
-```
-
-`config show` prints effective saved settings as TOML, not daemon activation
-status. Use `status --json` for saved/applied status while the daemon is running.
-
-CLI edits go through the running daemon. Only an absent or refused control
-socket permits an offline save. `peer pin` and `peer unpin` still require the
-daemon; `config set pinned_peer_id` is available offline.
-
-The daemon automatically reloads valid edits, including files replaced by an
-editor, without a restart. `saved` is the current document's preference values,
-or `null` when invalid. `applied` is the last activated set, or `null` before
-first activation. `pending` means saved values are awaiting activation.
-`error` reports a persistence, load, or activation failure.
-The CLI distinguishes applied, saved-offline, pending, and saved-but-unavailable
-outcomes. A successful save does not guarantee activation. Invalid external
-edits leave the last applied settings running; correcting the file allows reload.
-
-Already admitted discovery, visibility, consent, and transfer operations keep
-their settings, including receive destinations and timeouts. New settings do
-not reset their deadlines. `visibility_timeout_secs` limits a receive visibility
-window; `consent_timeout_secs` separately limits consent, defaulting to 300.
-When the consent key is absent, it inherits the legacy visibility timeout.
-The first product edit writes that inherited consent value before changing
-another key, so changing visibility does not silently change consent.
-
-Product edits preserve comments and unchanged values' TOML escapes, and refuse
-to overwrite invalid TOML. Product writers share a lock and use atomic file
-replacement. External editors do not take that lock; a final read/rename race
-with an external writer remains possible.
-
-Default receive directory is `~/Downloads/omarchy-quickshare`. Incomplete
-transfers stage a hidden file there and drop it if the share does not
-commit.
-
-Live inbound LAN saves files under `receive_directory`. Text and URL
-payloads complete on the same path; their values appear in
-`status --json`. Simulated inbound commands remain for local UI work
-without a peer.
-
-## Hyprland
-
-This project does not edit your Hyprland config. Add binds yourself.
-
-```conf
-bindd = SUPER SHIFT, S, Quick Share paste, exec, sh -c 'value=$(wl-paste --type text/uri-list --no-newline 2>/dev/null || wl-paste --no-newline); omarchy shell io.github.ollieedgeley.omarchy-quickshare paste "$value"'
-bindd = SUPER SHIFT, Q, Quick Share panel, exec, omarchy shell io.github.ollieedgeley.omarchy-quickshare open
-```
-
-Paste sends clipboard text, a URL, or one copied file or folder. If no
-peer is pinned, the panel opens so you can choose one. The panel-open
-bind does not send. You can also click .
-
-## Evidence
-
-Automated, no phone:
-
-- `make test-local-install` for the user-local binary, config, and unit
-- `make test-plugin-release` for the exported plugin and native status
-  states
-- `make test-source-build` for allowlist path sets and clean-build
-  closure
-- `make test-native-release` for native and Arch artifact contracts
-- `make test-contracts` and the app process tests for CLI and control
-  behavior
-- `make test-rust-lan` for encrypted LAN file bytes against the
-  Google-derived peer image
-
-`make verify` never talks to a physical phone. Treat a phone run as
-optional release evidence, not as a substitute for those gates.
-
-Privacy-safe manual smoke, simulated first:
-
-1. `make install-local-simulation`
-2. Send dummy text, `https://example.test/share`, a throwaway file, and a
-   throwaway folder.
-3. Pin one fake peer, then send again. Try `share select` when nothing is
-   pinned.
-4. Offer inbound text, URL, and `note.txt` with the simulate commands, then
-   accept or reject.
-5. Cancel mid-transfer with `share cancel`. Dismiss terminal shares.
-6. Read `status --json`. Keep `verification_code` off anything you share.
-   Do not use real names, photos, or tokens.
-
-Optional real-device pass after LAN tests are green: dummy files both
-ways, inbound file to `~/Downloads/omarchy-quickshare`, PIN match on both
-ends, reject, cancel, and an interrupted copy that leaves no staging file
-behind. Record only the diagnostic fields above. That pass is not
-publication and not compatibility.
-
-## Development
-
-```sh
-make setup
-make help
-```
-
-Hooks and quality gates are local. There is no hosted CI.
-
-Start with [CONTEXT.md](CONTEXT.md). Task-specific links are in
-[AGENTS.md](AGENTS.md).
+The native Arch package is not published yet. Building from the source checkout
+is the current fallback. The plugin never downloads or installs the binary.

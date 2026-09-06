@@ -1,4 +1,0 @@
-lsp:
-  formatOnWrite: false
-  diagnosticsOnEdit: true
-  diagnosticsOnWrite: true
