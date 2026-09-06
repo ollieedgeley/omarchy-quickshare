@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -44,6 +50,10 @@ function readInput() {
 
 function exactEnvironment() {
   const nodeBin = join(ROOT, "node_modules", ".bin");
+  let testEnvCache = join(ROOT, ".cache", "test-env");
+  if (existsSync(testEnvCache)) {
+    testEnvCache = realpathSync(testEnvCache);
+  }
   return {
     ...GIT_ENV,
     AST_GREP: join(nodeBin, "ast-grep"),
@@ -60,7 +70,7 @@ function exactEnvironment() {
     NODE_BIN: nodeBin,
     PATH: `${nodeBin}:${process.env.PATH}`,
     RUFF: join(ROOT, ".cache", "tools", "ruff-0.16.5", "ruff"),
-    TEST_ENV_CACHE: join(ROOT, ".cache", "test-env"),
+    TEST_ENV_CACHE: testEnvCache,
     VULTURE: join(ROOT, ".cache", "tools", "vulture-2.16", "bin", "vulture"),
   };
 }

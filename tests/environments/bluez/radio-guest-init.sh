@@ -33,7 +33,7 @@ btmon --write /runtime/radio.btsnoop >/run/btmon.log 2>&1 &
 dbus-daemon --system --fork --nopidfile
 bluetoothd --nodetach --debug >/run/bluetoothd.log 2>&1 &
 for _ in {1..200}; do
-  bluetoothctl list | grep -q '^Controller ' && break
+  [[ $(bluetoothctl list | grep -c '^Controller ') -eq 2 ]] && break
   sleep 0.02
 done
 [[ $(bluetoothctl list | grep -c '^Controller ') -eq 2 ]]

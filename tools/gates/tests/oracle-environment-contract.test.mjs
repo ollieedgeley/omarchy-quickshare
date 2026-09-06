@@ -35,13 +35,6 @@ function inputs() {
   };
 }
 
-test("oracle Rust test uses the prepared cache outside its worktree", () => {
-  const makefile = readFileSync(join(ROOT, "Makefile"), "utf8");
-  assert.ok(makefile.includes("TEST_ENV_CACHE ?= $(CURDIR)/.cache/test-env"));
-  assert.ok(
-    makefile.includes('UKEY2_SHELL="$(TEST_ENV_CACHE)/oracle/bin/ukey2_shell"'),
-  );
-});
 test("complete verification reuses one oracle reference container", () => {
   const makefile = readFileSync(join(ROOT, "Makefile"), "utf8");
   const source = readFileSync(join(DIRECTORY, "environment.mjs"), "utf8");

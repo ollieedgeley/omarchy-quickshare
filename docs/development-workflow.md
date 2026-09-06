@@ -279,6 +279,9 @@ Do not verify or build a dirty working tree and assume it represents the pushed 
 
 The hook serializes access with a kernel lock at `.cache/gates/pre-push.lock` and reuses one ignored worktree at `.cache/gates/pre-push-worktree`. Before verifying each commit, it discards changes and untracked outputs from the prior run, then checks out the exact commit in detached mode. The stable source root preserves valid Cargo fingerprints between pushes; the lock prevents concurrent hooks from mutating that checkout.
 
+Make's default test cache and the pre-push shared cache resolve existing
+symlinks to their real paths, avoiding extra worktree prefixes in Unix sockets.
+
 Fail fast from cheapest to costliest: check all formatting and static lint or
 environment definitions before compiler-backed Rust diagnostics, then run
 fast in-process tests before oracle, simulator, and virtual-system tests.

@@ -12,7 +12,8 @@ ESLINT ?= $(NODE_BIN)/eslint
 PRETTIER ?= $(NODE_BIN)/prettier
 MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 RUFF ?= $(CURDIR)/.cache/tools/ruff-0.16.5/ruff
-TEST_ENV_CACHE ?= $(CURDIR)/.cache/test-env
+export TEST_ENV_CACHE ?= $(or $(realpath $(CURDIR)/.cache/test-env),\
+	$(CURDIR)/.cache/test-env)
 QUICKSHELL ?= quickshell
 RUST_LAN_TEST_DIR := tests/environments/diverse-lan/rust/scenarios
 RUST_LAN_CASES := outbound inbound inbound-content outbound-content \

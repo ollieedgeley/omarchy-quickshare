@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +17,7 @@ import test from "node:test";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const SECRET = "private-gate-output-must-not-be-recorded";
+const UNIX_SOCKET_PATH_LIMIT = 107;
 const PARENT_GIT_VARIABLES = [
   "GIT_ALTERNATE_OBJECT_DIRECTORIES",
   "GIT_COMMON_DIR",
@@ -44,7 +46,7 @@ function fixtureGit(root, args) {
   return result.stdout.trim();
 }
 
-function prepareRepository(root) {
+function prepareRepository(root, script = "") {
   for (const file of [
     "tools/hooks/pre-push.mjs",
     "tools/gates/lib/process.mjs",
@@ -74,7 +76,7 @@ function prepareRepository(root) {
       "}",
       "if (process.env.FAIL_GATE === gate) {",
       "  console.error(process.env.PRIVATE_TOKEN); process.exit(1);",
-      "}",
+      `}\n${script}`,
     ].join("\n"),
   );
   const git = (args) => fixtureGit(root, args);
@@ -95,10 +97,12 @@ function prepareRepository(root) {
   return git(["rev-parse", "HEAD"]);
 }
 
-function fixture(context) {
-  const root = mkdtempSync(join(tmpdir(), "pre-push-timing-"));
-  context.after(() => rmSync(root, { recursive: true, force: true }));
-  const sha = prepareRepository(root);
+function fixture(context, { directory = "", script = "" } = {}) {
+  const base = mkdtempSync(join(tmpdir(), "pre-push-timing-"));
+  context.after(() => rmSync(base, { recursive: true, force: true }));
+  const root = join(base, directory);
+  mkdirSync(root, { recursive: true });
+  const sha = prepareRepository(root, script);
   const deletion = "0".repeat(sha.length);
   const update = `refs/heads/main ${sha} refs/heads/main ${deletion}\n`;
   const log = join(root, "calls.log");
@@ -290,4 +294,40 @@ test("pre-push isolates verification from caller Git metadata", (context) => {
       ssh: env.GIT_SSH_COMMAND,
     })),
   );
+});
+
+test("pre-push uses a short cache target for Unix sockets", (context) => {
+  const cache = mkdtempSync(join(tmpdir(), "pre-push-socket-"));
+  context.after(() => rmSync(cache, { recursive: true, force: true }));
+  const repo = fixture(context, {
+    directory: "w".repeat(UNIX_SOCKET_PATH_LIMIT),
+    script: [
+      'const assert = require("node:assert/strict");',
+      'const net = require("node:net");',
+      'const path = require("node:path");',
+      'const socketPath = path.join(process.env.TEST_ENV_CACHE, "gate.sock");',
+      "const timer = setTimeout(() => process.exit(1), 3000);",
+      'const server = net.createServer(socket => socket.end("reachable"));',
+      "server.listen(socketPath, () => {",
+      "  assert.ok(fs.existsSync(socketPath));",
+      "  const client = net.createConnection(socketPath);",
+      '  let reply = "";',
+      '  client.setEncoding("utf8");',
+      '  client.on("data", data => { reply += data; });',
+      '  client.on("end", () => {',
+      '    assert.equal(reply, "reachable");',
+      "    server.close(() => clearTimeout(timer));",
+      "  });",
+      "});",
+    ].join("\n"),
+  });
+  const alias = join(repo.root, ".cache", "test-env");
+  mkdirSync(dirname(alias), { recursive: true });
+  symlinkSync(cache, alias);
+  assert.ok(
+    Buffer.byteLength(join(alias, "gate.sock")) > UNIX_SOCKET_PATH_LIMIT,
+  );
+  const result = repo.invoke();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(repo.log, "utf8"), "verify\nbuild\n");
 });
