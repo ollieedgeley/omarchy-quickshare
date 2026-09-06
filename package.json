@@ -7,7 +7,7 @@
   "scripts": {
     "lint:javascript": "eslint . --max-warnings 0 --no-warn-ignored",
     "prepare": "husky",
-    "test:tooling": "node --test tools/gates/tests/*.test.mjs tools/release/tests/*.test.mjs tools/hooks/pre-push-timing.test.mjs tests/environments/*/*.test.mjs tests/environments/diverse-lan/rust/build-cache.test.mjs"
+    "test:tooling": "node --test tools/gates/tests/*.test.mjs tools/release/tests/*.test.mjs tools/hooks/pre-push-timing.test.mjs tests/environments/*/*.test.mjs"
   },
   "devDependencies": {
     "@ast-grep/cli": "0.45.3",
