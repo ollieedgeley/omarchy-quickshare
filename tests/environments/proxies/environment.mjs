@@ -330,36 +330,66 @@ async function request({ body, method, path, port }) {
   return response;
 }
 
-function transfer(port, payload) {
+function transfer(context) {
   return new Promise((accept, reject) => {
     const chunks = [];
-    const socket = connect(port, "127.0.0.1", () => {
-      socket.write(payload);
+    const receivedIndex = context.received.length;
+    let upstreamSocket = null;
+    let timer = null;
+    let closed = 0;
+    let echoedBytes = 0;
+    const finish = () => {
+      closed += 1;
+      if (closed === 2) {
+        clearTimeout(timer);
+        accept({
+          echoed: Buffer.concat(chunks),
+          upstreamBytes: context.received[receivedIndex],
+        });
+      }
+    };
+    const observe = (socket) => {
+      upstreamSocket = socket;
+      socket.once("close", finish);
+    };
+    context.upstream.once("connection", observe);
+    const socket = connect(context.proxyPort, "127.0.0.1", () => {
+      socket.write(context.payload);
     });
-    const timer = setTimeout(
-      () => socket.destroy(new Error("TCP transfer timed out")),
+    const fail = (error) => {
+      clearTimeout(timer);
+      context.upstream.removeListener("connection", observe);
+      socket.destroy();
+      upstreamSocket?.destroy();
+      reject(error);
+    };
+    timer = setTimeout(
+      () => fail(new Error("TCP transfer timed out")),
       TRANSFER_TIMEOUT_MS,
     );
     socket.on("data", (chunk) => {
       chunks.push(chunk);
+      echoedBytes += chunk.length;
+      if (echoedBytes >= context.payload.length) {
+        socket.end();
+      }
     });
-    socket.on("error", reject);
-    socket.on("close", () => {
-      clearTimeout(timer);
-      accept(Buffer.concat(chunks));
-    });
+    socket.on("error", fail);
+    socket.on("close", finish);
   });
 }
 
 export function trackUpstreamSocket(socket, received, failures) {
+  const index = received.length;
+  received.push(0);
   socket.on("error", (error) => {
     if (error.code !== "ECONNRESET") {
       failures.push(error.code ?? "UNKNOWN");
     }
   });
-  socket.once("data", (chunk) => {
-    received.push(chunk.length);
-    socket.end(chunk);
+  socket.on("data", (chunk) => {
+    received[index] += chunk.length;
+    socket.write(chunk);
   });
 }
 
@@ -407,11 +437,14 @@ async function testStream(context, stream) {
     path: "/proxies/quickshare/toxics",
     port: context.apiPort,
   });
-  const cut = await transfer(context.proxyPort, context.payload);
+  const cut = await transfer(context);
   assertUpstreamHealthy(context);
-  let observed = cut.length;
+  let observed = cut.echoed.length;
   if (stream === "upstream") {
-    observed = context.received.at(-1);
+    observed = cut.upstreamBytes;
+  }
+  if (stream === "downstream" && cut.upstreamBytes !== context.payload.length) {
+    throw new Error("downstream cutoff corrupted upstream data");
   }
   if (observed !== CUTOFF_BYTES) {
     throw new Error(
@@ -420,10 +453,10 @@ async function testStream(context, stream) {
     );
   }
   await request({ method: "POST", path: "/reset", port: context.apiPort });
+  const recovery = await transfer(context);
   if (
-    !(await transfer(context.proxyPort, context.payload)).equals(
-      context.payload,
-    )
+    !recovery.echoed.equals(context.payload) ||
+    recovery.upstreamBytes !== context.payload.length
   ) {
     throw new Error(`${stream} recovery control corrupted data`);
   }
@@ -436,11 +469,14 @@ async function runProxyProof(context) {
     context.proxyPort,
     context.upstream.address().port,
   );
-  const initial = await transfer(context.proxyPort, context.payload);
+  const initial = await transfer(context);
   assertUpstreamHealthy(context);
-  if (!initial.equals(context.payload)) {
+  if (
+    !initial.echoed.equals(context.payload) ||
+    initial.upstreamBytes !== context.payload.length
+  ) {
     throw new Error(
-      `initial proxy control returned ${initial.length} bytes, ` +
+      `initial proxy control returned ${initial.echoed.length} bytes, ` +
         `expected ${context.payload.length}`,
     );
   }
