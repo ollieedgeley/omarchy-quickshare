@@ -88,6 +88,13 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 - Push each authorized slice through the pre-push hook to the approved remote.
 - Never use `--no-verify`, disabled tests, red or `WIP` commits, or force pushes.
 
+## Waiting for commands
+
+- Run long commits, pushes, and checks as OMP-managed background jobs.
+- Do independent work while they run; otherwise use `hub wait` for the job with `timeoutMs: 0`.
+- Rely on completion notifications. Check progress only for a specific problem or a user request.
+- Inspect the final result before reporting success or starting dependent work.
+
 ## Maintaining this guide
 
 - Keep this guide concise and broadly applicable, preferably below 200 lines.
