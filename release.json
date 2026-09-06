@@ -9,6 +9,10 @@
   },
   "nativeArtifact": {
     "version": "0.0.0",
-    "published": false
+    "published": true,
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "sourceBuild": {
+    "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
   }
 }
