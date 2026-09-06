@@ -49,7 +49,8 @@ fn failed_upgrade_keeps_payload_bytes_on_the_original_connection() {
     let responder = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let mut connection =
-            accept_connection(stream, Medium::Bluetooth).expect("accept");
+            accept_connection(stream, Medium::Bluetooth, "Receiver")
+                .expect("accept");
         complete_or_fail_upgrade::<TcpStream>(
             &mut connection,
             Medium::WifiHotspot,
@@ -69,7 +70,8 @@ fn failed_upgrade_keeps_payload_bytes_on_the_original_connection() {
     });
     let stream = TcpStream::connect(address).unwrap();
     let mut connection =
-        connect_connection(stream, Medium::Bluetooth).expect("connect");
+        connect_connection(stream, Medium::Bluetooth, "Sender")
+            .expect("connect");
     complete_or_fail_upgrade::<TcpStream>(
         &mut connection,
         Medium::WifiHotspot,
@@ -91,7 +93,8 @@ fn successful_upgrade_continues_payload_once_on_the_new_stream() {
     let responder = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let mut connection =
-            accept_connection(stream, Medium::Bluetooth).expect("accept");
+            accept_connection(stream, Medium::Bluetooth, "Receiver")
+                .expect("accept");
         assert!(matches!(
             connection.receive().expect("path available"),
             Event::Upgrade {
@@ -114,7 +117,8 @@ fn successful_upgrade_continues_payload_once_on_the_new_stream() {
     });
     let stream = TcpStream::connect(address).unwrap();
     let mut connection =
-        connect_connection(stream, Medium::Bluetooth).expect("connect");
+        connect_connection(stream, Medium::Bluetooth, "Sender")
+            .expect("connect");
     connection
         .propose_upgrade(Medium::WifiLan)
         .expect("offer lan");
@@ -141,7 +145,8 @@ fn accept_bandwidth_upgrade_joins_lan_then_pairs() {
     let responder = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let mut connection =
-            accept_connection(stream, Medium::Bluetooth).expect("accept");
+            accept_connection(stream, Medium::Bluetooth, "Receiver")
+                .expect("accept");
         let wifi = accept_negotiated_upgrade(&mut connection, None)
             .expect("join offered path");
         assert!(wifi.is_none());
@@ -151,7 +156,8 @@ fn accept_bandwidth_upgrade_joins_lan_then_pairs() {
     });
     let stream = TcpStream::connect(address).unwrap();
     let mut connection =
-        connect_connection(stream, Medium::Bluetooth).expect("connect");
+        connect_connection(stream, Medium::Bluetooth, "Sender")
+            .expect("connect");
     connection
         .propose_upgrade_path(
             Medium::WifiLan,
@@ -179,7 +185,8 @@ fn accept_bandwidth_upgrade_keeps_original_when_join_fails() {
     let responder = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let mut connection =
-            accept_connection(stream, Medium::Bluetooth).expect("accept");
+            accept_connection(stream, Medium::Bluetooth, "Receiver")
+                .expect("accept");
         let _synced = responder_barrier.wait();
         let wifi = accept_bandwidth_upgrade(
             &mut connection,
@@ -197,7 +204,8 @@ fn accept_bandwidth_upgrade_keeps_original_when_join_fails() {
     });
     let stream = TcpStream::connect(address).unwrap();
     let mut connection =
-        connect_connection(stream, Medium::Bluetooth).expect("connect");
+        connect_connection(stream, Medium::Bluetooth, "Sender")
+            .expect("connect");
     let _synced = barrier.wait();
     complete_or_fail_upgrade::<TcpStream>(
         &mut connection,
@@ -219,7 +227,8 @@ fn accept_negotiated_upgrade_preserves_bluetooth_payload() {
     let responder = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let mut connection =
-            accept_connection(stream, Medium::Bluetooth).expect("accept");
+            accept_connection(stream, Medium::Bluetooth, "Receiver")
+                .expect("accept");
         let _synced = responder_barrier.wait();
         let wifi = accept_negotiated_upgrade(&mut connection, None)
             .expect("no upgrade offer");
@@ -229,8 +238,8 @@ fn accept_negotiated_upgrade_preserves_bluetooth_payload() {
         pair(&mut session);
     });
     let stream = TcpStream::connect(address).unwrap();
-    let connection =
-        connect_connection(stream, Medium::Bluetooth).expect("connect");
+    let connection = connect_connection(stream, Medium::Bluetooth, "Sender")
+        .expect("connect");
     let _synced = barrier.wait();
     let mut session = sharing_session(connection);
     pair(&mut session);
@@ -246,7 +255,8 @@ fn initiate_bandwidth_upgrade_without_manager_pairs_on_original() {
     let responder = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let mut connection =
-            accept_connection(stream, Medium::Bluetooth).expect("accept");
+            accept_connection(stream, Medium::Bluetooth, "Receiver")
+                .expect("accept");
         let _synced = responder_barrier.wait();
         let wifi = accept_negotiated_upgrade(&mut connection, None)
             .expect("fallback after failure");
@@ -257,9 +267,10 @@ fn initiate_bandwidth_upgrade_without_manager_pairs_on_original() {
     });
     let stream = TcpStream::connect(address).unwrap();
     let mut connection =
-        connect_connection(stream, Medium::Bluetooth).expect("connect");
+        connect_connection(stream, Medium::Bluetooth, "Sender")
+            .expect("connect");
     let _synced = barrier.wait();
-    let wifi = initiate_bandwidth_upgrade(&mut connection, None)
+    let wifi = initiate_bandwidth_upgrade(&mut connection, None, "Sender")
         .expect("report missing manager");
     assert!(wifi.is_none());
     assert_eq!(connection.medium(), Medium::Bluetooth);
@@ -282,7 +293,8 @@ fn first_upgrade_path_failure_then_second_path_pairs() {
     let responder = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let mut connection =
-            accept_connection(stream, Medium::Bluetooth).expect("accept");
+            accept_connection(stream, Medium::Bluetooth, "Receiver")
+                .expect("accept");
         let wifi = accept_negotiated_upgrade(&mut connection, None)
             .expect("join second path");
         assert!(wifi.is_none());
@@ -292,7 +304,8 @@ fn first_upgrade_path_failure_then_second_path_pairs() {
     });
     let stream = TcpStream::connect(address).unwrap();
     let mut connection =
-        connect_connection(stream, Medium::Bluetooth).expect("connect");
+        connect_connection(stream, Medium::Bluetooth, "Sender")
+            .expect("connect");
     complete_or_fail_upgrade::<TcpStream>(
         &mut connection,
         Medium::WifiHotspot,

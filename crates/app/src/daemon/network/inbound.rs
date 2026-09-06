@@ -2,7 +2,6 @@ mod consent;
 
 use alloc::collections::BTreeMap;
 use core::{net::Ipv4Addr, time::Duration};
-use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender};
 use std::{env, io};
 
@@ -22,6 +21,7 @@ use self::consent::{Consent, wait_for_consent};
 use super::{
     NetworkCommand, NetworkEvent, TransferCancellation, emit_progress,
 };
+use crate::config::Config;
 use crate::daemon::media::{
     ENDPOINT_ID_BYTES, accept_connection, accept_negotiated_upgrade,
     endpoint_name, medium_name, sharing_session,
@@ -36,6 +36,7 @@ const TEST_LAN_PORT: &str = "OMARCHY_QUICKSHARE_TEST_LAN_PORT";
 
 pub(super) fn open_listener(
     dns_sd: &DnsSd,
+    name: &str,
 ) -> io::Result<PublishedLanListener> {
     let result = (|| {
         let port = env::var(TEST_LAN_PORT)
@@ -43,7 +44,7 @@ pub(super) fn open_listener(
             .and_then(|value| value.parse().ok())
             .unwrap_or(LAN_PORT);
         let listener = Listener::bind(port)?;
-        let advertisement = advertisement(listener.port())?;
+        let advertisement = advertisement(listener.port(), name)?;
         listener.publish(dns_sd, &advertisement)
     })();
     let (outcome, reason, io_error_kind) = match &result {
@@ -70,8 +71,7 @@ pub(super) fn receive_share<Stream>(
     commands: &Receiver<NetworkCommand>,
     events: &Sender<NetworkEvent>,
     cancellation: &TransferCancellation,
-    receive_directory: &Path,
-    consent_deadline: Duration,
+    config: &Config,
     manager: Option<&quickshare_network::NetworkManager>,
     on_other: &mut dyn FnMut(NetworkCommand) -> bool,
 ) -> NetworkEvent
@@ -82,17 +82,21 @@ where
     let _connection_guard = connection_span.enter();
     trace_protocol("connection", "receive", "started", None, None);
     let event = match (|| -> Result<NetworkEvent, (String, Option<u64>)> {
-        let mut connection =
-            accept_connection(stream, medium).map_err(|error| {
-                trace_protocol(
-                    "connection",
-                    "accept",
-                    "failed",
-                    Some(error.reason()),
-                    protocol_io_kind(&error),
-                );
-                (String::from(error.reason()), None)
-            })?;
+        let mut connection = accept_connection(
+            stream,
+            medium,
+            endpoint_name(config.device_name.as_deref()),
+        )
+        .map_err(|error| {
+            trace_protocol(
+                "connection",
+                "accept",
+                "failed",
+                Some(error.reason()),
+                protocol_io_kind(&error),
+            );
+            (String::from(error.reason()), None)
+        })?;
         let _wifi = accept_negotiated_upgrade(&mut connection, manager)
             .map_err(|error| {
                 trace_protocol(
@@ -133,10 +137,12 @@ where
                 (String::from("disconnected"), None)
             },
         )?;
-        let consent =
-            wait_for_consent(commands, consent_deadline, on_other, || {
-                session.poll_pending_consent_control()
-            })?;
+        let consent = wait_for_consent(
+            commands,
+            Duration::from_secs(config.consent_timeout_secs),
+            on_other,
+            || session.poll_pending_consent_control(),
+        )?;
         let share_id = match consent {
             Consent::Accepted(share_id) => {
                 record_share_id(&connection_span, share_id);
@@ -169,8 +175,8 @@ where
         let bytes = u64::try_from(offer.size_bytes())
             .map_err(|_| (String::from("invalid_payload"), Some(share_id)))?;
         let mut staged = if offer.kind().persists_as_file() {
-            let target =
-                ReceiveTarget::open(receive_directory).map_err(|error| {
+            let target = ReceiveTarget::open(&config.receive_directory)
+                .map_err(|error| {
                     payload_storage_failure(
                         share_id,
                         "open_receive_target",
@@ -352,10 +358,13 @@ fn announce_offer(
         .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error))
 }
 
-fn advertisement(port: u16) -> io::Result<Advertisement> {
+pub(super) fn advertisement(
+    port: u16,
+    name: &str,
+) -> io::Result<Advertisement> {
     advertisement_for(
         port,
-        endpoint_name(),
+        name,
         local_ipv4_addresses().map_err(io::Error::other)?,
     )
 }

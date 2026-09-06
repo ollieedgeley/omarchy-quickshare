@@ -31,7 +31,7 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const temporaryDirectories = new Set();
 const COMMIT_LENGTH = 40;
-const CONTROL_PROTOCOL = 3;
+const CONTROL_PROTOCOL = 4;
 const SOURCE_COMMIT = "a".repeat(COMMIT_LENGTH);
 const APP_MEMBER_PATTERN = /crates\/app/u;
 const BLUEZ_MEMBER_PATTERN = /crates\/platform\/bluez/u;

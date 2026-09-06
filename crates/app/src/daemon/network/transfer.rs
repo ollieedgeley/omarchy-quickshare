@@ -29,6 +29,7 @@ pub(super) fn outbound_event(
     cancellation: &TransferCancellation,
     adapter: Option<&Adapter>,
     manager: Option<&NetworkManager>,
+    name: &str,
 ) -> NetworkEvent {
     let event = match send_payload(
         transfer.payload(),
@@ -38,6 +39,7 @@ pub(super) fn outbound_event(
         cancellation,
         adapter,
         manager,
+        name,
     ) {
         Ok(bytes) => NetworkEvent::OutboundCompleted { bytes, share_id },
         Err(ProtocolError::Cancelled) => {
@@ -63,6 +65,7 @@ fn send_payload(
     cancellation: &TransferCancellation,
     adapter: Option<&Adapter>,
     manager: Option<&NetworkManager>,
+    name: &str,
 ) -> Result<u64, ProtocolError> {
     let mut last_error = None;
     for medium in attempt_order() {
@@ -82,7 +85,7 @@ fn send_payload(
                 trace_connection_result("send", Err(&error));
                 return Err(error);
             }
-            let connection = match connect_route(adapter, route) {
+            let connection = match connect_route(adapter, route, name) {
                 Ok(connection) => connection,
                 Err(error) => {
                     trace_connection_result("connect", Err(&error));
@@ -97,6 +100,7 @@ fn send_payload(
                 events,
                 cancellation,
                 manager,
+                name,
             );
             trace_connection_result("send", result.as_ref());
             return result;
@@ -112,11 +116,12 @@ fn send_on_connection(
     events: &Sender<NetworkEvent>,
     cancellation: &TransferCancellation,
     manager: Option<&NetworkManager>,
+    name: &str,
 ) -> Result<u64, ProtocolError> {
     if cancellation.is_cancelled(share_id) {
         return Err(ProtocolError::Cancelled);
     }
-    let _wifi = initiate_bandwidth_upgrade(&mut connection, manager)?;
+    let _wifi = initiate_bandwidth_upgrade(&mut connection, manager, name)?;
     let medium = medium_name(connection.medium());
     let mut session = sharing_session(connection);
     events

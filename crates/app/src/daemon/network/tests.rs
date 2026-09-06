@@ -2,10 +2,10 @@ use super::{
     NetworkCommand, NetworkEvent, TransferCancellation, emit_peer_lost,
     inbound::receive_share, remember_seen, transfer::outbound_event,
 };
+use crate::config::Config;
 use crate::daemon::media::PeerRoute;
 use crate::daemon::outbound::OutboundState;
 use core::net::{Ipv4Addr, SocketAddrV4};
-use core::time::Duration;
 use quickshare_connections::Medium;
 use std::fs;
 use std::net::TcpListener;
@@ -64,8 +64,12 @@ fn receive_once(
         &command_receiver,
         &inbound_sender,
         &TransferCancellation::default(),
-        &receive_directory,
-        Duration::from_secs(2),
+        &Config {
+            consent_timeout_secs: 2,
+            device_name: Some(String::from("Receiver")),
+            receive_directory,
+            ..Config::default()
+        },
         None,
         &mut |_| true,
     )
@@ -161,6 +165,7 @@ fn send_payload_family(payload: fn(&mut OutboundState, u64)) {
         &TransferCancellation::default(),
         None,
         None,
+        "Sender",
     );
     let inbound_event = inbound.join().expect("inbound thread");
     consent.join().expect("consent thread");
@@ -248,6 +253,7 @@ fn rejected_offer_does_not_retry_another_route() {
         &TransferCancellation::default(),
         None,
         None,
+        "Sender",
     );
     let inbound_event = inbound.join().expect("inbound thread");
     consenter.join().expect("consent thread");
@@ -321,6 +327,7 @@ fn send_private_text(
             &TransferCancellation::default(),
             None,
             None,
+            "Sender",
         )
     })
 }

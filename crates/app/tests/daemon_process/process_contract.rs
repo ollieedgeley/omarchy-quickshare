@@ -19,16 +19,16 @@ use quickshare_sharing::{
 
 const BINARY: &str = env!("CARGO_BIN_EXE_omarchy-quickshare");
 const ACTIVE_TEXT_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v3/active-text-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v4/active-text-snapshot-response.jsonl"
 );
 const ACTIVE_FILE_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v3/active-file-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v4/active-file-snapshot-response.jsonl"
 );
 const ACTIVE_URL_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v3/active-url-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v4/active-url-snapshot-response.jsonl"
 );
 const CANCELLED_TEXT_SNAPSHOT: &str = include_str!(concat!(
-    "../../../../tests/fixtures/control/v3/",
+    "../../../../tests/fixtures/control/v4/",
     "cancelled-text-snapshot-response.jsonl"
 ));
 const RETRY_DELAY: Duration = Duration::from_millis(5);
@@ -106,25 +106,37 @@ impl DaemonProcessFixture {
     }
 }
 
-#[expect(
-    clippy::pattern_type_mismatch,
-    reason = "Borrowed response preserves the decoded envelope for validation"
-)]
 fn endpoint_snapshot(runtime_directory: &Path) -> io::Result<EndpointSnapshot> {
     let output = run_command(runtime_directory, &["status", "--json"])?;
     if !output.status.success() {
         return Err(io::Error::other("snapshot command failed"));
     }
-    let mut reader = BufReader::new(output.stdout.as_slice());
+    decode_snapshot(&output.stdout)
+}
+
+#[expect(
+    clippy::pattern_type_mismatch,
+    reason = "Borrowed response preserves the decoded envelope for validation"
+)]
+fn decode_snapshot(bytes: &[u8]) -> io::Result<EndpointSnapshot> {
+    let mut reader = BufReader::new(bytes);
     let envelope = read_response(&mut reader)?;
     match envelope.response() {
-        Response::Snapshot { snapshot } => Ok(snapshot.clone()),
+        Response::Snapshot { snapshot, .. } => Ok(snapshot.clone()),
         Response::Cancelled
         | Response::NotFound
         | Response::Queued { .. }
         | Response::Ready
         | _ => Err(io::Error::other("endpoint did not return a snapshot")),
     }
+}
+
+fn assert_snapshot(runtime_directory: &Path, expected: &str) {
+    let expected = decode_snapshot(expected.as_bytes());
+    assert!(expected.is_ok(), "invalid snapshot fixture");
+    let actual = endpoint_snapshot(runtime_directory);
+    assert!(actual.is_ok(), "failed to read endpoint snapshot");
+    assert_eq!(actual.ok(), expected.ok());
 }
 
 fn runtime_fixture_path() -> PathBuf {
@@ -229,17 +241,7 @@ fn daemon_reports_submitted_text_in_its_public_snapshot() {
     };
     assert!(submission.status.success(), "daemon rejected text");
 
-    let snapshot_result =
-        run_command(fixture.runtime_directory(), &["status", "--json"]);
-    assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
-    let Ok(snapshot) = snapshot_result else {
-        return;
-    };
-    assert!(
-        snapshot.status.success(),
-        "daemon rejected snapshot request"
-    );
-    assert_eq!(snapshot.stdout, ACTIVE_TEXT_SNAPSHOT.as_bytes());
+    assert_snapshot(fixture.runtime_directory(), ACTIVE_TEXT_SNAPSHOT);
 
     let stop_result = fixture.stop();
     assert!(stop_result.is_ok(), "failed to stop daemon");
@@ -259,13 +261,7 @@ fn daemon_reports_submitted_url_in_its_public_snapshot() {
         &["https://example.test/share"],
     );
     assert!(submission_result.is_ok(), "failed to submit URL");
-    let snapshot_result =
-        run_command(fixture.runtime_directory(), &["status", "--json"]);
-    assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
-    let Ok(snapshot) = snapshot_result else {
-        return;
-    };
-    assert_eq!(snapshot.stdout, ACTIVE_URL_SNAPSHOT.as_bytes());
+    assert_snapshot(fixture.runtime_directory(), ACTIVE_URL_SNAPSHOT);
 
     let stop_result = fixture.stop();
     assert!(stop_result.is_ok(), "failed to stop daemon");
@@ -293,13 +289,7 @@ fn daemon_reports_submitted_file_in_its_public_snapshot() {
         &["send", source.to_string_lossy().as_ref()],
     );
     assert!(submission_result.is_ok(), "failed to submit file");
-    let snapshot_result =
-        run_command(fixture.runtime_directory(), &["status", "--json"]);
-    assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
-    let Ok(snapshot) = snapshot_result else {
-        return;
-    };
-    assert_eq!(snapshot.stdout, ACTIVE_FILE_SNAPSHOT.as_bytes());
+    assert_snapshot(fixture.runtime_directory(), ACTIVE_FILE_SNAPSHOT);
 
     let stop_result = fixture.stop();
     assert!(stop_result.is_ok(), "failed to stop daemon");
@@ -328,13 +318,7 @@ fn daemon_cancels_the_active_share_by_identifier() {
         "daemon rejected cancellation"
     );
     assert_eq!(cancellation.stdout, b"Share cancelled.\n");
-    let snapshot_result =
-        run_command(fixture.runtime_directory(), &["status", "--json"]);
-    assert!(snapshot_result.is_ok(), "failed to read endpoint snapshot");
-    let Ok(snapshot) = snapshot_result else {
-        return;
-    };
-    assert_eq!(snapshot.stdout, CANCELLED_TEXT_SNAPSHOT.as_bytes());
+    assert_snapshot(fixture.runtime_directory(), CANCELLED_TEXT_SNAPSHOT);
 
     let stop_result = fixture.stop();
     assert!(stop_result.is_ok(), "failed to stop daemon");

@@ -16,11 +16,8 @@ use quickshare_network::lan::connect as connect_lan;
 use quickshare_sharing::{EndpointInfo, ProtocolError, SharingSession};
 use rand_core::{OsRng, RngCore as _};
 
-use crate::{
-    config::Config,
-    daemon::observations::{
-        BLE, BLUETOOTH, WIFI_DIRECT, WIFI_HOTSPOT, WIFI_LAN,
-    },
+use crate::daemon::observations::{
+    BLE, BLUETOOTH, WIFI_DIRECT, WIFI_HOTSPOT, WIFI_LAN,
 };
 
 /// Connections endpoint identifier used by every SharingSession identity.
@@ -31,15 +28,10 @@ pub(crate) const ENDPOINT_ID_BYTES: [u8; 4] = *b"OQSR";
 const FALLBACK_ENDPOINT_NAME: &str = "Omarchy";
 /// Google advertisement value for a laptop-class endpoint.
 const LAPTOP_DEVICE_TYPE: u8 = 3;
-static ENDPOINT_NAME: LazyLock<String> = LazyLock::new(|| {
-    Config::load()
-        .ok()
-        .and_then(|config| config.device_name)
-        .unwrap_or_else(|| {
-            normalized_endpoint_name(
-                fs::read_to_string("/etc/hostname").ok().as_deref(),
-            )
-        })
+static HOSTNAME: LazyLock<String> = LazyLock::new(|| {
+    normalized_endpoint_name(
+        fs::read_to_string("/etc/hostname").ok().as_deref(),
+    )
 });
 
 /// Bluetooth connect budget after a candidate is already stored.
@@ -109,11 +101,12 @@ pub(crate) struct PeerSighting {
 pub(crate) fn connect_connection<Stream>(
     stream: Stream,
     medium: Medium,
+    name: &str,
 ) -> Result<Connection, ProtocolError>
 where
     Stream: ConnectionIo + 'static,
 {
-    open_connection(stream, medium, ConnectionRole::Initiator)
+    open_connection(stream, medium, ConnectionRole::Initiator, name)
 }
 
 /// Opens a responder Connections relationship over any byte stream.
@@ -124,11 +117,12 @@ where
 pub(crate) fn accept_connection<Stream>(
     stream: Stream,
     medium: Medium,
+    name: &str,
 ) -> Result<Connection, ProtocolError>
 where
     Stream: ConnectionIo + 'static,
 {
-    open_connection(stream, medium, ConnectionRole::Responder)
+    open_connection(stream, medium, ConnectionRole::Responder, name)
 }
 #[derive(Clone, Copy)]
 enum ConnectionRole {
@@ -140,13 +134,14 @@ fn open_connection<Stream>(
     stream: Stream,
     medium: Medium,
     role: ConnectionRole,
+    name: &str,
 ) -> Result<Connection, ProtocolError>
 where
     Stream: ConnectionIo + 'static,
 {
     let result = (|| {
         let mut rng = OsRng;
-        let options = connection_options(&mut rng, medium)?;
+        let options = connection_options(&mut rng, medium, name)?;
         let connection = match role {
             ConnectionRole::Initiator => Connection::connect_io(
                 stream,
@@ -172,6 +167,7 @@ where
 pub(crate) fn connect_route(
     adapter: Option<&Adapter>,
     route: &PeerRoute,
+    name: &str,
 ) -> Result<Connection, ProtocolError> {
     match route {
         PeerRoute::Lan(address) => {
@@ -187,7 +183,7 @@ pub(crate) fn connect_route(
                     return Err(ProtocolError::Io(error));
                 }
             };
-            connect_connection(stream, Medium::WifiLan)
+            connect_connection(stream, Medium::WifiLan, name)
         }
         PeerRoute::Ble(candidate) => {
             let Some(adapter) = adapter else {
@@ -215,7 +211,7 @@ pub(crate) fn connect_route(
                     return Err(bluetooth_error(error));
                 }
             };
-            connect_connection(io, Medium::Ble)
+            connect_connection(io, Medium::Ble, name)
         }
         PeerRoute::Classic(candidate) => {
             let Some(adapter) = adapter else {
@@ -247,7 +243,7 @@ pub(crate) fn connect_route(
                     return Err(bluetooth_error(error));
                 }
             };
-            connect_connection(io, Medium::Bluetooth)
+            connect_connection(io, Medium::Bluetooth, name)
         }
     }
 }
@@ -393,30 +389,30 @@ fn ble_peer_id(candidate: &BleCandidate) -> String {
 fn connection_options(
     rng: &mut OsRng,
     medium: Medium,
+    name: &str,
 ) -> Result<ConnectionOptions, ProtocolError> {
     let mut salt = [0; 2];
     let mut metadata_key = [0; 14];
     rng.fill_bytes(&mut salt);
     rng.fill_bytes(&mut metadata_key);
-    let endpoint_name = endpoint_name();
     let endpoint_info = EndpointInfo::new(
         0,
         LAPTOP_DEVICE_TYPE,
         salt,
         metadata_key,
-        Some(endpoint_name),
+        Some(name),
         None,
         Vec::new(),
     )?
     .encode();
-    Ok(ConnectionOptions::new(ENDPOINT_ID, endpoint_name)
+    Ok(ConnectionOptions::new(ENDPOINT_ID, name)
         .with_endpoint_info(endpoint_info)
         .with_medium(medium))
 }
 
 /// Returns the configured device name or system hostname shown to nearby peers.
-pub(crate) fn endpoint_name() -> &'static str {
-    &ENDPOINT_NAME
+pub(crate) fn endpoint_name(configured: Option<&str>) -> &str {
+    configured.unwrap_or(&HOSTNAME)
 }
 
 fn normalized_endpoint_name(raw: Option<&str>) -> String {

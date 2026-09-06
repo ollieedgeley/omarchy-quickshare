@@ -82,6 +82,19 @@ impl Envelope {
         }
     }
 
+    /// Creates a request to persist and activate one preference.
+    #[must_use]
+    #[inline]
+    pub fn patch_preferences(key: &str, value: &str) -> Self {
+        Self {
+            request: Request::PatchPreferences {
+                key: String::from(key),
+                value: String::from(value),
+            },
+            version: PROTOCOL_VERSION,
+        }
+    }
+
     /// Creates a request to prefer one observed peer for future shares.
     #[must_use]
     #[inline]
@@ -273,6 +286,13 @@ pub enum Request {
     },
     /// Open inbound discoverability.
     OpenVisibility,
+    /// Persist and activate one preference.
+    PatchPreferences {
+        /// Preference name in the saved document.
+        key: String,
+        /// Unparsed preference value supplied by the client.
+        value: String,
+    },
     /// Prefer one observed peer for future outbound shares.
     PinPeer {
         /// Stable identifier advertised by the peer.

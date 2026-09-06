@@ -15,8 +15,9 @@ ShellRoot {
   property string snapshotJson: '{"response":{"type":"snapshot",'
     + '"snapshot":{"active_share":{"id":7,'
     + '"id_string":"18446744073709551615","medium":"wifi_lan",'
-    + '"phase":"transferring","remaining_seconds":12}}},'
-    + '"version":3}'
+    + '"phase":"transferring","remaining_seconds":12}},'
+    + '"preferences":{"saved":null,"applied":null,'
+    + '"pending":false,"error":null}},"version":4}'
 
   function statesSettled() {
     return ready.protocolState !== "checking"
@@ -154,14 +155,14 @@ ShellRoot {
 
   StatusProbe {
     id: ready
-    versionCommand: ["printf", "3"]
+    versionCommand: ["printf", "4"]
     runtimeCommand: ["true"]
     statusCommand: ["printf", root.snapshotJson]
   }
 
   StatusProbe {
     id: unavailable
-    versionCommand: ["printf", "3"]
+    versionCommand: ["printf", "4"]
     runtimeCommand: ["false"]
   }
 
@@ -179,7 +180,7 @@ ShellRoot {
 
   StatusProbe {
     id: unsupported
-    versionCommand: ["printf", "4"]
+    versionCommand: ["printf", "3"]
     runtimeCommand: ["true"]
   }
 

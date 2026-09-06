@@ -121,7 +121,8 @@ does not publish one. A full checkout can run the same Cargo command.
 ## CLI
 
 The CLI talks to `$XDG_RUNTIME_DIR/omarchy-quickshare/control.sock`. Start
-the user service first.
+the user service first for sharing commands. Config reads and edits also work
+while the daemon is stopped.
 
 Submit one argument directly, or use the explicit `send` command. An existing
 file or directory is a file share. Directories are zipped first. `http://` or
@@ -173,9 +174,9 @@ omarchy-quickshare health
 omarchy-quickshare status --json
 ```
 
-`protocol-version` prints `3`. That is the only control protocol this tree
-speaks. `status --json` writes one versioned envelope. A transferring file
-looks like:
+`protocol-version` prints `4`. That is the only control protocol this tree
+speaks. `status --json` writes one versioned envelope. Selected fields for a
+transferring file look like:
 
 ```json
 {
@@ -197,13 +198,15 @@ looks like:
       "visibility": "closed"
     }
   },
-  "version": 3
+  "version": 4
 }
 ```
 
 `id_string` is the lossless share id. `medium`, `remaining_seconds`,
 `terminal_reason`, and `recovery_guidance` appear when the daemon has them.
 `verification_code` appears while consent is open.
+The response also includes `preferences` with `saved`, `applied`, `pending`,
+and `error`, described below.
 
 `daemon` and `daemon --simulate` belong to the service, not daily use.
 Hidden `simulate` subcommands work only when the service was started with
@@ -281,14 +284,53 @@ systemctl --user start omarchy-quickshare.service
 
 ## Config and downloads
 
-User config is `~/.config/omarchy-quickshare/config.toml`, or
-`$XDG_CONFIG_HOME/omarchy-quickshare/config.toml`. Missing files use
-defaults. Unknown keys are rejected.
+The canonical config path is
+`${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-quickshare/config.toml`.
+Missing files use defaults. Unknown keys are rejected.
 
-Documented keys: `device_name`, `receive_directory`, `pinned_peer_id`,
-`discovery_timeout_secs`, `visibility_timeout_secs`,
-`transfer_timeout_secs`. `device_name` overrides the system hostname advertised
-to nearby devices.
+Keys are `device_name`, `receive_directory`, `pinned_peer_id`, `discoverable`,
+`read_clipboard_on_select`, `discovery_timeout_secs`,
+`visibility_timeout_secs`, `consent_timeout_secs`, and `transfer_timeout_secs`.
+`device_name` overrides the system hostname advertised to nearby devices.
+`discoverable` and `read_clipboard_on_select` default to `false` and are stored
+preferences only. Later tickets own their visibility and clipboard policy;
+these flags do not change the current plugin behavior.
+
+```sh
+omarchy-quickshare config show
+omarchy-quickshare config set device_name "My laptop"
+omarchy-quickshare config set consent_timeout_secs 120
+omarchy-quickshare config set pinned_peer_id pixel-8
+```
+
+`config show` prints effective saved settings as TOML, not daemon activation
+status. Use `status --json` for saved/applied status while the daemon is running.
+
+CLI edits go through the running daemon. Only an absent or refused control
+socket permits an offline save. `peer pin` and `peer unpin` still require the
+daemon; `config set pinned_peer_id` is available offline.
+
+The daemon automatically reloads valid edits, including files replaced by an
+editor, without a restart. `saved` is the current document's preference values,
+or `null` when invalid. `applied` is the last activated set, or `null` before
+first activation. `pending` means saved values are awaiting activation.
+`error` reports a persistence, load, or activation failure.
+The CLI distinguishes applied, saved-offline, pending, and saved-but-unavailable
+outcomes. A successful save does not guarantee activation. Invalid external
+edits leave the last applied settings running; correcting the file allows reload.
+
+Already admitted discovery, visibility, consent, and transfer operations keep
+their settings, including receive destinations and timeouts. New settings do
+not reset their deadlines. `visibility_timeout_secs` limits a receive visibility
+window; `consent_timeout_secs` separately limits consent, defaulting to 300.
+When the consent key is absent, it inherits the legacy visibility timeout.
+The first product edit writes that inherited consent value before changing
+another key, so changing visibility does not silently change consent.
+
+Product edits preserve comments and unchanged values' TOML escapes, and refuse
+to overwrite invalid TOML. Product writers share a lock and use atomic file
+replacement. External editors do not take that lock; a final read/rename race
+with an external writer remains possible.
 
 Default receive directory is `~/Downloads/omarchy-quickshare`. Incomplete
 transfers stage a hidden file there and drop it if the share does not

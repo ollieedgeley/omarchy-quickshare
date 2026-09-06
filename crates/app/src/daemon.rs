@@ -6,6 +6,7 @@ mod network;
 mod notify;
 mod observations;
 mod outbound;
+mod preferences;
 mod production;
 
 pub use self::lifecycle::{run, run_simulated};
@@ -18,7 +19,9 @@ use std::thread;
 use quickshare_control::PROTOCOL_VERSION;
 use quickshare_control::codec::{read_request, write_response};
 use quickshare_control::request::{Envelope as RequestEnvelope, Request};
-use quickshare_control::response::{Envelope as ResponseEnvelope, Response};
+use quickshare_control::response::{
+    Envelope as ResponseEnvelope, PreferenceStatus, Response,
+};
 use quickshare_sharing::{Attachment, Coordinator};
 
 use self::network::NetworkWorker;
@@ -29,18 +32,24 @@ use self::outbound::OutboundState;
 pub struct Daemon {
     /// Persisted user settings applied to this endpoint.
     config: crate::config::Config,
+    /// Parent-directory notifications for live user edits.
+    config_watch: Option<preferences::ConfigWatch>,
     /// When the current outbound search started.
     discovery_started_at: Option<std::time::Instant>,
     /// Production network worker, omitted by in-process and simulated daemons.
     network: Option<NetworkWorker>,
     /// Production-only file paths and discovered LAN routes.
     outbound: OutboundState,
+    /// Durable, active, and failed preference outcomes.
+    preferences: PreferenceStatus,
     /// Outbound shares accepted from local clients.
     queued: Vec<RequestEnvelope>,
     /// User-visible share lifecycle state.
     sharing: Coordinator,
     /// Whether deterministic peer events are accepted.
     simulated: bool,
+    /// Durations captured by each admitted timed operation.
+    timeouts: lifecycle::OperationTimeouts,
     /// When the active share entered the transferring phase.
     transfer_started_at: Option<std::time::Instant>,
     /// When inbound discoverability was opened.
@@ -130,12 +139,15 @@ impl Daemon {
     pub fn new() -> Self {
         Self {
             config: crate::config::Config::default(),
+            config_watch: None,
             discovery_started_at: None,
             network: None,
             outbound: OutboundState::default(),
+            preferences: PreferenceStatus::default(),
             queued: Vec::new(),
             sharing: Coordinator::new(),
             simulated: false,
+            timeouts: lifecycle::OperationTimeouts::default(),
             transfer_started_at: None,
             visibility_opened_at: None,
         }
@@ -215,9 +227,13 @@ impl Daemon {
             return Ok(response);
         }
         match request {
-            Request::Snapshot => {
-                Ok(ResponseEnvelope::snapshot(self.sharing.snapshot()))
+            Request::PatchPreferences { key, value } => {
+                Ok(self.patch_preferences(key, value))
             }
+            Request::Snapshot => Ok(ResponseEnvelope::snapshot(
+                self.sharing.snapshot(),
+                &self.preferences,
+            )),
             Request::Status => Ok(ResponseEnvelope::ready()),
             Request::SubmitFile { path, peer_id } => {
                 let share_id = self.queue_file(path, peer_id.as_deref())?;
@@ -294,6 +310,7 @@ impl Daemon {
         listener.set_nonblocking(true)?;
         while !stopped() {
             self.apply_timeouts()?;
+            self.reload_preferences()?;
             match self.serve_next(listener) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -370,13 +387,19 @@ impl Daemon {
                 action_response(dismissed)
             }
             Request::PinPeer { peer_id } => {
-                let applied = self.sharing.pin_peer(peer_id);
-                if applied {
-                    self.persist_pin(peer_id)?;
+                if self
+                    .sharing
+                    .snapshot()
+                    .peers()
+                    .iter()
+                    .any(|peer| peer.id() == peer_id)
+                {
+                    self.patch_preferences("pinned_peer_id", peer_id)
+                } else {
+                    ResponseEnvelope::not_found()
                 }
-                action_response(applied)
             }
-            Request::UnpinPeer => action_response(self.unpin_peers()?),
+            Request::UnpinPeer => self.patch_preferences("pinned_peer_id", ""),
             Request::Reject { share_id } => {
                 let rejected = self.sharing.reject_inbound(*share_id);
                 if rejected {
@@ -410,12 +433,15 @@ impl Daemon {
     pub fn simulated() -> Self {
         let mut endpoint = Self {
             config: crate::config::Config::default(),
+            config_watch: None,
             discovery_started_at: None,
             network: None,
             outbound: OutboundState::default(),
+            preferences: PreferenceStatus::default(),
             queued: Vec::new(),
             sharing: Coordinator::new(),
             simulated: true,
+            timeouts: lifecycle::OperationTimeouts::default(),
             transfer_started_at: None,
             visibility_opened_at: None,
         };

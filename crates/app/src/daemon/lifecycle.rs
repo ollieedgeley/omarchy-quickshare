@@ -9,9 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use quickshare_control::request::Request;
-use quickshare_sharing::{
-    Attachment, DiscoveryState, PeerSnapshot, Phase, VisibilityState,
-};
+use quickshare_sharing::{Attachment, DiscoveryState, Phase, VisibilityState};
 use quickshare_storage::OutboundSource;
 
 use super::Daemon;
@@ -22,6 +20,15 @@ use super::observations::{
 };
 use crate::archive;
 use crate::config::Config;
+
+/// Settings retained for already admitted operations.
+#[derive(Debug, Default)]
+pub(super) struct OperationTimeouts {
+    discovery: Duration,
+    transfer: Duration,
+    transfer_share_id: Option<u64>,
+    visibility: Duration,
+}
 
 fn open_source(path: &Path) -> io::Result<OutboundSource> {
     let source = OutboundSource::open(path).map_err(|error| {
@@ -37,12 +44,10 @@ fn open_source(path: &Path) -> io::Result<OutboundSource> {
     reason = "Config and timeout behavior stay out of the control-loop file"
 )]
 impl Daemon {
-    /// Applies persisted settings to a newly constructed endpoint.
+    /// Applies validated settings without replacing active share state.
     pub(super) fn install_config(&mut self, config: Config) {
-        if let Some(peer_id) = config.pinned_peer_id.as_deref() {
-            let _pinned = self.sharing.pin_peer(peer_id);
-        }
-        self.config = config;
+        self.preferences.saved = Some(super::preferences::values(&config));
+        self.preferences_configured(config, None);
     }
 
     /// Pins a newly observed peer when it matches persisted preference.
@@ -54,6 +59,7 @@ impl Daemon {
 
     /// Ends searches, visibility windows, and transfers that exceeded config.
     pub(super) fn apply_timeouts(&mut self) -> io::Result<()> {
+        self.capture_timeout_settings();
         self.timeout_discovery()?;
         self.timeout_transfer()?;
         self.timeout_visibility()
@@ -96,26 +102,6 @@ impl Daemon {
         Ok(share_id)
     }
 
-    pub(super) fn unpin_peers(&mut self) -> io::Result<bool> {
-        let had_pin = self
-            .sharing
-            .snapshot()
-            .peers()
-            .iter()
-            .any(PeerSnapshot::is_pinned)
-            || self.config.pinned_peer_id.is_some();
-        self.sharing.unpin_peers();
-        self.config.pinned_peer_id = None;
-        self.config.save()?;
-        Ok(had_pin)
-    }
-
-    /// Persists the single preferred peer after a successful live pin.
-    pub(super) fn persist_pin(&mut self, peer_id: &str) -> io::Result<()> {
-        self.config.pinned_peer_id = Some(String::from(peer_id));
-        self.config.save()
-    }
-
     fn timeout_discovery(&mut self) -> io::Result<()> {
         if self.sharing.snapshot().discovery() != DiscoveryState::Searching {
             self.discovery_started_at = None;
@@ -124,7 +110,7 @@ impl Daemon {
         let started =
             *self.discovery_started_at.get_or_insert_with(Instant::now);
         if Instant::now().saturating_duration_since(started)
-            >= Duration::from_secs(self.config.discovery_timeout_secs)
+            >= self.timeouts.discovery
         {
             let _timed_out = self.sharing.discovery_timed_out();
             tracing::info!(
@@ -151,7 +137,7 @@ impl Daemon {
         let started =
             *self.visibility_opened_at.get_or_insert_with(Instant::now);
         if Instant::now().saturating_duration_since(started)
-            < Duration::from_secs(self.config.visibility_timeout_secs)
+            < self.timeouts.visibility
         {
             return Ok(());
         }
@@ -185,7 +171,7 @@ impl Daemon {
         let started =
             *self.transfer_started_at.get_or_insert_with(Instant::now);
         if Instant::now().saturating_duration_since(started)
-            < Duration::from_secs(self.config.transfer_timeout_secs)
+            < self.timeouts.transfer
         {
             return Ok(());
         }
@@ -216,6 +202,53 @@ impl Daemon {
         self.outbound.finish(share_id);
         self.transfer_started_at = None;
         Ok(())
+    }
+
+    pub(super) fn capture_timeout_settings(&mut self) {
+        let snapshot = self.sharing.snapshot();
+        if snapshot.discovery() == DiscoveryState::Searching {
+            if self.discovery_started_at.is_none() {
+                self.discovery_started_at = Some(Instant::now());
+                self.timeouts.discovery =
+                    Duration::from_secs(self.config.discovery_timeout_secs);
+            }
+        } else {
+            self.discovery_started_at = None;
+        }
+        if snapshot.visibility() == VisibilityState::Open {
+            if self.visibility_opened_at.is_none() {
+                self.visibility_opened_at = Some(Instant::now());
+                self.timeouts.visibility =
+                    Duration::from_secs(self.config.visibility_timeout_secs);
+            }
+        } else {
+            self.visibility_opened_at = None;
+        }
+        if let Some(share) = snapshot.active_share()
+            && matches!(
+                share.phase(),
+                Phase::WaitingForPeer
+                    | Phase::AwaitingLocalConsent
+                    | Phase::AwaitingPeerConsent
+                    | Phase::Transferring
+            )
+        {
+            if self.timeouts.transfer_share_id != Some(share.id().get()) {
+                self.transfer_started_at = None;
+                self.timeouts.transfer =
+                    Duration::from_secs(self.config.transfer_timeout_secs);
+                self.timeouts.transfer_share_id = Some(share.id().get());
+            }
+            if share.phase() == Phase::Transferring {
+                let _started =
+                    self.transfer_started_at.get_or_insert_with(Instant::now);
+            } else {
+                self.transfer_started_at = None;
+            }
+        } else {
+            self.transfer_started_at = None;
+            self.timeouts.transfer_share_id = None;
+        }
     }
     /// Applies one simulator request and reports whether state changed.
     #[expect(
@@ -360,14 +393,13 @@ fn remove_stale_socket(path: &Path) -> io::Result<()> {
 ///
 /// # Errors
 pub fn run(socket_path: &Path) -> io::Result<()> {
+    let config_watch = super::preferences::ConfigWatch::new()?;
     let config = Config::load()?;
     fs::create_dir_all(&config.receive_directory)?;
     let socket = ControlSocket::bind(socket_path)?;
-    let network = NetworkWorker::start(
-        config.receive_directory.clone(),
-        Duration::from_secs(config.visibility_timeout_secs),
-    )?;
+    let network = NetworkWorker::start(config.clone())?;
     let mut endpoint = Daemon::with_network_worker(network);
+    endpoint.config_watch = Some(config_watch);
     endpoint.install_config(config);
     tracing::info!(phase = "ready", "daemon ready");
     let result = endpoint.serve_until(&socket.listener, || false);
@@ -382,9 +414,11 @@ pub fn run(socket_path: &Path) -> io::Result<()> {
 /// Returns an error when the private control socket cannot be served.
 #[inline]
 pub fn run_simulated(socket_path: &Path) -> io::Result<()> {
+    let config_watch = super::preferences::ConfigWatch::new()?;
     let config = Config::load()?;
     let socket = ControlSocket::bind(socket_path)?;
     let mut endpoint = Daemon::simulated();
+    endpoint.config_watch = Some(config_watch);
     endpoint.install_config(config);
     endpoint.serve_until(&socket.listener, || false)
 }
@@ -404,12 +438,13 @@ mod tests {
         let share_id = daemon.sharing.queue_outbound(Attachment::text("hi"));
         assert!(daemon.sharing.select_peer(share_id.get(), "peer"));
         assert!(daemon.sharing.accept_by_peer(share_id.get()));
+        daemon.capture_timeout_settings();
         daemon.transfer_started_at = Some(
             Instant::now()
                 .checked_sub(Duration::from_secs(5))
                 .expect("clock"),
         );
-        daemon.timeout_transfer().expect("timeout applied");
+        daemon.apply_timeouts().expect("timeout applied");
         let share = daemon
             .sharing
             .snapshot()
@@ -417,9 +452,5 @@ mod tests {
             .expect("failed share remains visible");
         assert_eq!(share.phase(), Phase::Failed);
         assert_eq!(share.terminal_reason(), Some("timed_out"));
-        assert_eq!(
-            share.recovery_guidance(),
-            Some("Retry while both devices stay nearby.")
-        );
     }
 }

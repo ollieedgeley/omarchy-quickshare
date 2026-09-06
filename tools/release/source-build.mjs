@@ -23,7 +23,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const DESTINATION = join(ROOT, "dist", "source");
 const SPARSE_DESTINATION = join(ROOT, "dist", "sparse");
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
-const CONTROL_PROTOCOL = 3;
+const CONTROL_PROTOCOL = 4;
 
 export function hashFile(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");

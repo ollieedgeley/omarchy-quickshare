@@ -1,16 +1,17 @@
 //! Background DNS-SD, Bluetooth, and inbound scheduling for the network worker.
 
+use alloc::sync::Arc;
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::Instant;
 
-use super::inbound::{open_listener, receive_share};
+use super::inbound::{advertisement, open_listener, receive_share};
 use super::transfer::outbound_event;
 use super::{NetworkCommand, NetworkEvent, TransferCancellation};
+use crate::config::Config;
 use crate::daemon::media::{
-    DiscoveryLeases, PeerRoute, VisibilityLeases, open_visibility,
-    start_discovery,
+    DiscoveryLeases, PeerRoute, VisibilityLeases, endpoint_name,
+    open_visibility, start_discovery,
 };
 use core::time::Duration;
 use quickshare_bluez::Adapter;
@@ -45,9 +46,9 @@ pub(super) fn run_worker(
     commands: Receiver<NetworkCommand>,
     events: Sender<NetworkEvent>,
     cancellation: TransferCancellation,
-    receive_directory: PathBuf,
-    consent_deadline: Duration,
+    config: Config,
 ) {
+    let mut config = Arc::new(config);
     let mut bluetooth = system_stage("bluez_adapter", Adapter::system());
     let manager = system_stage("network_manager", NetworkManager::system());
     let mut browser: Option<Browser> = None;
@@ -76,23 +77,24 @@ pub(super) fn run_worker(
                 &mut discovery,
                 &mut browser,
                 &mut seen,
+                &mut config,
             )
         };
     }
     macro_rules! receive_inbound {
-        ($stream:expr, $medium:expr) => {
+        ($stream:expr, $medium:expr) => {{
+            let admitted = Arc::clone(&config);
             receive_share(
                 $stream,
                 $medium,
                 &commands,
                 &events,
                 &cancellation,
-                &receive_directory,
-                consent_deadline,
+                &admitted,
                 manager.as_ref(),
                 &mut |command| process_command!(command),
             )
-        };
+        }};
     }
     loop {
         if discovering && (browser.is_none() || Instant::now() >= restart_at) {
@@ -182,6 +184,7 @@ fn handle_command(
     discovery: &mut DiscoveryLeases,
     browser: &mut Option<Browser>,
     seen: &mut HashSet<String>,
+    current: &mut Arc<Config>,
 ) -> bool {
     match command {
         NetworkCommand::AcceptInbound { .. }
@@ -194,6 +197,29 @@ fn handle_command(
             trace_protocol("visibility", "close", "completed", None, None);
             true
         }
+        NetworkCommand::Configure { config } => {
+            let error = (|| {
+                std::fs::create_dir_all(&config.receive_directory)?;
+                if config.device_name != current.device_name
+                    && let Some(listener) = inbound.as_mut()
+                {
+                    let candidate = advertisement(
+                        listener.port(),
+                        endpoint_name(config.device_name.as_deref()),
+                    )?;
+                    listener.republish(&candidate)?;
+                }
+                Ok::<(), std::io::Error>(())
+            })()
+            .err()
+            .map(|error| error.to_string());
+            if error.is_none() {
+                *current = Arc::new(config.clone());
+            }
+            events
+                .send(NetworkEvent::PreferencesConfigured { config, error })
+                .is_ok()
+        }
         NetworkCommand::Discover => {
             *discovering = true;
             *restart_at = Instant::now();
@@ -205,7 +231,10 @@ fn handle_command(
         }
         NetworkCommand::OpenVisibility => {
             if inbound.is_none() {
-                match open_listener(dns_sd) {
+                match open_listener(
+                    dns_sd,
+                    endpoint_name(current.device_name.as_deref()),
+                ) {
                     Ok(listener) => *inbound = Some(listener),
                     Err(error) => {
                         trace_protocol(
@@ -231,6 +260,7 @@ fn handle_command(
         }
         NetworkCommand::SendShare { share_id, transfer } => {
             trace_protocol("local_control", "send", "started", None, None);
+            let admitted = Arc::clone(current);
             events
                 .send(outbound_event(
                     share_id,
@@ -239,6 +269,7 @@ fn handle_command(
                     cancellation,
                     bluetooth.as_ref(),
                     manager,
+                    endpoint_name(admitted.device_name.as_deref()),
                 ))
                 .is_ok()
         }
