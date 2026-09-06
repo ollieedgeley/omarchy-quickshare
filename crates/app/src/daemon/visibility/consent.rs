@@ -13,6 +13,7 @@ pub(crate) enum ConsentOutcome {
     Rejected(u64),
     Cancelled,
     TimedOut,
+    Failed(&'static str),
 }
 
 #[derive(Debug)]
@@ -117,6 +118,16 @@ impl PendingConsent {
         let mut decision = self.decision();
         if decision.outcome == ConsentOutcome::Offered {
             decision.outcome = ConsentOutcome::Cancelled;
+        }
+    }
+
+    pub(crate) fn fail(&self, reason: &'static str) {
+        let mut decision = self.decision();
+        if matches!(
+            decision.outcome,
+            ConsentOutcome::Offered | ConsentOutcome::Pending
+        ) {
+            decision.outcome = ConsentOutcome::Failed(reason);
         }
     }
 
