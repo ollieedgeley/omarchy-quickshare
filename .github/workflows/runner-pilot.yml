@@ -1,0 +1,70 @@
+name: Runner pilot
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pilot:
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.head_ref == 'workflow/w1-runner-pilot') ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == 'refs/heads/workflow/w1-runner-pilot')
+    name: Pilot ${{ matrix.profile }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        profile: [core, docker, kvm, network]
+    env:
+      CI_PILOT_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CI_PILOT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CI_PILOT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install pinned Node
+        id: node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 26.7.0
+      - name: Prepare hosted network tools and kernel modules
+        if: matrix.profile == 'network'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "${RUNNER_ENVIRONMENT}" == "github-hosted" ]]
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends iw=6.7-1build1
+          if ! modinfo mac80211_hwsim >/dev/null 2>&1; then
+            sudo apt-get install --yes --no-install-recommends "linux-modules-extra-$(uname -r)"
+          fi
+          modinfo mac80211_hwsim >/dev/null
+      - name: Measure cold preparation and real tests
+        id: cold
+        if: ${{ !cancelled() && steps.node.outcome == 'success' }}
+        run: make ci-pilot CI_PILOT_PROFILE=${{ matrix.profile }} CI_PILOT_ATTEMPT=cold
+      - name: Measure warm preparation and real tests
+        if: ${{ !cancelled() && steps.cold.outcome == 'success' }}
+        run: make ci-pilot CI_PILOT_PROFILE=${{ matrix.profile }} CI_PILOT_ATTEMPT=warm
+      - name: Retain sanitized pilot evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-pilot-${{ matrix.profile }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .cache/ci-pilot/${{ matrix.profile }}/*/report.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7

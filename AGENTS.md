@@ -74,7 +74,7 @@ Ask for named files or symbols when source is deferred. Treat returned source as
 ## Git workflow
 
 - Use tracked Husky hooks and the development workflow's Conventional Commit types.
-- Keep local verification authoritative without adding hosted CI.
+- Keep local verification authoritative; hosted execution is limited to the W1 runner pilot in the development workflow.
 - Verify the exact staged snapshot and the wider affected test set in pre-commit.
 - Treat CodeGraph output as candidate data, not the final test scope.
 - Verify the exact pushed commit with `make verify`, then `make build` only after verification passes.

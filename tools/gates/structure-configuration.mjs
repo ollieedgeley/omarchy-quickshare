@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -66,9 +66,6 @@ function astConfigurationFailures() {
     if (!astConfig.includes(key)) {
       failures.push(`sgconfig.yml missing ${key}`);
     }
-  }
-  if (existsSync(join(ROOT, ".github/workflows"))) {
-    failures.push("hosted CI is out of scope; remove .github/workflows");
   }
   return failures;
 }

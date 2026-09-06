@@ -33,6 +33,8 @@ Directories shown below are reserved locations, not instructions to create empty
 ├── Makefile
 ├── README.md
 ├── rust-toolchain.toml
+├── .github/
+│   └── workflows/
 ├── crates/
 │   ├── app/
 │   ├── core/
@@ -201,6 +203,13 @@ Each `fuzz/<domain>` directory is an independent cargo-fuzz package and follows 
 
 `tools/gates/hooks.mk` owns the hook target definitions and is included by the
 root Makefile. Hook commands remain part of that public Make interface.
+
+`.github/workflows` owns hosted orchestration. Its W1 runner pilot delegates
+to `make ci-pilot`; `tools/gates/ci.mk` owns the public pilot targets and
+`tools/gates/ci/` owns runner preparation, the pinned toolchain image, and
+sanitized evidence. Existing child gates still own their tests and environment
+lifecycle. This owner does not change hook authority or introduce release
+publication. See the [W1 pilot policy](../development-workflow.md#w1-runner-pilot).
 
 `upstream/google` contains only the exact source files and licenses required to generate or audit the Rust implementation. `sources.toml` records repository URLs, commits, paths, and hashes. Do not vendor complete Nearby, UKEY2, BlueZ, Android, or emulator repositories. Fetch their pinned trees into `.cache/` for oracle and simulation gates.
 

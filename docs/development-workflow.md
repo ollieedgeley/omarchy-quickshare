@@ -6,9 +6,63 @@ Policy date: 2026-09-02
 
 Build every behavior change with test-driven development through a confirmed seam. Commit each working vertical slice as soon as its targeted gates pass. Every commit follows Conventional Commits. Before a commit, hooks format and lint the staged change, then test the wider code area affected by it. Before a push, hooks run the complete local quality suite against the exact commit being pushed, then build that commit.
 
-Local hooks are the project's automated verification. The pre-commit hook gives targeted feedback. The pre-push hook is authoritative. It verifies and then builds the exact commit being pushed. Hosted CI and automated release builds are outside the current scope. A future decision may add release automation that calls the same local targets, but it must not replace local verification or the source-build fallback.
+Local hooks remain authoritative automated verification. Pre-commit gives targeted feedback; pre-push verifies and then builds the exact commit being pushed. The W1 runner pilot below is the only hosted-CI exception. It does not replace either hook. The full CI cutover planned for W7 and automated release builds remain outside the implemented scope.
 
 Application and development-tool feedback have separate aggregates. `make verify-app` runs only Rust formatting, compiler checks, Rust diagnostics, ast-grep, and Rust tests. `make verify-tooling` runs the separate tooling and documentation formatting checks, every current ESLint core rule, static environment definitions, and fast tooling contracts; it does not start simulators or virtual devices. `make verify` adds strict cross-language analysis and every programmatic environment check. This keeps environment implementation out of the normal application loop without weakening pre-push verification.
+
+## W1 runner pilot
+
+`.github/workflows/runner-pilot.yml` measures the `core`, `docker`, `kvm`, and
+`network` profiles on separate fresh GitHub-hosted Ubuntu 24.04 VMs, at most
+two jobs at once. Each VM runs a cold attempt. A warm attempt runs only after
+the cold baseline succeeds, and may reuse that VM's caches. Neither attempt
+restores an Actions cache. Each executed attempt keeps its own report, and
+either failure fails the job. A failed cold attempt is not retried as warm.
+This pilot is not a required check or a supported-runner decision.
+
+The workflow accepts same-repository pull requests from
+`workflow/w1-runner-pilot` and manual dispatch on that branch once GitHub
+recognizes the workflow on the default branch. It checks out the exact source
+SHA, uses pinned actions and Node, grants only `contents: read`, and does not
+persist checkout credentials. Fork pull requests, self-hosted runners, secrets,
+and `pull_request_target` are outside this exception.
+
+The core profile builds from the signed Arch archive dated 2026/08/25 with
+Rust and Cargo 1.98.0, Node 26.7.0, and QuickShell 0.3.1. It exercises
+structure, Rust contracts, and real headless QuickShell plugin checks.
+Docker exercises both Rust LAN transfer directions. KVM runs the real
+Bluetooth controller guest with hardware acceleration; network runs the
+existing privileged hwsim and wmediumd path. Preparation remains outside each existing 60-second child
+test budget. Missing capabilities fail rather than select weaker tests.
+Only the isolated hosted network VM installs the pinned host `iw` package
+and, when hwsim is missing, the running kernel's extra module package before
+probing hwsim. The pilot never provisions a workstation or existing server
+as a runner.
+
+GitHub-hosted nested virtualization is an experimental candidate, not a
+provider-supported operating choice, even if the KVM experiment passes.
+See GitHub's [hosted runner support limits](https://docs.github.com/en/actions/concepts/runners/github-hosted-runners).
+W1 remains open until actual fresh-runner evidence and a supported choice for
+each gate class are recorded. A dedicated worker requires a separate cost and
+security approval; W2 does not begin while that choice is unresolved.
+
+Sanitized reports live at
+`.cache/ci-pilot/<profile>/<cold|warm>/report.json`; local summaries sit beside
+them. Raw child logs remain private under `.cache/ci-pilot-logs/` and are never
+uploaded. The workflow retains only JSON reports for seven days, keyed by
+profile, source SHA, workflow run, and run attempt. Reports record toolchain
+and capability facts, disk use, preparation/test durations, and failed steps
+without protocol frames or arbitrary environment values.
+Existing attempt directories are never overwritten. Before repeating a local
+attempt, archive its report and private log directories or use a fresh
+checkout. Only the hosted workflow enforces a successful cold baseline before
+warm execution; the CLI records the caller's chosen attempt label.
+
+Standard hosted runner minutes are free for this public repository, but
+artifact storage shares the account's allowance with Packages. Keep these
+reports small; this pilot uploads no images, source caches, or raw logs.
+Larger runners are billed and are not part of this pilot. See
+[GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
 
 ## TDD cycle
 
@@ -324,6 +378,10 @@ The initial hook change must include contract fixtures for staged-only behavior,
 - `make lint-docs` checks Markdown policy; `make lint-structure-app` and
   `make lint-structure-tooling` isolate structure feedback.
   `make lint-structure` combines them.
+- `make ci-pilot CI_PILOT_PROFILE=<core|docker|kvm|network> CI_PILOT_ATTEMPT=<cold|warm>`
+  measures one runner attempt, without an aggregate test timeout.
+- `make test-ci-pilot` checks the pilot's dispatch, report, and failure
+  contracts within 60 seconds.
 - `make pre-commit-source-{format,lint,ast,analysis}` checks exact staged
   non-test files with applicable tools, in that order.
 - `make pre-commit-test-{format,lint,ast,analysis}` checks exact staged test
