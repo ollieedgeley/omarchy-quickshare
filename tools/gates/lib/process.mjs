@@ -39,6 +39,15 @@ export function output(command, args, options = {}) {
   }).stdout.trim();
 }
 
+export function withoutRepositoryGitEnvironment(env) {
+  const childEnv = { ...env };
+  const localNames = output("git", ["rev-parse", "--local-env-vars"]);
+  for (const name of localNames.split("\n")) {
+    delete childEnv[name];
+  }
+  return childEnv;
+}
+
 export function fail(message) {
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;

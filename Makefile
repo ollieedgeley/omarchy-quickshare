@@ -53,12 +53,7 @@ DOCUMENT_FILES = $(REPOSITORY_FILES) -- '*.md'
 .PHONY: test-bluetooth-classic test-network-wmediumd test-network-netem
 .PHONY: test-network-lan test-network-hotspot-client
 .PHONY: test-network-hotspot-owner test-network-wifi-direct-client
-.PHONY: verify-app verify-tooling verify build commit-msg
-.PHONY: pre-commit-source-format pre-commit-source-lint pre-commit-source-ast
-.PHONY: pre-commit-source-analysis pre-commit-test-analysis
-.PHONY: pre-commit-test-format pre-commit-test-lint pre-commit-test-ast
-.PHONY: pre-commit-domain-analysis pre-commit-test
-.PHONY: pre-commit pre-commit-prepare pre-commit-structure pre-push
+.PHONY: verify-app verify-tooling verify build
 help: ## List public and targeted gates.
 	@awk 'BEGIN {FS = ":.*## "} \
 		/^[a-zA-Z0-9_.-]+:.*## / {printf "%-28s %s\n", $$1, $$2}' \
@@ -445,55 +440,7 @@ verify: format-check lint-structure lint-javascript lint-python lint-docs \
 build: ## Build the complete locked workspace after verification.
 	@$(TIMEOUT) cargo build --workspace --all-targets --all-features --locked
 
-commit-msg: ## Validate COMMIT_MSG_FILE as a Conventional Commit message.
-	@$(TIMEOUT) node tools/hooks/commit-msg.mjs "$(COMMIT_MSG_FILE)"
-
-pre-commit-prepare: ## Prepare and CodeGraph-sync the staged snapshot.
-	@CODEGRAPH=$(CODEGRAPH) $(TIMEOUT) node tools/hooks/prepare-staged.mjs
-
-pre-commit-structure: ## Check staged file and repository structure contracts.
-	@$(TIMEOUT) node tools/hooks/run-staged.mjs structure
-
-pre-commit-source-format: ## Check formatter output for staged source files.
-	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs format-source
-
-pre-commit-source-lint: ## Lint staged source files and Rust owners.
-	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs lint-source
-
-pre-commit-source-ast: ## Scan staged sources with applicable AST rules.
-	@$(TIMEOUT) node tools/hooks/run-staged.mjs ast-source
-
-pre-commit-source-analysis: ## Analyze only staged source files.
-	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs analysis-source
-
-pre-commit-test-format: ## Check formatter output for staged test files.
-	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs format-tests
-
-pre-commit-test-lint: ## Lint staged test files and new Rust owners.
-	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs lint-tests
-
-pre-commit-test-ast: ## Scan staged tests with applicable AST rules.
-	@$(TIMEOUT) node tools/hooks/run-staged.mjs ast-tests
-
-pre-commit-test-analysis: ## Analyze only staged test files.
-	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs analysis-tests
-
-pre-commit-domain-analysis: ## Reanalyze complete staged language domains.
-	@RUFF=$(RUFF) $(TIMEOUT) node tools/hooks/run-staged.mjs analysis-domain
-
-pre-commit-test: ## Run staged and conservatively affected domain tests.
-	@$(TIMEOUT) node tools/hooks/run-staged.mjs test
-
-pre-commit: pre-commit-prepare pre-commit-structure \
-	pre-commit-source-format pre-commit-source-lint pre-commit-source-ast \
-	pre-commit-source-analysis pre-commit-test-format pre-commit-test-lint \
-	pre-commit-test-ast pre-commit-test-analysis pre-commit-domain-analysis \
-	pre-commit-test
-pre-commit: ## Check the staged snapshot and its conservatively affected tests.
-
-pre-push: ## Verify, then build, every exact local commit tip being pushed.
-	@mkdir -p .cache/gates
-	@flock --exclusive .cache/gates/pre-push.lock node tools/hooks/pre-push.mjs
 
 include tools/gates/rust-lints.mk
 include tools/gates/environments.mk
+include tools/gates/hooks.mk

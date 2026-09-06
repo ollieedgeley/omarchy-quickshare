@@ -107,6 +107,20 @@ export function selectRustPackages(metadata, paths, workspaceRoot) {
   }
   return workspacePackages(metadata, workspaceRoot);
 }
+
+export function partitionRustTestPackages(packages) {
+  const app = [];
+  const libraries = [];
+  for (const pkg of packages) {
+    if (pkg.root === "crates/app") {
+      app.push(pkg);
+    } else {
+      libraries.push(pkg);
+    }
+  }
+  return { app, libraries };
+}
+
 function getExt(path) {
   const name = path.split("/").pop();
   const dot = name.lastIndexOf(".");

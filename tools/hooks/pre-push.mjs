@@ -2,9 +2,14 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { output, run } from "../gates/lib/process.mjs";
+import {
+  output,
+  run,
+  withoutRepositoryGitEnvironment,
+} from "../gates/lib/process.mjs";
 
-const ROOT = output("git", ["rev-parse", "--show-toplevel"]);
+const GIT_ENV = withoutRepositoryGitEnvironment(process.env);
+const ROOT = output("git", ["rev-parse", "--show-toplevel"], { env: GIT_ENV });
 const ZERO = /^0+$/u;
 const WHITESPACE_PATTERN = /\s+/u;
 const FIELD_COUNT = 4;
@@ -40,7 +45,7 @@ function readInput() {
 function exactEnvironment() {
   const nodeBin = join(ROOT, "node_modules", ".bin");
   return {
-    ...process.env,
+    ...GIT_ENV,
     AST_GREP: join(nodeBin, "ast-grep"),
     CARGO_MACHETE: join(
       ROOT,
@@ -72,10 +77,12 @@ export function verificationWorktree(cache) {
 function cleanVerificationWorktree(worktree, allowFailure = false) {
   run("git", ["-C", worktree, "reset", "--hard", "HEAD"], {
     cwd: ROOT,
+    env: GIT_ENV,
     allowFailure,
   });
   run("git", ["-C", worktree, "clean", "-ffdx"], {
     cwd: ROOT,
+    env: GIT_ENV,
     allowFailure,
   });
 }
@@ -83,16 +90,18 @@ function cleanVerificationWorktree(worktree, allowFailure = false) {
 function prepareVerificationWorktree(cache, safeCommit) {
   const worktree = verificationWorktree(cache);
   if (!existsSync(join(worktree, ".git"))) {
-    run("git", ["worktree", "prune"], { cwd: ROOT });
+    run("git", ["worktree", "prune"], { cwd: ROOT, env: GIT_ENV });
     rmSync(worktree, { recursive: true, force: true });
     run("git", ["worktree", "add", "--detach", worktree, safeCommit], {
       cwd: ROOT,
+      env: GIT_ENV,
     });
     return worktree;
   }
   cleanVerificationWorktree(worktree);
   run("git", ["-C", worktree, "checkout", "--detach", safeCommit], {
     cwd: ROOT,
+    env: GIT_ENV,
   });
   return worktree;
 }
@@ -106,6 +115,7 @@ async function main() {
   for (const commit of commits) {
     const safeCommit = output("git", ["rev-parse", `${commit}^{commit}`], {
       cwd: ROOT,
+      env: GIT_ENV,
     });
     const worktree = prepareVerificationWorktree(cache, safeCommit);
     const record = {

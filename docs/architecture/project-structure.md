@@ -199,6 +199,9 @@ Each `fuzz/<domain>` directory is an independent cargo-fuzz package and follows 
 
 `tools/oracle` owns the small C++ reference executable and its language-neutral command protocol. `tools/codegen` owns pinned protobuf generation. `tools/gates` owns quality-gate orchestration, `tools/hooks` owns the implementation behind the tracked Husky entry points, `tools/setup` owns reproducible development-tool provisioning, and `tools/release` produces local release artifacts. The root Makefile remains the only public project task interface.
 
+`tools/gates/hooks.mk` owns the hook target definitions and is included by the
+root Makefile. Hook commands remain part of that public Make interface.
+
 `upstream/google` contains only the exact source files and licenses required to generate or audit the Rust implementation. `sources.toml` records repository URLs, commits, paths, and hashes. Do not vendor complete Nearby, UKEY2, BlueZ, Android, or emulator repositories. Fetch their pinned trees into `.cache/` for oracle and simulation gates.
 
 Generated Rust is isolated under `crates/core/wire/src/generated/`. Project code may import it only through hand-written wire modules. Generated files are exempt from the line limit, but no project-authored logic belongs in them. Cargo build scripts may write only to `OUT_DIR`, as required by the official [build-script reference](https://doc.rust-lang.org/cargo/reference/build-scripts.html#outputs-of-the-build-script). Deliberate regeneration uses the local codegen target and produces a reviewable committed diff.

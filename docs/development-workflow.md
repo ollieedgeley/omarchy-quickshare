@@ -74,6 +74,14 @@ Git does not activate repository hook files merely because they are tracked. A d
 
 Hooks are non-interactive, check-only, and fail on the first unhandled error. They must not format files, update snapshots, stage changes, create commits, contact GitHub, or push. A nonzero pre-commit result aborts the commit, while a nonzero pre-push result aborts the push, as defined by the [official Git hook contract](https://git-scm.com/docs/githooks).
 
+Pre-commit retains the caller's exact Git index context internally, but removes
+repository-local Git environment variables from Cargo and Node test children.
+Pre-push removes the same variables from commands targeting its explicit
+worktree. The shared helper uses `git rev-parse --local-env-vars` to identify
+them, preserving transport and authentication variables. This prevents inherited
+repository settings from redirecting child Git operations into the caller's
+repository.
+
 Normal development must not use `--no-verify`. It bypasses the project's only automated verification before GitHub receives the change.
 
 ## OMP per-edit policy
@@ -112,7 +120,12 @@ Deleted files remain impact-analysis inputs even though exact-file formatting an
 
 ## Pre-commit gate order
 
-The top-level `make pre-commit` command is an aggregate and may exceed one minute. Each child test gate remains directly runnable, is listed in `make help`, and has the existing 60-second execution budget. Prepared-environment lifecycle time is measured separately under the connection-test policy.
+The top-level `make pre-commit` and affected-test `make pre-commit-test`
+commands are aggregates and may exceed one minute. Each real child test gate
+remains directly runnable, appears in `make help`, and retains one 60-second
+timeout around its entire invocation. Neither aggregate adds a timeout.
+Prepared-environment lifecycle time is measured separately under the
+connection-test policy.
 
 The public pre-commit sequence is prepare, structure, exact-file source
 format/lint/ast/analysis, exact-file test format/lint/ast/analysis,
@@ -131,10 +144,20 @@ Run child gates in this fail-fast order:
    `pre-commit-test-analysis` (analysis-tests).
 5. `pre-commit-domain-analysis` reruns applicable analyzers over every file in
    each repository domain touched by the staged change.
-6. Affected tests via `pre-commit-test` (test) using
+6. Affected tests via the `pre-commit-test` aggregate, serially and fail-fast:
+   `pre-commit-test-libraries`, `pre-commit-test-app`, then
+   `pre-commit-test-tooling`. Each computes the same full selection using
    `computeSelectionRecord` (records `{path,language,domain}` in
    stagedSources/stagedTests/extendedTests), `parseAffectedJson` (only affected
-   test paths), `packageSelection` (Rust owner/downstream packages).
+   test paths), and `packageSelection` (Rust owner/downstream packages).
+
+The library/shared-contract child runs every selected Rust package outside
+`crates/app`, including integration-only suites. The application child runs
+the selected `crates/app` package, including its library target. Both retain
+all-target, all-feature, locked Cargo tests and doc tests for packages with
+libraries. The tooling child runs the selected runnable Node tests.
+This split preserves the complete selected test union and the existing
+60-second limit for each real child; it drops no selected tests.
 
 Behavior development begins with the smallest in-process test at an external
 seam. Deterministic fakes, stubs, and mocks provide routine feedback, while the
@@ -298,9 +321,13 @@ The initial hook change must include contract fixtures for staged-only behavior,
   files with applicable tools, in that order.
 - `make pre-commit-domain-analysis` reruns applicable analyzers across every
   complete repository domain touched by the staged change.
-- `make pre-commit-test` runs directly staged and conservatively affected
-  domain tests selected from CodeGraph, repository ownership, and Cargo
-  metadata.
+- `make pre-commit-test` runs all selected tests through the library,
+  application, and tooling children, serially and fail-fast in that order.
+- `make pre-commit-test-libraries` runs selected Rust library/shared-contract
+  packages outside `crates/app`, including integration-only suites, within 60s.
+- `make pre-commit-test-app` runs the selected `crates/app` package's tests,
+  including its library target and doc tests, within 60s.
+- `make pre-commit-test-tooling` runs selected runnable Node tests within 60s.
 - `make lint-android` validates Android SDK, probe, and AVD pins; `make android-preflight` checks host and KVM support.
 - `make android-bootstrap` fetches pinned host tools; `make android-orchestrator-provision` prepares the pinned Mobly controller.
 - After `make android-license`, `make android-provision` prepares the SDK, probe, and AVDs; `make android-seed` records clean first boots.

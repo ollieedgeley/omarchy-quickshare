@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { describe, it } from "node:test";
 
-import blockMainGates from "../../../.omp/hooks/pre/block-main-gates.js";
+import blockMainGates from "../../../../.omp/hooks/pre/block-main-gates.js";
 import {
   analyzersForPaths,
   duplicationScanPaths,
   selectDomainPaths,
-} from "../lib/analysis.mjs";
+} from "../../lib/analysis.mjs";
 import {
   codeGraphAffectedArgs,
   computeSelectionRecord,
@@ -19,14 +20,15 @@ import {
   isTestPath,
   packageSelection,
   parseAffectedJson,
+  partitionRustTestPackages,
   selectRustPackages,
-} from "../../hooks/affected.mjs";
-import { validateCommitMessage } from "../../hooks/commit-msg.mjs";
-import { parseNameStatus } from "../../hooks/prepare-staged.mjs";
-import { pushedCommits } from "../../hooks/pre-push.mjs";
-import { parsePackageArgs } from "../rust-lints.mjs";
+} from "../../../hooks/affected.mjs";
+import { validateCommitMessage } from "../../../hooks/commit-msg.mjs";
+import { parseNameStatus } from "../../../hooks/prepare-staged.mjs";
+import { pushedCommits } from "../../../hooks/pre-push.mjs";
+import { parsePackageArgs } from "../../rust-lints.mjs";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const OVERLONG_SUBJECT_LENGTH = 70;
 const SHA_LENGTH = 40;
 const MALFORMED_COMMIT_TEST =
@@ -50,21 +52,6 @@ const CODEGRAPH_AFFECTED_TESTS_TEST =
   "CodeGraph candidate parsing uses the documented affectedTests field";
 const RUST_LINTS_DEDUPE_TEST =
   "rust-lints parser deduplicates packages and preserves workspace mode";
-const PRE_COMMIT_SOURCE_FORMAT_PATTERN = /pre-commit-source-format/u;
-const PRE_COMMIT_SOURCE_LINT_PATTERN = /pre-commit-source-lint/u;
-const PRE_COMMIT_SOURCE_AST_PATTERN = /pre-commit-source-ast/u;
-const PRE_COMMIT_TEST_FORMAT_PATTERN = /pre-commit-test-format/u;
-const PRE_COMMIT_TEST_LINT_PATTERN = /pre-commit-test-lint/u;
-const PRE_COMMIT_TEST_AST_PATTERN = /pre-commit-test-ast/u;
-const PRE_COMMIT_TEST_PATTERN = /pre-commit-test/u;
-const PRE_COMMIT_FORMAT_NEGATIVE_PATTERN = /pre-commit-format(?!-source)/u;
-const PRE_COMMIT_JAVASCRIPT_PATTERN = /pre-commit-javascript/u;
-const PRE_COMMIT_PYTHON_PATTERN = /pre-commit-python/u;
-const PRE_COMMIT_AST_NEGATIVE_PATTERN = /pre-commit-ast(?!-)/u;
-const PRE_COMMIT_RUST_PATTERN = /pre-commit-rust/u;
-const PRE_COMMIT_SOURCE_ANALYSIS_PATTERN = /pre-commit-source-analysis/u;
-const PRE_COMMIT_TEST_ANALYSIS_PATTERN = /pre-commit-test-analysis/u;
-const PRE_COMMIT_DOMAIN_ANALYSIS_PATTERN = /pre-commit-domain-analysis/u;
 const JSCPD_THRESHOLD = 5;
 const JSCPD_MINIMUM_LINES = 5;
 const JSCPD_MINIMUM_TOKENS = 50;
@@ -107,6 +94,24 @@ function makePrerequisites(source, target) {
     .join(" ");
 }
 
+function runMake(args) {
+  return spawnSync("make", ["--no-print-directory", ...args], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env: { ...process.env, MAKEFLAGS: "", MFLAGS: "" },
+  });
+}
+
+function makeOutput(args) {
+  const result = runMake(args);
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  return result.stdout;
+}
+
+function stagedModes(output) {
+  const pattern = /tools\/hooks\/run-staged\.mjs (?<mode>\S+)/gu;
+  return [...output.matchAll(pattern)].map((match) => match.groups.mode);
+}
 test("Conventional Commit validation accepts the project types", () => {
   assert.equal(
     typeof validateCommitMessage("build(hooks): install staged checks\n"),
@@ -217,6 +222,22 @@ test("Cargo selection identifies packages without doc-test targets", () => {
     ],
   );
 });
+test("Rust test partitions preserve app libraries and shared suites", () => {
+  const packages = [
+    { name: "core", root: "crates/core", hasLibrary: true },
+    { name: "app", root: "crates/app", hasLibrary: true },
+    { name: "suite", root: "tests/suites/contracts", hasLibrary: false },
+    { name: "transport", root: "crates/transport", hasLibrary: true },
+  ];
+  const [core, application, suite, transport] = packages;
+  const { app, libraries } = partitionRustTestPackages(packages);
+  assert.deepEqual(app, [application]);
+  assert.deepEqual(libraries, [core, suite, transport]);
+  assert.equal(app[0], application);
+  for (const [index, original] of [core, suite, transport].entries()) {
+    assert.equal(libraries[index], original);
+  }
+});
 
 test("pre-push selects unique non-deletion tips", () => {
   const sha = "1".repeat(SHA_LENGTH);
@@ -283,8 +304,9 @@ test("Python tooling selects all pinned Ruff rules", () => {
   assert.match(setup, RUFF_VERSION_PATTERN);
   assert.match(setup, RUFF_DIGEST_PATTERN);
   assert.match(makefile, RUFF_VERIFY_PATTERN);
-  assert.ok(makefile.includes("pre-commit-source-lint"));
-  assert.ok(makefile.includes("pre-commit-test-lint"));
+  const commands = stagedModes(makeOutput(["-n", "pre-commit"]));
+  assert.ok(commands.includes("lint-source"));
+  assert.ok(commands.includes("lint-tests"));
 });
 
 test("OMP blocks direct aggregate Make gates", () => {
@@ -348,43 +370,58 @@ test("rust-lints parser rejects unknown and positional arguments", () => {
   assert.throws(() => parsePackageArgs(["--package", "ok", "extra"]));
 });
 
-test("pre-commit uses ordered source and test phase targets", () => {
-  const makefile = readFileSync(join(ROOT, "Makefile"), "utf8");
-  const precommit = makePrerequisites(makefile, "pre-commit");
-  assert.match(precommit, PRE_COMMIT_SOURCE_FORMAT_PATTERN);
-  assert.match(precommit, PRE_COMMIT_SOURCE_LINT_PATTERN);
-  assert.match(precommit, PRE_COMMIT_SOURCE_AST_PATTERN);
-  assert.match(precommit, PRE_COMMIT_TEST_FORMAT_PATTERN);
-  assert.match(precommit, PRE_COMMIT_TEST_LINT_PATTERN);
-  assert.match(precommit, PRE_COMMIT_TEST_AST_PATTERN);
-  assert.match(precommit, PRE_COMMIT_SOURCE_ANALYSIS_PATTERN);
-  assert.match(precommit, PRE_COMMIT_TEST_ANALYSIS_PATTERN);
-  assert.match(precommit, PRE_COMMIT_DOMAIN_ANALYSIS_PATTERN);
-  const expectedOrder = [
-    "pre-commit-source-format",
-    "pre-commit-source-lint",
-    "pre-commit-source-ast",
-    "pre-commit-source-analysis",
-    "pre-commit-test-format",
-    "pre-commit-test-lint",
-    "pre-commit-test-ast",
-    "pre-commit-test-analysis",
-    "pre-commit-domain-analysis",
-    "pre-commit-test",
-  ];
-  const gates = precommit.split(WHITESPACE_PATTERN);
-  const positions = expectedOrder.map((gate) => gates.indexOf(gate));
-  assert.ok(positions.every((position) => position >= 0));
-  assert.deepEqual(
-    positions,
-    positions.toSorted((left, right) => left - right),
+test("pre-commit uses ordered source and test phase commands", () => {
+  const output = makeOutput(["-n", "pre-commit"]);
+  assert.ok(
+    output.indexOf("tools/hooks/prepare-staged.mjs") <
+      output.indexOf("tools/hooks/run-staged.mjs structure"),
   );
-  assert.match(precommit, PRE_COMMIT_TEST_PATTERN);
-  assert.doesNotMatch(precommit, PRE_COMMIT_FORMAT_NEGATIVE_PATTERN);
-  assert.doesNotMatch(precommit, PRE_COMMIT_JAVASCRIPT_PATTERN);
-  assert.doesNotMatch(precommit, PRE_COMMIT_PYTHON_PATTERN);
-  assert.doesNotMatch(precommit, PRE_COMMIT_AST_NEGATIVE_PATTERN);
-  assert.doesNotMatch(precommit, PRE_COMMIT_RUST_PATTERN);
+  assert.ok(output.includes("tools/hooks/prepare-staged.mjs"));
+  assert.deepEqual(stagedModes(output), [
+    "structure",
+    "format-source",
+    "lint-source",
+    "ast-source",
+    "analysis-source",
+    "format-tests",
+    "lint-tests",
+    "ast-tests",
+    "analysis-tests",
+    "analysis-domain",
+    "test-libraries",
+    "test-app",
+    "test-tooling",
+  ]);
+});
+
+test("staged test children each have one 60s bound and appear in help", () => {
+  const modes = ["test-libraries", "test-app", "test-tooling"];
+  const expected = modes.map(
+    (mode) =>
+      `timeout --foreground 60s node tools/hooks/run-staged.mjs ${mode}`,
+  );
+  for (const [index, mode] of modes.entries()) {
+    const output = makeOutput(["-n", `pre-commit-${mode}`]);
+    assert.equal(output.trim(), expected[index]);
+  }
+  const aggregate = makeOutput(["-n", "pre-commit-test"]);
+  assert.deepEqual(aggregate.trim().split("\n"), expected);
+  const help = makeOutput(["help"]);
+  for (const mode of modes) {
+    assert.ok(help.includes(`pre-commit-${mode}`), help);
+  }
+  assert.ok(help.includes("pre-commit-test "), help);
+});
+
+test("staged test aggregate stops before children after a failure", () => {
+  const command = [
+    'sh -c \'printf "%s\\n" "$$*";',
+    'case "$$*" in *test-app) exit 1;; esac',
+    "' --",
+  ].join(" ");
+  const result = runMake(["-j8", "pre-commit-test", `TIMEOUT=${command}`]);
+  assert.notEqual(result.status, 0, result.stderr);
+  assert.deepEqual(stagedModes(result.stdout), ["test-libraries", "test-app"]);
 });
 describe("codeGraphAffectedArgs", () => {
   it("passes every indexed language in one unfiltered affected query", () => {

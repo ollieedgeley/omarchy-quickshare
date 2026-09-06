@@ -7,7 +7,11 @@ import {
 } from "node:fs";
 import { join, relative } from "node:path";
 
-import { output, run } from "../gates/lib/process.mjs";
+import {
+  output,
+  run,
+  withoutRepositoryGitEnvironment,
+} from "../gates/lib/process.mjs";
 import {
   listProjectFiles,
   runAnalysis,
@@ -20,6 +24,7 @@ import {
   isCodeGraphIndexableSource,
   isRustInput,
   parseAffectedJson,
+  partitionRustTestPackages,
   selectRustPackages,
 } from "./affected.mjs";
 
@@ -337,7 +342,7 @@ function runPackageTests(packages) {
     return;
   }
   const cargoEnv = {
-    ...process.env,
+    ...withoutRepositoryGitEnvironment(process.env),
     CARGO_TARGET_DIR: join(ROOT, "target"),
   };
   const packageFlags = packages.flatMap((pkg) => ["--package", pkg.name]);
@@ -362,7 +367,7 @@ function runPackageTests(packages) {
   }
 }
 
-function runTests() {
+function runTests(scope) {
   const indexable = existing.filter(isCodeGraphIndexableSource);
   const graph = runCodeGraphAffected(indexable);
   const stagedSelection = computeSelectionRecord(paths);
@@ -388,11 +393,12 @@ function runTests() {
     packages,
     selection,
   });
-  if (hasRustInput) {
-    runPackageTests(packages);
+  if (scope !== "tooling") {
+    runPackageTests(partitionRustTestPackages(packages)[scope]);
+    return;
   }
   const testEnvironment = {
-    ...process.env,
+    ...withoutRepositoryGitEnvironment(process.env),
     AST_GREP: astGrep,
     CODEGRAPH: codegraph,
     NODE_BIN: nodeBin,
@@ -417,7 +423,9 @@ const handlers = {
   "lint-source": () => runLint(sourcePaths, "source"),
   "lint-tests": () => runLint(testPaths, "test"),
   structure: runStructure,
-  test: runTests,
+  "test-app": () => runTests("app"),
+  "test-libraries": () => runTests("libraries"),
+  "test-tooling": () => runTests("tooling"),
 };
 
 if (!handlers[mode]) {

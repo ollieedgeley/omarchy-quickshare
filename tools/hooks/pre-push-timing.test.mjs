@@ -34,6 +34,16 @@ function isolatedGitEnv(extra = {}) {
   return env;
 }
 
+function fixtureGit(root, args) {
+  const result = spawnSync("git", args, {
+    cwd: root,
+    encoding: "utf8",
+    env: isolatedGitEnv(),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
+
 function prepareRepository(root) {
   for (const file of [
     "tools/hooks/pre-push.mjs",
@@ -52,20 +62,22 @@ function prepareRepository(root) {
       'const fs = require("node:fs");',
       "const gate = process.argv[2];",
       'fs.appendFileSync(process.env.CALL_LOG, gate + "\\n");',
+      "if (process.env.OBSERVATION_LOG) {",
+      '  const { execFileSync } = require("node:child_process");',
+      "  const git = (...args) =>",
+      '    execFileSync("git", args, { encoding: "utf8" }).trim();',
+      "  fs.appendFileSync(process.env.OBSERVATION_LOG, JSON.stringify({",
+      '    gate, root: git("rev-parse", "--show-toplevel"),',
+      '    sha: git("rev-parse", "HEAD"),',
+      "    ssh: process.env.GIT_SSH_COMMAND,",
+      '  }) + "\\n");',
+      "}",
       "if (process.env.FAIL_GATE === gate) {",
       "  console.error(process.env.PRIVATE_TOKEN); process.exit(1);",
       "}",
     ].join("\n"),
   );
-  const git = (args) => {
-    const result = spawnSync("git", args, {
-      cwd: root,
-      encoding: "utf8",
-      env: isolatedGitEnv(),
-    });
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
+  const git = (args) => fixtureGit(root, args);
   git(["init", "--quiet"]);
   git(["add", "."]);
   git([
@@ -91,18 +103,21 @@ function fixture(context) {
   const update = `refs/heads/main ${sha} refs/heads/main ${deletion}\n`;
   const log = join(root, "calls.log");
   return {
-    invoke(failGate = "", input = update) {
+    invoke(failGate = "", input = update, env = {}) {
       return spawnSync(
         process.execPath,
         [join(root, "tools/hooks/pre-push.mjs")],
         {
           cwd: root,
           encoding: "utf8",
-          env: isolatedGitEnv({
-            CALL_LOG: log,
-            FAIL_GATE: failGate,
-            PRIVATE_TOKEN: SECRET,
-          }),
+          env: {
+            ...isolatedGitEnv({
+              CALL_LOG: log,
+              FAIL_GATE: failGate,
+              PRIVATE_TOKEN: SECRET,
+            }),
+            ...env,
+          },
           input,
         },
       );
@@ -205,5 +220,74 @@ test("pre-push replaces success with build failure", (context) => {
   assert.equal(
     readFileSync(repo.log, "utf8"),
     "verify\nbuild\nverify\nbuild\n",
+  );
+});
+
+function dirtyParent(repo) {
+  const git = (...args) => fixtureGit(repo.root, args);
+  writeFileSync(join(repo.root, "parent.txt"), "parent commit\n");
+  git("add", "parent.txt");
+  git(
+    "-c",
+    "user.name=Hook Test",
+    "-c",
+    "user.email=hook@example.invalid",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "commit",
+    "--quiet",
+    "-m",
+    "test: parent checkout",
+  );
+  writeFileSync(join(repo.root, "parent.txt"), "staged parent\n");
+  git("add", "parent.txt");
+  writeFileSync(join(repo.root, "parent.txt"), "unstaged parent\n");
+  writeFileSync(join(repo.root, "untracked.txt"), "keep untracked\n");
+}
+
+test("pre-push isolates verification from caller Git metadata", (context) => {
+  const repo = fixture(context);
+  const git = (...args) => fixtureGit(repo.root, args);
+  dirtyParent(repo);
+  const parentFiles = [
+    ".git/HEAD",
+    ".git/index",
+    ".git/config",
+    "parent.txt",
+    "untracked.txt",
+  ];
+  const before = parentFiles.map((file) => readFileSync(join(repo.root, file)));
+  const parentRef = git("symbolic-ref", "HEAD");
+  const parentTip = git("rev-parse", parentRef);
+  const observations = join(repo.root, "observations.jsonl");
+  const worktree = join(repo.root, ".cache", "gates", "pre-push-worktree");
+  const env = {
+    GIT_COMMON_DIR: join(repo.root, ".git"),
+    GIT_DIR: join(repo.root, ".git"),
+    GIT_INDEX_FILE: join(repo.root, ".git", "index"),
+    GIT_PREFIX: "",
+    GIT_SSH_COMMAND: "ssh -o BatchMode=yes",
+    GIT_WORK_TREE: repo.root,
+    OBSERVATION_LOG: observations,
+  };
+  const deletion = "0".repeat(repo.sha.length);
+  const input = `refs/heads/main ${repo.sha} refs/heads/main ${deletion}\n`;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = repo.invoke("", input, env);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(git("rev-parse", parentRef), parentTip);
+    assert.deepEqual(
+      parentFiles.map((file) => readFileSync(join(repo.root, file))),
+      before,
+    );
+  }
+  assert.deepEqual(
+    readFileSync(observations, "utf8").trim().split("\n").map(JSON.parse),
+    ["verify", "build", "verify", "build"].map((gate) => ({
+      gate,
+      root: worktree,
+      sha: repo.sha,
+      ssh: env.GIT_SSH_COMMAND,
+    })),
   );
 });
