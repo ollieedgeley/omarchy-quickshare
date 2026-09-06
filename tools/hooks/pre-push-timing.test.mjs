@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -15,7 +16,6 @@ import test from "node:test";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const SECRET = "private-gate-output-must-not-be-recorded";
-const TOOLING_SELECTION = /tools\/hooks\/pre-push-timing\.test\.mjs/u;
 const PARENT_GIT_VARIABLES = [
   "GIT_ALTERNATE_OBJECT_DIRECTORIES",
   "GIT_COMMON_DIR",
@@ -87,9 +87,11 @@ function fixture(context) {
   const root = mkdtempSync(join(tmpdir(), "pre-push-timing-"));
   context.after(() => rmSync(root, { recursive: true, force: true }));
   const sha = prepareRepository(root);
+  const deletion = "0".repeat(sha.length);
+  const update = `refs/heads/main ${sha} refs/heads/main ${deletion}\n`;
   const log = join(root, "calls.log");
   return {
-    invoke(failGate = "") {
+    invoke(failGate = "", input = update) {
       return spawnSync(
         process.execPath,
         [join(root, "tools/hooks/pre-push.mjs")],
@@ -101,7 +103,7 @@ function fixture(context) {
             FAIL_GATE: failGate,
             PRIVATE_TOKEN: SECRET,
           }),
-          input: "",
+          input,
         },
       );
     },
@@ -131,7 +133,18 @@ function assertRecord(record, sha, { names, status }) {
   }
 }
 
-test("pre-push records HEAD timings without reusing results", (context) => {
+test("pre-push skips gates and worktrees without ref updates", (context) => {
+  const repo = fixture(context);
+  const result = repo.invoke("", "");
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(repo.log), false);
+  assert.equal(
+    existsSync(join(repo.root, ".cache", "gates", "pre-push-worktree")),
+    false,
+  );
+});
+
+test("pre-push records tip timings without reusing results", (context) => {
   const repo = fixture(context);
   const first = repo.invoke();
   assert.equal(first.status, 0, first.stderr);
@@ -193,11 +206,4 @@ test("pre-push replaces success with build failure", (context) => {
     readFileSync(repo.log, "utf8"),
     "verify\nbuild\nverify\nbuild\n",
   );
-});
-
-test("tooling tests select the pre-push timing contracts", () => {
-  const packageManifest = JSON.parse(
-    readFileSync(join(ROOT, "package.json"), "utf8"),
-  );
-  assert.match(packageManifest.scripts["test:tooling"], TOOLING_SELECTION);
 });

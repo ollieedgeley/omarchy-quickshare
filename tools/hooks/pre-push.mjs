@@ -9,7 +9,7 @@ const ZERO = /^0+$/u;
 const WHITESPACE_PATTERN = /\s+/u;
 const FIELD_COUNT = 4;
 
-export function pushedCommits(input, fallbackHead) {
+export function pushedCommits(input) {
   const commits = new Set();
   for (const line of input.trim().split("\n").filter(Boolean)) {
     const fields = line.trim().split(WHITESPACE_PATTERN);
@@ -19,9 +19,6 @@ export function pushedCommits(input, fallbackHead) {
     if (!ZERO.test(fields[1])) {
       commits.add(fields[1]);
     }
-  }
-  if (!input.trim() && fallbackHead) {
-    commits.add(fallbackHead);
   }
   return [...commits];
 }
@@ -102,8 +99,7 @@ function prepareVerificationWorktree(cache, safeCommit) {
 
 async function main() {
   const input = await readInput();
-  const head = output("git", ["rev-parse", "HEAD"], { cwd: ROOT });
-  const commits = pushedCommits(input, head);
+  const commits = pushedCommits(input);
   const cache = join(ROOT, ".cache", "gates");
   mkdirSync(cache, { recursive: true });
 

@@ -243,7 +243,7 @@ Contract fixtures cover staged-mirror reuse, exact index bytes, partial Rust sta
 
 ## Pre-push verification and build
 
-The pre-push hook reads every ref update supplied by Git and resolves the unique local commit tips that will be sent. Deleted refs need no verification. For each remaining unique tree, reuse a stable isolated checkout of that exact commit and run:
+The pre-push hook reads every ref update supplied by Git and resolves the unique local commit tips that will be sent. Deleted refs need no verification. When Git supplies no ref updates, the hook skips verification and build without setting up a worktree. For each remaining unique tree, reuse a stable isolated checkout of that exact commit and run:
 
 ```text
 make verify
@@ -262,7 +262,7 @@ fast in-process tests before oracle, simulator, and virtual-system tests.
 
 `make verify` is the complete non-release suite defined by the Makefile policy. It includes formatting, compiler checks, Clippy, rustdoc, ast-grep, rule tests, unit tests, integration tests, oracle checks, fixture checks, packaging checks, and every reproducible simulator or virtual-system check described by the connection-test policy. Checks that need Linux capabilities or virtual radios must run non-interactively through a prepared local VM, container, or namespace. Physical-phone checks are manual only. Hooks, `make verify`, and `make build` must never attempt them.
 
-The hook stops on the first failed child gate and aborts the push. A successful result records the verified and built commit SHA, gate timings, build timing, and artifact paths. That local result is the final automated quality decision before GitHub receives the commit. After it passes, push normally to the approved GitHub remote. Never force-push as part of this workflow.
+The hook stops on the first failed child gate and aborts the push. It writes `.cache/gates/pre-push-<sha>.json` with the commit SHA, aggregate durations and statuses for `make verify` and `make build`, and artifact paths. Gate failures also overwrite the record. The record does not cache successful verification or measure individual child gates. A successful result is the final automated quality decision before GitHub receives the commit. After it passes, push normally to the approved GitHub remote. Never force-push as part of this workflow.
 
 ## Gate documentation
 

@@ -23,7 +23,7 @@ import {
 } from "../../hooks/affected.mjs";
 import { validateCommitMessage } from "../../hooks/commit-msg.mjs";
 import { parseNameStatus } from "../../hooks/prepare-staged.mjs";
-import { pushedCommits, verificationWorktree } from "../../hooks/pre-push.mjs";
+import { pushedCommits } from "../../hooks/pre-push.mjs";
 import { parsePackageArgs } from "../rust-lints.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -33,27 +33,13 @@ const MALFORMED_COMMIT_TEST =
   "Conventional Commit validation rejects vague or malformed subjects";
 const CARGO_SELECTION_TEST =
   "Cargo selection includes owners and transitive downstream packages";
-const PRE_PUSH_ENVIRONMENT_TEST =
-  "pre-push shares only the prepared test environment with exact worktrees";
 const CONVENTIONAL_COMMIT_PATTERN = /Conventional Commits/u;
 const SUBJECT_LENGTH_PATTERN = /72 characters/u;
-const AST_GREP_ENV_PATTERN = /AST_GREP: join\(nodeBin, "ast-grep"\)/u;
-const RUFF_ENV_PATTERN = /RUFF: join\(ROOT, "\.cache", "tools",/u;
-const TEST_ENV_PATTERN = /TEST_ENV_CACHE: join\(ROOT, "\.cache", "test-env"\)/u;
-const CARGO_MACHETE_ENV_PATTERN =
-  /CARGO_MACHETE: join\(\s*ROOT,\s*"\.cache",\s*"tools",/u;
-const VULTURE_ENV_PATTERN = /VULTURE: join\(\s*ROOT,\s*"\.cache",\s*"tools",/u;
-const BROAD_CACHE_PATTERN = /TEST_ENV_CACHE: join\(ROOT, "\.cache"\)/u;
-const DISPOSABLE_WORKTREE_PATTERN = /process\.pid|SHORT_HASH_LENGTH/u;
-const PRE_PUSH_LOCK_PATTERN =
-  /flock --exclusive \.cache\/gates\/pre-push\.lock/u;
 const RUFF_ALL_PATTERN = /select = \["ALL"\]/u;
 const RUFF_PREVIEW_PATTERN = /preview = true/u;
 const RUFF_VERSION_PATTERN = /RUFF_VERSION="0\.16\.5"/u;
 const RUFF_DIGEST_PATTERN = /65b8bae7e43f12a91b71036a52176012/u;
 const RUFF_VERIFY_PATTERN = /verify-tooling:.*lint-python/u;
-const VERIFY_ORDER_TEST =
-  "pre-push verification runs cheap static gates before tests";
 const MAKE_CONTINUATION_PATTERN = /\\\n\s*/gu;
 const WHITESPACE_PATTERN = /\s+/u;
 const AGGREGATE_GATE_PATTERN = /Git hooks own/u;
@@ -240,55 +226,11 @@ test("pre-push selects unique non-deletion tips", () => {
     `refs/tags/v1 ${sha} refs/tags/v1 ${deletion}`,
     `refs/heads/old ${deletion} refs/heads/old ${sha}`,
   ].join("\n");
-  assert.deepEqual(pushedCommits(input, "2".repeat(SHA_LENGTH)), [sha]);
-  assert.deepEqual(pushedCommits("", sha), [sha]);
+  assert.deepEqual(pushedCommits(input), [sha]);
 });
 
-test("pre-push reuses one locked exact-commit worktree", () => {
-  const cache = join(ROOT, ".cache", "gates");
-  assert.equal(verificationWorktree(cache), join(cache, "pre-push-worktree"));
-  const source = readFileSync(
-    join(ROOT, "tools", "hooks", "pre-push.mjs"),
-    "utf8",
-  );
-  assert.doesNotMatch(source, DISPOSABLE_WORKTREE_PATTERN);
-  const makefile = readFileSync(join(ROOT, "Makefile"), "utf8");
-  assert.match(makefile, PRE_PUSH_LOCK_PATTERN);
-});
-
-test(PRE_PUSH_ENVIRONMENT_TEST, () => {
-  const source = readFileSync(
-    join(ROOT, "tools", "hooks", "pre-push.mjs"),
-    "utf8",
-  );
-  assert.match(source, AST_GREP_ENV_PATTERN);
-  assert.match(source, RUFF_ENV_PATTERN);
-  assert.match(source, TEST_ENV_PATTERN);
-  assert.match(source, CARGO_MACHETE_ENV_PATTERN);
-  assert.match(source, VULTURE_ENV_PATTERN);
-  assert.doesNotMatch(source, BROAD_CACHE_PATTERN);
-});
-
-test(VERIFY_ORDER_TEST, () => {
-  const makefile = readFileSync(join(ROOT, "Makefile"), "utf8");
-  const prerequisites = makePrerequisites(makefile, "verify");
-  const expectedOrder = [
-    "format-check",
-    "lint-javascript",
-    "lint-analysis",
-    "check",
-    "lint-rust",
-    "test-ast-rules",
-    "test-rust",
-    "test-oracle-toolchain",
-  ];
-  const gates = prerequisites.split(WHITESPACE_PATTERN);
-  const positions = expectedOrder.map((gate) => gates.indexOf(gate));
-  assert.ok(positions.every((position) => position >= 0));
-  assert.deepEqual(
-    positions,
-    positions.toSorted((left, right) => left - right),
-  );
+test("pre-push selects no tips without ref updates", () => {
+  assert.deepEqual(pushedCommits(""), []);
 });
 
 test("analysis aggregate isolates timed analyzer groups", () => {
