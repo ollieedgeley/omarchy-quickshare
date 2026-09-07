@@ -167,6 +167,8 @@ where
             let response = exchange(socket_path, &request)?;
             if let Response::Queued { share_id } = response.response() {
                 writeln!(output, "Share {share_id} queued.")
+            } else if matches!(response.response(), Response::NotFound) {
+                write_action(output, response.response())
             } else {
                 Err(io::Error::new(
                     io::ErrorKind::InvalidData,

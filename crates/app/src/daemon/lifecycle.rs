@@ -263,6 +263,7 @@ impl Daemon {
             }
             Request::SimulatePeerSeen { name, peer_id } => {
                 self.sharing.observe_peer(peer_id, name);
+                self.pin_if_configured(peer_id);
                 true
             }
             Request::SimulateComplete { share_id } => {

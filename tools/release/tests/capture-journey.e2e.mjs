@@ -229,18 +229,29 @@ for (const preference of [
 }
 
 for (const automatic of [false, true]) {
-  for (const peerProjection of ["drop", "replace", "reorder"]) {
-    test(`selection: ${peerProjection} P, auto=${automatic}`, async () => {
+  for (const peerEvent of ["drop", "replace"]) {
+    test(`selection: ${peerEvent} P, auto=${automatic}`, async () => {
       await runJourney({
         automatic,
         captureFirst: false,
         consume: true,
         explicitPending: !automatic,
-        peerProjection,
+        peerEvent,
+        submissionMode: "observe",
         type: "text",
       });
     });
   }
+  test(`selection: reorder P, auto=${automatic}`, async () => {
+    await runJourney({
+      automatic,
+      captureFirst: false,
+      consume: true,
+      explicitPending: !automatic,
+      peerProjection: "reorder",
+      type: "text",
+    });
+  });
 }
 
 for (const automatic of [false, true]) {
@@ -261,7 +272,22 @@ for (const automatic of [false, true]) {
       automatic,
       captureFirst: true,
       consume: true,
-      peerProjection: "appear",
+      peerEvent: "appear",
+      submissionMode: "observe",
+      type: "text",
+    });
+  });
+}
+
+for (const automatic of [false, true]) {
+  test(`active: actual conflict rejection, auto=${automatic}`, async () => {
+    await runJourney({
+      automatic,
+      captureFirst: true,
+      conflict: true,
+      consume: true,
+      contentCase: "next",
+      submissionMode: "observe",
       type: "text",
     });
   });

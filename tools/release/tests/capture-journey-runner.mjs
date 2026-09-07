@@ -73,6 +73,7 @@ function prepare(root, journey) {
   return {
     harness: join(harness, "capture-harness.qml"),
     env: headlessEnvironment(root, {
+      OMARCHY_QUICKSHARE_ALLOW_SIMULATION: "1",
       PATH: `${native}:${process.env.PATH ?? ""}`,
       PROJECTION_ACTIVE: join(root, "projection.active"),
       QUICKSHARE_REAL_BINARY: BINARY,
@@ -104,6 +105,7 @@ function prepareClipboard(root, prepared, journey) {
       journey.invalidate ||
       journey.peerChange ||
       journey.peerProjection ||
+      journey.peerEvent ||
       journey.duplicates ||
       journey.explicitPending ||
       journey.explicitFailure ||
@@ -127,6 +129,7 @@ function prepareJourney(root, journey) {
     "existing-path": "captured A.txt",
     file: `file://${file}`,
     flag: "--help",
+    next: "next independent B",
     text: "captured A\nexact bytes",
     url: "https://example.test/A?exact=%20&x=1",
   }[journey.contentCase ?? type];
@@ -146,16 +149,29 @@ function prepareJourney(root, journey) {
   if (
     journey.recover ||
     journey.peerChange ||
-    journey.peerProjection === "drop" ||
-    journey.peerProjection === "replace"
+    journey.peerEvent === "drop" ||
+    journey.peerEvent === "replace"
   ) {
     peer = "galaxy-tab";
   }
   const capture = { ...journey, attachment, peer, value };
   prepared.env.CAPTURE_JOURNEY = JSON.stringify(capture);
   writeFileSync(prepared.env.SUBMISSION_ATTEMPTS, "");
+  writeFileSync(`${prepared.env.SUBMISSION_ATTEMPTS}.proof`, "");
   prepareClipboard(root, prepared, capture);
   return { ...prepared, attachment, peer };
+}
+function assertSubmissionAttempts(journey, prepared) {
+  if (journey.submissionMode || journey.peerProjection || journey.duplicates) {
+    let expectedAttempts = "send\n";
+    if (journey.failSubmission || journey.conflict) {
+      expectedAttempts += "send\n";
+    }
+    assert.equal(
+      readFileSync(prepared.env.SUBMISSION_ATTEMPTS, "utf8"),
+      expectedAttempts,
+    );
+  }
 }
 function assertJourneyOutcome(prepared, journey) {
   const status = spawnSync(BINARY, ["status", "--json"], {
@@ -195,17 +211,28 @@ function assertJourneyOutcome(prepared, journey) {
     expectedReads = "read\n";
   }
   assert.equal(readFileSync(prepared.env.CLIPBOARD_LOG, "utf8"), expectedReads);
-  if (journey.submissionMode || journey.peerProjection || journey.duplicates) {
-    let expectedAttempts = "send\n";
-    if (journey.failSubmission) {
-      expectedAttempts += "send\n";
-    }
-    assert.equal(
-      readFileSync(prepared.env.SUBMISSION_ATTEMPTS, "utf8"),
-      expectedAttempts,
-    );
-  }
+  assertSubmissionAttempts(journey, prepared);
 }
+
+function actualStatus(prepared) {
+  const result = spawnSync(BINARY, ["status", "--json"], {
+    encoding: "utf8",
+    env: prepared.env,
+  });
+  return `\nACTUAL_STATUS\n${result.stdout ?? ""}${result.stderr ?? ""}`;
+}
+
+function harnessOutput(result, prepared, journey) {
+  let output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  if (journey.conflict) {
+    output += readFileSync(`${prepared.env.SUBMISSION_ATTEMPTS}.proof`, "utf8");
+  }
+  if (result.status !== 0) {
+    output += actualStatus(prepared);
+  }
+  return output;
+}
+
 export async function runJourney(journey) {
   const root = mkdtempSync(join(tmpdir(), "quickshare-capture-"));
   const prepared = prepareJourney(root, journey);
@@ -240,7 +267,7 @@ export async function runJourney(journey) {
         timeout: HARNESS_TIMEOUT_MS,
       },
     );
-    const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    const output = harnessOutput(result, prepared, journey);
     assert.equal(result.status, 0, output);
     assert.match(output, SUCCESS_PATTERN);
     assertJourneyOutcome(prepared, journey);

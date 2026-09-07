@@ -78,7 +78,7 @@ impl Envelope {
         }
     }
 
-    /// Creates a response for a share identifier that is not active.
+    /// Creates a response for an action unavailable in the current state.
     #[must_use]
     #[inline]
     pub const fn not_found() -> Self {
@@ -158,7 +158,7 @@ pub enum Response {
     Applied,
     /// The endpoint cancelled the requested share.
     Cancelled,
-    /// No active share matched the requested identifier.
+    /// The requested action is unavailable in the current state.
     NotFound,
     /// The endpoint's current preference status.
     Preferences {

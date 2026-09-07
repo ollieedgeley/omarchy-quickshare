@@ -219,6 +219,13 @@ impl Daemon {
                 &self.preferences,
             )),
             Request::Status => Ok(ResponseEnvelope::ready()),
+            Request::SubmitFile { .. }
+            | Request::SubmitText { .. }
+            | Request::SubmitUrl { .. }
+                if self.has_active_share() =>
+            {
+                Ok(ResponseEnvelope::not_found())
+            }
             Request::SubmitFile { path, peer_id } => {
                 let share_id = self.queue_file(path, peer_id.as_deref())?;
                 Ok(self.queued_response(share_id, peer_id.as_deref()))

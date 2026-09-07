@@ -10,7 +10,34 @@ if (args[0] === "send") {
   writeFileSync(process.env.SUBMISSION_ATTEMPTS, "send\n", { flag: "a" });
 }
 
+function executeConflictingSend() {
+  const binary = process.env.QUICKSHARE_REAL_BINARY;
+  const before = spawnSync(binary, ["status", "--json"], {
+    encoding: "utf8",
+  }).stdout;
+  const result = spawnSync(binary, args, { encoding: "utf8" });
+  const after = spawnSync(binary, ["status", "--json"], {
+    encoding: "utf8",
+  }).stdout;
+  writeFileSync(
+    `${process.env.SUBMISSION_ATTEMPTS}.proof`,
+    JSON.stringify({
+      after,
+      before,
+      exitCode: result.status,
+      stderr: result.stderr,
+      stdout: result.stdout,
+    }),
+  );
+  process.stdout.write(result.stdout ?? "");
+  process.stderr.write(result.stderr ?? "");
+  return result.status ?? 1;
+}
+
 function execute() {
+  if (args[0] === "send" && journey.conflict) {
+    return executeConflictingSend();
+  }
   const result = spawnSync(process.env.QUICKSHARE_REAL_BINARY, args, {
     stdio: "inherit",
   });
@@ -28,14 +55,11 @@ function projectStatus() {
   }
   const response = JSON.parse(result.stdout);
   const { snapshot } = response.response;
+  if (journey.conflict) {
+    Reflect.set(snapshot, "active_share", null);
+  }
   if (journey.peerProjection === "reorder") {
     snapshot.peers.reverse();
-  } else {
-    const original = snapshot.peers.find((peer) => peer.id === "pixel-8");
-    snapshot.peers = snapshot.peers.filter((peer) => peer.id !== "pixel-8");
-    if (journey.peerProjection === "replace" && original) {
-      snapshot.peers.unshift({ ...original, id: "replacement-for-pixel-8" });
-    }
   }
   process.stdout.write(JSON.stringify(response));
   return 0;
@@ -52,13 +76,21 @@ function waitForRelease(complete) {
 }
 
 let projectionActive = existsSync(process.env.PROJECTION_ACTIVE);
-if (journey.peerProjection === "appear") {
+if (journey.conflict) {
   projectionActive = !projectionActive;
 }
 
-if (args[0] === "status" && journey.peerProjection && projectionActive) {
+if (
+  args[0] === "status" &&
+  (journey.peerProjection || journey.conflict) &&
+  projectionActive
+) {
   process.exitCode = projectStatus();
-} else if (args[0] !== "send" || !process.env.SUBMISSION_MODE) {
+} else if (
+  args[0] !== "send" ||
+  !process.env.SUBMISSION_MODE ||
+  process.env.SUBMISSION_MODE === "observe"
+) {
   process.exitCode = execute();
 } else if (process.env.SUBMISSION_MODE === "after") {
   const status = execute();

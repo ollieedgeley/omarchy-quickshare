@@ -64,14 +64,8 @@ impl Daemon {
         }
     }
 
-    pub(crate) fn admit_inbound(
-        &mut self,
-        attachment: Attachment,
-        peer_id: &str,
-        size_bytes: Option<u64>,
-        consent: Arc<PendingConsent>,
-    ) -> Option<u64> {
-        if self.sharing.snapshot().active_share().is_some_and(|share| {
+    pub(crate) fn has_active_share(&self) -> bool {
+        self.sharing.snapshot().active_share().is_some_and(|share| {
             matches!(
                 share.phase(),
                 Phase::WaitingForPeer
@@ -79,7 +73,17 @@ impl Daemon {
                     | Phase::AwaitingPeerConsent
                     | Phase::Transferring
             )
-        }) {
+        })
+    }
+
+    pub(crate) fn admit_inbound(
+        &mut self,
+        attachment: Attachment,
+        peer_id: &str,
+        size_bytes: Option<u64>,
+        consent: Arc<PendingConsent>,
+    ) -> Option<u64> {
+        if self.has_active_share() {
             let _rejected = consent.reject(0);
             return None;
         }

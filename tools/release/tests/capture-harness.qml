@@ -11,7 +11,10 @@ ShellRoot {
   property bool failureObserved: false
   property int failureSnapshots: 0
   property string lastPeerId: ""
+  property string lastPeerName: ""
   property bool duplicateCompletionObserved: false
+  property bool nativeActionDone: false
+  property string externalShareId: ""
   readonly property var journey:
     JSON.parse(Quickshell.env("CAPTURE_JOURNEY"))
 
@@ -23,6 +26,15 @@ ShellRoot {
       if (found) return found
     }
     return null
+  }
+
+  function runNativeAction(arguments, nextStep) {
+    nativeActionDone = false
+    nativeTransition.command = [
+      Quickshell.env("QUICKSHARE_REAL_BINARY"),
+    ].concat(arguments)
+    root.step = nextStep
+    nativeTransition.running = true
   }
 
 
@@ -45,7 +57,7 @@ ShellRoot {
     path: journey.replacement || journey.invalidate || journey.peerChange
       || journey.explicitPending || journey.timeoutReplacement
       || journey.providedEmpty || journey.explicitFailure
-      || journey.peerProjection || journey.duplicates
+      || journey.peerProjection || journey.peerEvent || journey.duplicates
       || (journey.preference && journey.automatic)
       ? Quickshell.env("CLIPBOARD_STARTED") : ""
     printErrors: false
@@ -60,6 +72,13 @@ ShellRoot {
         widget.open()
         releaseClipboard.running = true
         root.step = 3
+        return
+      }
+      if (journey.peerEvent) {
+        root.lastPeerName = root.panel.peers.find(function(peer) {
+          return peer.id === "pixel-8"
+        }).name
+        root.runNativeAction(["simulate", "peer-lost", "pixel-8"], 30)
         return
       }
       if (journey.peerProjection) {
@@ -98,7 +117,9 @@ ShellRoot {
 
   FileView {
     id: submissionStarted
-    path: journey.submissionMode ? Quickshell.env("SUBMISSION_STARTED") : ""
+    path: journey.submissionMode === "before"
+      || journey.submissionMode === "after"
+      ? Quickshell.env("SUBMISSION_STARTED") : ""
     printErrors: false
     onLoaded: {
       if (root.step !== 2 || text() !== "started") return
@@ -136,10 +157,21 @@ ShellRoot {
   }
   FileView {
     id: submissionAttempts
-    path: journey.failSubmission || journey.peerProjection
+    path: journey.failSubmission || journey.peerProjection || journey.conflict
+      || journey.peerEvent
       ? Quickshell.env("SUBMISSION_ATTEMPTS") : ""
     printErrors: false
     onLoaded: {
+      if (root.step === 22) {
+        if (text() !== "send\n") {
+          console.error("Rejected conflict retried without user intent")
+          Qt.exit(3)
+          return
+        }
+        activateProjection.running = true
+        root.step = 23
+        return
+      }
       if (root.step === 16) {
         if (text() !== "") {
           console.error("Vanished recipient triggered submission")
@@ -190,14 +222,30 @@ ShellRoot {
 
   Process {
     id: configurePreferred
-    command: ["env", "omarchy-quickshare", "peer", "pin", "pixel-8"]
+    command: [
+      "env", "omarchy-quickshare", "config", "set", "pinned_peer_id", "pixel-8",
+    ]
     onExited: function(code) {
       if (code !== 0) {
         console.error("Preferred peer configuration failed")
         Qt.exit(3)
         return
       }
-      activateProjection.running = true
+      root.runNativeAction([
+        "simulate", "peer-seen", "pixel-8", root.lastPeerName,
+      ], 33)
+    }
+  }
+
+  Process {
+    id: nativeTransition
+    onExited: function(code) {
+      if (code !== 0) {
+        console.error("Authoritative native transition failed", root.step, code)
+        Qt.exit(3)
+        return
+      }
+      root.nativeActionDone = true
     }
   }
 
@@ -219,6 +267,9 @@ ShellRoot {
           active: root.panel ? root.panel.activeShare : null,
           error: root.panel ? root.panel.actionError : "",
           actionBusy: root.panel ? root.panel.actionBusy : false,
+          peers: root.panel ? root.panel.peers : [],
+          nativeAction: nativeTransition.command,
+          nativeActionDone: root.nativeActionDone,
         }))
         Qt.exit(2)
         return
@@ -250,20 +301,91 @@ ShellRoot {
           root.step = 2
         }
       } else if (root.step === 1 && !root.panel.actionBusy) {
-        if (journey.peerProjection === "appear") {
-          if (root.panel.peers.some(function(peer) {
+        if (journey.conflict) {
+          root.runNativeAction([
+            "send", "--clipboard", "--peer", "galaxy-tab", "--",
+            "active frozen A",
+          ], 20)
+          return
+        }
+        if (journey.peerEvent === "appear") {
+          root.lastPeerName = root.panel.peers.find(function(peer) {
             return peer.id === "pixel-8"
-          })) {
-            console.error("Preferred arrival fixture did not hide P")
-            Qt.exit(3)
-            return
-          }
-          configurePreferred.running = true
-          root.step = 18
+          }).name
+          root.runNativeAction(["simulate", "peer-lost", "pixel-8"], 32)
           return
         }
         root.panel.choosePeer("pixel-8")
         root.step = 2
+      } else if (root.step === 30 && root.nativeActionDone) {
+        if (journey.peerEvent === "replace") {
+          root.runNativeAction([
+            "simulate", "peer-seen", "replacement-for-pixel-8",
+            root.lastPeerName,
+          ], 31)
+        } else root.step = 14
+      } else if (root.step === 31 && root.nativeActionDone) {
+        root.step = 14
+      } else if (root.step === 32 && root.nativeActionDone) {
+        if (root.panel.peers.some(function(peer) {
+          return peer.id === "pixel-8"
+        })) return
+        configurePreferred.running = true
+        root.step = 18
+      } else if (root.step === 33 && root.nativeActionDone) {
+        root.step = 18
+      } else if (root.step === 20 && root.nativeActionDone) {
+        root.panel.choosePeer(journey.peer)
+        root.step = 21
+      } else if (root.step === 21 && !root.panel.actionBusy) {
+        if (!widget.showPasteBadge
+            || widget.clipboardPreview !== journey.value) {
+          console.error("Conflicting send consumed its capture")
+          Qt.exit(3)
+          return
+        }
+        if (root.panel.actionError.length === 0) return
+        if (!root.failureObserved) {
+          root.failureObserved = true
+          root.failureSnapshots = 0
+        }
+        if (root.failureSnapshots < 1) return
+        root.step = 22
+        submissionAttempts.reload()
+      } else if (root.step === 23 && root.panel.activeShareId.length > 0) {
+        if (root.panel.activeShare.attachment.value !== "active frozen A"
+            || root.panel.activeShare.peer.id !== "galaxy-tab") {
+          console.error("Conflicting submission replaced authoritative A")
+          Qt.exit(3)
+          return
+        }
+        root.externalShareId = root.panel.activeShareId
+        widget.close()
+        widget.open()
+        root.step = 24
+      } else if (root.step === 24 && !root.panel.actionBusy) {
+        if (widget.showPasteBadge || widget.clipboardPreview.length > 0
+            || root.panel.activeShareId !== root.externalShareId
+            || root.panel.activeShare.attachment.value !== "active frozen A") {
+          console.error("Reopen replayed capture or changed admitted A")
+          Qt.exit(3)
+          return
+        }
+        root.paste()
+        root.runNativeAction(["share", "cancel", root.externalShareId], 25)
+      } else if (root.step === 25 && root.nativeActionDone
+          && root.panel.phase === "cancelled") {
+        if (!widget.showPasteBadge
+            || widget.clipboardPreview !== journey.value) {
+          console.error("Terminal event discarded independent capture")
+          Qt.exit(3)
+          return
+        }
+        root.runNativeAction(["share", "dismiss", root.externalShareId], 26)
+      } else if (root.step === 26 && root.nativeActionDone
+          && root.panel.activeShareId.length === 0 && !root.panel.actionBusy) {
+        root.panel.choosePeer(journey.peer)
+        root.step = 4
       } else if (root.step === 18) {
         var preferred = root.panel.peers.find(function(peer) {
           return peer.id === "pixel-8"
@@ -298,7 +420,7 @@ ShellRoot {
           root.step = 4
           return
         }
-        if (hasP || (journey.peerProjection === "replace" && !replacement)) {
+        if (hasP || (journey.peerEvent === "replace" && !replacement)) {
           return
         }
         releaseClipboard.running = true
@@ -340,14 +462,16 @@ ShellRoot {
         if (root.failureSnapshots < 2) return
         root.paste()
         root.step = 4
-      } else if (root.step === 2 && journey.submissionMode) {
+      } else if (root.step === 2
+          && (journey.submissionMode === "before"
+            || journey.submissionMode === "after")) {
         submissionStarted.reload()
       } else if (root.step === 2
           && (journey.replacement || journey.invalidate
             || journey.peerChange || journey.explicitPending
             || journey.timeoutReplacement || journey.providedEmpty
             || journey.explicitFailure
-            || journey.peerProjection || journey.duplicates
+            || journey.peerProjection || journey.peerEvent || journey.duplicates
             || (journey.preference && journey.automatic))) {
         clipboardStarted.reload()
       } else if (root.step === 5 && !root.panel.actionBusy) {
@@ -460,7 +584,8 @@ ShellRoot {
         if (root.failureSnapshots < 2) return
         root.step = 8
         submissionAttempts.reload()
-      } else if (root.step >= 2 && root.panel.activeShareId.length > 0) {
+      } else if (root.step >= 2 && root.panel.activeShareId.length > 0
+          && (!journey.conflict || root.step === 4)) {
         var share = root.panel.activeShare
         var expected = journey.attachment
         var actual = share.attachment

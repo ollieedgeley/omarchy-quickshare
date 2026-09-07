@@ -56,6 +56,7 @@ if (process.env.CLIPBOARD_REPLACEMENT === "true" && previousReads === "") {
       } else if (
         journey.explicitPending ||
         journey.peerProjection ||
+        journey.peerEvent ||
         journey.duplicates
       ) {
         process.stdout.write(journey.value);
