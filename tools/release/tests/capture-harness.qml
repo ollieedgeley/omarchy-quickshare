@@ -176,6 +176,13 @@ ShellRoot {
           && !root.panel.actionBusy && root.panel.activeShareId.length === 0) {
         console.error("LITERAL_NOT_ADMITTED")
         Qt.exit(3)
+      } else if (root.step === 2 && journey.readTimeout
+          && !widget.clipboardBusy && root.panel.actionError.length > 0) {
+        if (root.panel.activeShareId.length > 0 || widget.showPasteBadge) {
+          throw new Error("Timed-out clipboard capture admitted content")
+        }
+        root.paste()
+        root.step = 4
       } else if (root.step === 2 && !journey.captureFirst
           && !journey.automatic) {
         if (root.panel.activeShareId.length > 0 || widget.clipboardBusy) {

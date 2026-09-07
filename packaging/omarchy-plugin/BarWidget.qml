@@ -84,6 +84,7 @@ BarWidget {
   }
 
   function finishClipboard(value) {
+    clipboardDeadline.stop()
     if (pendingClipboardAction.length > 0) {
       var pending = pendingClipboardAction
       pendingClipboardAction = ""
@@ -121,6 +122,7 @@ BarWidget {
     clipboardAction = action
     clipboardPeerId = String(peerId || "")
     clipboardOutput = ""
+    clipboardDeadline.restart()
     clipboardUriProbe.running = true
     return true
   }
@@ -160,7 +162,10 @@ BarWidget {
         root.finishClipboard("")
         return
       }
-      if (root.clipboardAction.length === 0) return
+      if (root.clipboardAction.length === 0) {
+        clipboardDeadline.stop()
+        return
+      }
       if (exitCode === 0 && root.clipboardOutput.length > 0) {
         root.finishClipboard(root.clipboardOutput)
         return
@@ -178,6 +183,23 @@ BarWidget {
     }
     onExited: function(exitCode) {
       root.finishClipboard(exitCode === 0 ? root.clipboardOutput : "")
+    }
+  }
+
+  Timer {
+    id: clipboardDeadline
+    interval: 3000
+    onTriggered: {
+      if (root.clipboardAction.length > 0
+          && root.pendingClipboardAction.length === 0) {
+        status.actionError =
+          "Clipboard capture timed out. Paste again to retry."
+      }
+      root.clipboardAction = ""
+      root.clipboardOutput = ""
+      root.clipboardPeerId = ""
+      root.clipboardUriProbe.running = false
+      root.clipboardTextProbe.running = false
     }
   }
 

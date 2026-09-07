@@ -95,8 +95,30 @@ async function waitForDaemon(binary, environment, attempts) {
   await waitForDaemon(binary, environment, attempts - 1);
 }
 
+function prepareClipboard(root, prepared, journey) {
+  const { automatic, captureFirst, value } = journey;
+  prepared.env.CLIPBOARD_LOG = join(root, "clipboard.log");
+  prepared.env.CLIPBOARD_STARTED = join(root, "clipboard.started");
+  prepared.env.CLIPBOARD_RELEASE = join(root, "clipboard.release");
+  prepared.env.CLIPBOARD_REPLACEMENT = String(
+    Boolean(
+      journey.replacement ||
+      journey.invalidate ||
+      journey.peerChange ||
+      journey.explicitPending ||
+      journey.readTimeout,
+    ),
+  );
+  prepared.env.CLIPBOARD_FAILURE = String(journey.failReplacement === true);
+  writeFileSync(prepared.env.CLIPBOARD_LOG, "");
+  prepared.env.CLIPBOARD_VALUE = "changed B";
+  if (!captureFirst && automatic && !journey.explicitPending) {
+    prepared.env.CLIPBOARD_VALUE = value;
+  }
+}
+
 function prepareJourney(root, journey) {
-  const { automatic, captureFirst, type } = journey;
+  const { type } = journey;
   const prepared = prepare(root, journey);
   const file = join(root, "captured A.txt");
   const value = {
@@ -122,27 +144,9 @@ function prepareJourney(root, journey) {
   if (journey.recover || journey.peerChange) {
     peer = "galaxy-tab";
   }
-  prepared.env.CAPTURE_JOURNEY = JSON.stringify({
-    ...journey,
-    attachment,
-    peer,
-    value,
-  });
-  prepared.env.CLIPBOARD_LOG = join(root, "clipboard.log");
-  prepared.env.CLIPBOARD_STARTED = join(root, "clipboard.started");
-  prepared.env.CLIPBOARD_RELEASE = join(root, "clipboard.release");
-  prepared.env.CLIPBOARD_REPLACEMENT = String(
-    journey.replacement === true ||
-      Boolean(journey.invalidate) ||
-      journey.peerChange === true ||
-      journey.explicitPending === true,
-  );
-  prepared.env.CLIPBOARD_FAILURE = String(journey.failReplacement === true);
-  writeFileSync(prepared.env.CLIPBOARD_LOG, "");
-  prepared.env.CLIPBOARD_VALUE = "changed B";
-  if (!captureFirst && automatic && !journey.explicitPending) {
-    prepared.env.CLIPBOARD_VALUE = value;
-  }
+  const capture = { ...journey, attachment, peer, value };
+  prepared.env.CAPTURE_JOURNEY = JSON.stringify(capture);
+  prepareClipboard(root, prepared, capture);
   return { ...prepared, attachment, peer };
 }
 
@@ -370,6 +374,16 @@ test("pending explicit capture prevents automatic competition", async () => {
     captureFirst: false,
     consume: true,
     explicitPending: true,
+    type: "text",
+  });
+});
+
+test("a stalled clipboard read permits deliberate recovery", async () => {
+  await runJourney({
+    automatic: true,
+    captureFirst: false,
+    consume: true,
+    readTimeout: true,
     type: "text",
   });
 });
