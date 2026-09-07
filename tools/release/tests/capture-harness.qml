@@ -8,6 +8,8 @@ ShellRoot {
   property int step: 0
   property var panel: null
   property int waitingChecks: 0
+  property bool failureObserved: false
+  property int failureSnapshots: 0
   readonly property var journey:
     JSON.parse(Quickshell.env("CAPTURE_JOURNEY"))
 
@@ -64,6 +66,11 @@ ShellRoot {
     printErrors: false
     onLoaded: {
       if (root.step !== 2 || text() !== "started") return
+      if (journey.failSubmission) {
+        removeCapture.running = true
+        root.step = 6
+        return
+      }
       var next = journey.newer === "same"
         ? journey.value : "next independent B"
       widget.paste(next)
@@ -74,6 +81,45 @@ ShellRoot {
   Process {
     id: releaseSubmission
     command: ["touch", Quickshell.env("SUBMISSION_RELEASE")]
+  }
+
+  Process {
+    id: removeCapture
+    command: ["rm", Quickshell.env("CAPTURE_FILE")]
+    onExited: function(code) {
+      if (code !== 0) throw new Error("Fixture file removal failed")
+      releaseSubmission.running = true
+      root.step = 7
+    }
+  }
+  Connections {
+    target: root.panel
+    function onSnapshotChanged() {
+      if (root.failureObserved) root.failureSnapshots += 1
+    }
+  }
+  FileView {
+    id: submissionAttempts
+    path: journey.failSubmission ? Quickshell.env("SUBMISSION_ATTEMPTS") : ""
+    printErrors: false
+    onLoaded: {
+      if (root.step !== 8) return
+      if (text() !== "send\n") throw new Error("Failed dispatch retried itself")
+      restoreCapture.running = true
+      root.step = 9
+    }
+  }
+  Process {
+    id: restoreCapture
+    command: [
+      "cp", Quickshell.env("CAPTURE_RESTORE_FILE"),
+      Quickshell.env("CAPTURE_FILE"),
+    ]
+    onExited: function(code) {
+      if (code !== 0) throw new Error("Fixture file restore failed")
+      root.panel.choosePeer(journey.peer)
+      root.step = 10
+    }
   }
 
   Timer {
@@ -162,6 +208,19 @@ ShellRoot {
         }
         console.log("HARNESS_OK failed replacement waits without fallback")
         Qt.quit()
+      } else if (root.step === 7 && !root.panel.actionBusy
+          && root.panel.actionError.length > 0) {
+        if (!widget.showPasteBadge || widget.clipboardPreview !== journey.value
+            || root.panel.activeShareId.length > 0) {
+          throw new Error("Failed admission did not retain independent capture")
+        }
+        if (!root.failureObserved) {
+          root.failureObserved = true
+          root.failureSnapshots = 0
+        }
+        if (root.failureSnapshots < 2) return
+        root.step = 8
+        submissionAttempts.reload()
       } else if (root.step >= 2 && root.panel.activeShareId.length > 0) {
         var share = root.panel.activeShare
         var expected = journey.attachment

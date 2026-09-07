@@ -5,6 +5,10 @@ import { existsSync, writeFileSync } from "node:fs";
 const POLL_MS = 10;
 const args = process.argv.slice(2);
 
+if (args[0] === "send") {
+  writeFileSync(process.env.SUBMISSION_ATTEMPTS, "send\n", { flag: "a" });
+}
+
 function execute() {
   const result = spawnSync(process.env.QUICKSHARE_REAL_BINARY, args, {
     stdio: "inherit",

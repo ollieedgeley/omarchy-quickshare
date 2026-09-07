@@ -77,6 +77,7 @@ function prepare(root, journey) {
     env: headlessEnvironment(root, {
       PATH: `${native}:${process.env.PATH ?? ""}`,
       QUICKSHARE_REAL_BINARY: BINARY,
+      SUBMISSION_ATTEMPTS: join(root, "submission.attempts"),
       SUBMISSION_MODE: journey.submissionMode || "",
       SUBMISSION_RELEASE: join(root, "submission.release"),
       SUBMISSION_STARTED: join(root, "submission.started"),
@@ -98,18 +99,19 @@ function prepareJourney(root, journey) {
   const { automatic, captureFirst, type } = journey;
   const prepared = prepare(root, journey);
   const file = join(root, "captured A.txt");
-  let value = {
+  const value = {
+    "existing-path": "captured A.txt",
     file: `file://${file}`,
+    flag: "--help",
     text: "captured A\nexact bytes",
     url: "https://example.test/A?exact=%20&x=1",
-  }[type];
-  if (journey.contentCase === "flag") {
-    value = "--help";
-  }
-  if (journey.contentCase === "existing-path") {
-    value = "captured A.txt";
-  }
+  }[journey.contentCase ?? type];
   writeFileSync(file, "exact file bytes");
+  if (journey.failSubmission) {
+    prepared.env.CAPTURE_FILE = file;
+    prepared.env.CAPTURE_RESTORE_FILE = join(root, "restore.txt");
+    copyFileSync(file, prepared.env.CAPTURE_RESTORE_FILE);
+  }
   let attachment = { type, value };
   if (type === "file") {
     attachment = JSON.parse(
@@ -172,6 +174,12 @@ function assertJourneyOutcome(prepared, journey) {
     expectedReads = "read\n";
   }
   assert.equal(readFileSync(prepared.env.CLIPBOARD_LOG, "utf8"), expectedReads);
+  if (journey.failSubmission) {
+    assert.equal(
+      readFileSync(prepared.env.SUBMISSION_ATTEMPTS, "utf8"),
+      "send\nsend\n",
+    );
+  }
 }
 
 async function runJourney(journey) {
@@ -329,5 +337,16 @@ test("closed-panel Paste never sends to a preferred peer", async () => {
     captureFirst: true,
     closedPaste: true,
     type: "text",
+  });
+});
+
+test("failed dispatch retains capture for deliberate retry", async () => {
+  await runJourney({
+    automatic: false,
+    captureFirst: true,
+    consume: true,
+    failSubmission: true,
+    submissionMode: "before",
+    type: "file",
   });
 });
