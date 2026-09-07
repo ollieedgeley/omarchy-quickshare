@@ -251,7 +251,7 @@ test("Rust crypto inputs select the enabled oracle integration only", () => {
 test("fixture inputs select actual Cargo consumers across languages", () => {
   const cases = [
     [
-      "tests/fixtures/control/v5/status-request.jsonl",
+      "tests/fixtures/control/v6/status-request.jsonl",
       [
         "crates/app/tests/daemon_process/process_contract.rs",
         "tests/suites/contracts/tests/suite/control_contract.rs",

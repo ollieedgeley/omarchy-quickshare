@@ -186,8 +186,14 @@ omarchy-quickshare health
 omarchy-quickshare status --json
 ```
 
-`protocol-version` prints `5`. That is the only control protocol this tree
-speaks. `status --json` writes one versioned envelope. Selected fields for a
+`protocol-version` prints `6`. This local compatibility version covers the
+control messages and CLI capture semantics, not Google's on-wire protocol.
+Version 6 adds `send --clipboard --peer P -- VALUE`. Captured HTTP(S) URLs
+and text retain their exact bytes; explicit local file URIs and URI lists
+select files, validated at send time. Plain clipboard text never becomes a
+file just because it matches a path in the CLI's working directory.
+Manual `send` without `--clipboard` keeps path autodetection.
+`status --json` writes one versioned envelope. Selected fields for a
 transferring file look like:
 
 ```json
@@ -218,7 +224,7 @@ transferring file look like:
       }
     }
   },
-  "version": 5
+  "version": 6
 }
 ```
 
@@ -325,8 +331,9 @@ Supported keys are `device_name`, `receive_directory`, `pinned_peer_id`,
 `discoverable` defaults to `false`. Turning it on permits inbound discovery
 without a countdown; turning it off closes inbound permission and cancels
 pending consent. Neither action interrupts an accepted transfer.
-`read_clipboard_on_select` remains a stored preference for the later clipboard
-policy change.
+`read_clipboard_on_select` defaults to `false`: selecting a recipient waits
+for Paste. When enabled, selection reads once only if nothing is captured.
+An existing capture wins; opening the panel never reads the clipboard.
 
 ```sh
 omarchy-quickshare config show
@@ -385,9 +392,11 @@ bindd = SUPER SHIFT, S, Quick Share paste, exec, sh -c 'value=$(wl-paste --type 
 bindd = SUPER SHIFT, Q, Quick Share panel, exec, omarchy shell io.github.ollieedgeley.omarchy-quickshare open
 ```
 
-Paste sends clipboard text, a URL, or one copied file or folder. If no
-peer is pinned, the panel opens so you can choose one. The panel-open
-bind does not send. You can also click .
+Paste captures clipboard text, a URL, or one copied file or folder. A closed
+panel opens for preparation without selecting a preferred peer or sending.
+Selecting a recipient sends the captured value; pasting after selection also
+sends when no share is active. The panel-open bind does not capture or send.
+You can also click the Quick Share icon.
 
 ## Evidence
 

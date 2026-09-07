@@ -45,8 +45,8 @@ const QUICKSHELL_VERSION_PATTERN = /^Quickshell 0\.3\.1\b/u;
 const SUCCESS_PATTERN = /HARNESS_OK/u;
 const SOURCE_COMMIT = "a".repeat(COMMIT_LENGTH);
 const SHA256_LENGTH = 64;
-const CONTROL_PROTOCOL = 5;
-const REJECTED_PROTOCOL = 4;
+const CONTROL_PROTOCOL = 6;
+const REJECTED_PROTOCOL = 5;
 const EXPECTED_FILES = [
   "AttachmentBadge.qml",
   "BarWidget.qml",
@@ -110,7 +110,7 @@ function prepareHarness(root) {
     `#!/usr/bin/env bash
 set -Eeuo pipefail
 case "\${1-}" in
-  protocol-version) printf '5' ;;
+  protocol-version) printf '${CONTROL_PROTOCOL}' ;;
   health) ;;
   status)
     printf '%s' '{"response":{"type":"snapshot","snapshot":{' \\
@@ -118,7 +118,7 @@ case "\${1-}" in
       '"temporary":false,"remaining_secs":null,"available_media":[],' \\
       '"error":null}},' \\
       '"preferences":{"saved":null,"applied":null,' \\
-      '"pending":false,"error":null}},"version":5}'
+      '"pending":false,"error":null}},"version":${CONTROL_PROTOCOL}}'
     ;;
   *)
     printf '%s\\n' "$*" >> "\${QUICKSHARE_TEST_LOG:?}"
@@ -268,7 +268,7 @@ test("Quick Shell runtime matches the supported version", () => {
   assert.match(output, QUICKSHELL_VERSION_PATTERN);
 });
 
-test("Quick Shell exercises availability and busy paste integration", () => {
+test("Quick Shell exercises availability and protocol compatibility", () => {
   const prepared = prepareHarness(temporaryDirectory());
   const result = spawnSync(QUICKSHELL, ["--no-color", "-p", prepared.harness], {
     encoding: "utf8",
@@ -282,10 +282,6 @@ test("Quick Shell exercises availability and busy paste integration", () => {
 
   assert.equal(result.status, 0, output);
   assert.match(output, SUCCESS_PATTERN);
-  assert.equal(
-    readFileSync(prepared.actionLog, "utf8").trim(),
-    "send first-paste",
-  );
 });
 
 test("Quick Shell renders safe transfer states and exact controls", () => {

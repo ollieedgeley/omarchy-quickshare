@@ -199,15 +199,14 @@ QtObject {
     runAction(["share", "select", String(shareId), String(peerId)])
   }
 
-  function submit(value) {
-    return runAction(["send", String(value)])
-  }
 
   function submitTo(peerId, value) {
     return runAction([
       "send",
+      "--clipboard",
       "--peer",
       String(peerId),
+      "--",
       String(value),
     ])
   }

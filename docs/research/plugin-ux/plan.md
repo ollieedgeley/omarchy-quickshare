@@ -6,6 +6,14 @@ Status: historical research proposal, not approved implementation. Subsequent us
 
 The approved four-feature UX breakdown and twelve local tickets are indexed at `.scratch/quickshare-ux-plan.md`, following `.scratch/workflow.md`. They require automatic save/apply, clipboard-on-select default Off, capture/selection-triggered sending, and panel-lifetime discovery. Closing the panel ends outbound browse intent; there is no separate Stop/Search again interaction. The ten-minute inbound discoverability control remains separate. Source findings below remain research evidence; ticket publication does not authorize application changes.
 
+F2.1 supersedes the clipboard and preferred-selection proposals below:
+
+- A captured value, not a later clipboard read, supplies the selected share.
+- Clipboard-on-select is opt-in. Opening and pin changes do not capture or send.
+- Preferred does not count as selected. Closed-panel Paste opens preparation without sending.
+- Close, Clear, and preparation Cancel clear captured content and invalidate late reads. Close and Cancel also clear selection.
+- Admission consumes only its capture. Failed submission retains it for deliberate retry.
+
 ## What the user is asking for
 
 1. One main panel for sending and receiving, with Settings at the top right. Every durable setting lives in a config file. Discoverability has On/Off settings, plus a clearly indicated ten-minute window available from the main panel when Off.

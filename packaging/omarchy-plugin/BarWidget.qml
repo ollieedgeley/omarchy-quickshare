@@ -10,14 +10,16 @@ BarWidget {
 
   property bool popupOpen: false
   property bool popoutSwitchClosing: false
-  property bool pasteLatch: false
-  property bool pasteActionComplete: false
-  property bool pastePending: false
+  property var capturedContent: null
+  property var submittedCapture: null
+  readonly property bool pasteLatch: capturedContent !== null
   property string clipboardAction: ""
   property string pendingClipboardAction: ""
+  property int captureGeneration: 0
   property string clipboardOutput: ""
   property string clipboardPeerId: ""
-  property string clipboardPreview: ""
+  readonly property string clipboardPreview:
+    capturedContent ? capturedContent.value : ""
   property string selectedPeerId: ""
   readonly property bool readClipboardOnSelect:
     status.appliedPreferences.read_clipboard_on_select === true
@@ -43,7 +45,7 @@ BarWidget {
 
   function close() {
     popupOpen = false
-    selectedPeerId = ""
+    clearPasteBadge()
   }
 
   function closeForPopoutSwitch() {
@@ -64,8 +66,11 @@ BarWidget {
   }
 
   function clearPasteBadge() {
-    pasteLatch = false
-    clipboardPreview = ""
+    captureGeneration += 1
+    clipboardAction = ""
+    pendingClipboardAction = ""
+    selectedPeerId = ""
+    capturedContent = null
   }
 
   function captureClipboard(value) {
@@ -73,8 +78,7 @@ BarWidget {
       status.actionError = "Clipboard is empty or unavailable."
       return false
     }
-    clipboardPreview = String(value)
-    pasteLatch = true
+    capturedContent = {value: String(value)}
     status.actionError = ""
     return true
   }
@@ -83,8 +87,11 @@ BarWidget {
     if (pendingClipboardAction.length > 0) {
       var pending = pendingClipboardAction
       pendingClipboardAction = ""
+      var generation = captureGeneration
       Qt.callLater(function() {
-        root.readClipboard(pending, root.selectedPeerId)
+        if (generation === root.captureGeneration) {
+          root.readClipboard(pending, root.selectedPeerId)
+        }
       })
       return
     }
@@ -119,18 +126,15 @@ BarWidget {
     selectedPeerId = ""
     if (!status.submitTo(peerId, clipboardPreview)) {
       status.actionError = "Quick Share is busy. Select a device to try again."
+      return
     }
+    submittedCapture = capturedContent
   }
 
   function paste(value) {
-    if (opened) {
-      if (!captureClipboard(value)) return "empty"
-      submitCaptured()
-      return "ok"
-    }
-    if (!status.submit(value)) return "busy"
-    pasteActionComplete = false
-    pastePending = true
+    if (!opened) open()
+    if (!captureClipboard(value)) return "empty"
+    submitCaptured()
     return "ok"
   }
 
@@ -139,11 +143,6 @@ BarWidget {
 
   StatusProbe { id: status }
 
-  Shortcut {
-    enabled: root.opened
-    sequences: [StandardKey.Paste]
-    onActivated: root.readClipboard("preview", "")
-  }
 
   property Process clipboardUriProbe: Process {
     command: ["wl-paste", "--type", "text/uri-list", "--no-newline"]
@@ -156,6 +155,7 @@ BarWidget {
         root.finishClipboard("")
         return
       }
+      if (root.clipboardAction.length === 0) return
       if (exitCode === 0 && root.clipboardOutput.length > 0) {
         root.finishClipboard(root.clipboardOutput)
         return
@@ -180,24 +180,14 @@ BarWidget {
     target: status
 
     function onActionFinished(succeeded) {
-      if (!root.pastePending) return
-      if (succeeded) {
-        root.pasteActionComplete = true
-        return
+      var submitted = root.submittedCapture
+      if (submitted === null) return
+      root.submittedCapture = null
+      if (succeeded && root.capturedContent === submitted) {
+        root.capturedContent = null
       }
-      root.pastePending = false
-      root.pasteActionComplete = false
-      root.open()
     }
 
-    function onEndpointSnapshotChanged() {
-      if (!root.pastePending || !root.pasteActionComplete) return
-      var share = status.endpointSnapshot.active_share || ({})
-      var phase = String(share.phase || "")
-      root.pastePending = false
-      root.pasteActionComplete = false
-      if (phase === "waiting_for_peer") root.open()
-    }
   }
 
   IpcHandler {
@@ -288,6 +278,12 @@ BarWidget {
         if (text === "p" || text === "P") sharePanel.toggleSelectedPin()
       }
 
+      Shortcut {
+        enabled: root.opened
+        sequences: [StandardKey.Paste]
+        onActivated: root.readClipboard("preview", "")
+      }
+
       Column {
         id: panelColumn
         width: parent.width
@@ -335,7 +331,9 @@ BarWidget {
             status.accept(shareId)
           }
           onCancelRequested: function(shareId) {
-            status.cancel(shareId)
+            root.clearPasteBadge()
+            if (shareId.length > 0) status.cancel(shareId)
+            else status.stopDiscovery()
           }
           onDismissRequested: function(shareId) {
             root.clearPasteBadge()

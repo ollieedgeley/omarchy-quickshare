@@ -8,6 +8,7 @@ mod tests {
     use std::fs;
     use std::io::{self, BufReader};
     use std::io::{BufRead as _, Write as _};
+    use std::net::Shutdown;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
     use std::process;
@@ -16,18 +17,18 @@ mod tests {
     use omarchy_quickshare::daemon::Daemon;
 
     const REQUEST_FIXTURE: &str = include_str!(
-        "../../../../fixtures/control/v5/submit-text-request.jsonl"
+        "../../../../fixtures/control/v6/submit-text-request.jsonl"
     );
     const RESPONSE_FIXTURE: &str = include_str!(
-        "../../../../fixtures/control/v5/submit-text-queued-response.jsonl"
+        "../../../../fixtures/control/v6/submit-text-queued-response.jsonl"
     );
     const URL_REQUEST_FIXTURE: &str = include_str!(
-        "../../../../fixtures/control/v5/submit-url-request.jsonl"
+        "../../../../fixtures/control/v6/submit-url-request.jsonl"
     );
     const STATUS_REQUEST_FIXTURE: &str =
-        include_str!("../../../../fixtures/control/v5/status-request.jsonl");
+        include_str!("../../../../fixtures/control/v6/status-request.jsonl");
     const STATUS_RESPONSE_FIXTURE: &str = include_str!(
-        "../../../../fixtures/control/v5/status-ready-response.jsonl"
+        "../../../../fixtures/control/v6/status-ready-response.jsonl"
     );
     const EXPECTED_OUTPUT: &[u8] = b"Share 1 queued.\n";
     static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
@@ -42,6 +43,12 @@ mod tests {
         root: PathBuf,
         socket: PathBuf,
         worker: JoinHandle<io::Result<Daemon>>,
+    }
+
+    struct EndpointListenerFixture {
+        listener: UnixListener,
+        root: PathBuf,
+        socket: PathBuf,
     }
 
     struct FileFixture {
@@ -99,6 +106,30 @@ mod tests {
         }
     }
 
+    impl EndpointListenerFixture {
+        fn bind() -> io::Result<Self> {
+            let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+            let root = env::temp_dir().join(format!(
+                "omarchy-quickshare-running-{}-{sequence}",
+                process::id()
+            ));
+            fs::create_dir_all(&root)?;
+            let socket = root.join("control.sock");
+            let listener = UnixListener::bind(&socket)?;
+            Ok(Self {
+                listener,
+                root,
+                socket,
+            })
+        }
+
+        fn disconnect_client(&self, request: &str) -> io::Result<()> {
+            let mut client = UnixStream::connect(&self.socket)?;
+            client.write_all(request.as_bytes())?;
+            client.shutdown(Shutdown::Both)
+        }
+    }
+
     impl LocalEndpointFixture {
         fn finish(self) -> io::Result<Daemon> {
             let endpoint = self.worker.join().map_err(|_panic| {
@@ -113,14 +144,11 @@ mod tests {
         }
 
         fn start() -> io::Result<Self> {
-            let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let root = env::temp_dir().join(format!(
-                "omarchy-quickshare-endpoint-{}-{sequence}",
-                process::id()
-            ));
-            fs::create_dir_all(&root)?;
-            let socket = root.join("control.sock");
-            let listener = UnixListener::bind(&socket)?;
+            let EndpointListenerFixture {
+                listener,
+                root,
+                socket,
+            } = EndpointListenerFixture::bind()?;
             let worker = thread::spawn(move || {
                 let mut endpoint = Daemon::new();
                 endpoint.serve_next(&listener)?;
@@ -205,7 +233,7 @@ mod tests {
         let path = fixture.root.join(".").to_string_lossy().into_owned();
         let expected = format!(
             "{{\"request\":{{\"type\":\"submit_file\",\"path\":\"{path}\"}},\
-             \"version\":5}}\n"
+             \"version\":6}}\n"
         );
         assert_submission_from(".", &fixture.root, &expected);
         let cleanup_result = fixture.cleanup();
@@ -227,7 +255,7 @@ mod tests {
         let path = fixture.path.to_string_lossy();
         let expected = format!(
             "{{\"request\":{{\"type\":\"submit_file\",\"path\":\"{path}\"}},\
-             \"version\":5}}\n"
+             \"version\":6}}\n"
         );
         assert_submission_from("photo.jpg", &fixture.root, &expected);
         let cleanup_result = fixture.cleanup();
@@ -314,20 +342,36 @@ mod tests {
     }
 
     #[test]
-    fn local_endpoint_remains_ready_across_control_connections() {
-        let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-        let root = env::temp_dir().join(format!(
-            "omarchy-quickshare-running-{}-{sequence}",
-            process::id()
-        ));
-        let create_result = fs::create_dir_all(&root);
-        assert!(create_result.is_ok(), "failed to create endpoint fixture");
-        let socket = root.join("control.sock");
-        let listener_result = UnixListener::bind(&socket);
-        assert!(listener_result.is_ok(), "failed to bind endpoint fixture");
-        let Ok(listener) = listener_result else {
-            return;
-        };
+    fn local_endpoint_remains_ready_across_control_connections()
+    -> io::Result<()> {
+        let fixture = EndpointListenerFixture::bind()?;
+        assert_endpoint_remains_ready(fixture);
+        Ok(())
+    }
+
+    #[test]
+    fn local_endpoint_survives_client_closed_before_response() -> io::Result<()>
+    {
+        let fixture = EndpointListenerFixture::bind()?;
+        fixture.disconnect_client(STATUS_REQUEST_FIXTURE)?;
+        assert_endpoint_remains_ready(fixture);
+        Ok(())
+    }
+
+    #[test]
+    fn local_endpoint_survives_empty_disconnected_client() -> io::Result<()> {
+        let fixture = EndpointListenerFixture::bind()?;
+        fixture.disconnect_client("")?;
+        assert_endpoint_remains_ready(fixture);
+        Ok(())
+    }
+
+    fn assert_endpoint_remains_ready(fixture: EndpointListenerFixture) {
+        let EndpointListenerFixture {
+            listener,
+            root,
+            socket,
+        } = fixture;
         let stopped = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stopped);
         let worker = thread::spawn(move || {

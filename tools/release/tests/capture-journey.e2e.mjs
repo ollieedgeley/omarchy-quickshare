@@ -40,7 +40,7 @@ const FILES = [
   "release.json",
 ];
 
-function prepare(root) {
+function prepare(root, journey) {
   const harness = join(root, "harness");
   const native = join(root, "bin");
   mkdirSync(harness);
@@ -59,7 +59,16 @@ function prepare(root) {
     join(ROOT, "tools/release/tests/capture-harness.qml"),
     join(harness, "capture-harness.qml"),
   );
-  symlinkSync(BINARY, join(native, "omarchy-quickshare"));
+  const executable = join(native, "omarchy-quickshare");
+  if (journey.submissionMode) {
+    copyFileSync(
+      join(ROOT, "tools/release/tests/submission-process-fake.mjs"),
+      executable,
+    );
+    chmodSync(executable, EXECUTABLE_MODE);
+  } else {
+    symlinkSync(BINARY, executable);
+  }
   const clipboard = join(native, "wl-paste");
   copyFileSync(join(ROOT, "tools/release/tests/clipboard-fake.mjs"), clipboard);
   chmodSync(clipboard, EXECUTABLE_MODE);
@@ -67,6 +76,10 @@ function prepare(root) {
     harness: join(harness, "capture-harness.qml"),
     env: headlessEnvironment(root, {
       PATH: `${native}:${process.env.PATH ?? ""}`,
+      QUICKSHARE_REAL_BINARY: BINARY,
+      SUBMISSION_MODE: journey.submissionMode || "",
+      SUBMISSION_RELEASE: join(root, "submission.release"),
+      SUBMISSION_STARTED: join(root, "submission.started"),
     }),
   };
 }
@@ -83,13 +96,19 @@ async function waitForDaemon(binary, environment, attempts) {
 
 function prepareJourney(root, journey) {
   const { automatic, captureFirst, type } = journey;
-  const prepared = prepare(root);
+  const prepared = prepare(root, journey);
   const file = join(root, "captured A.txt");
-  const value = {
+  let value = {
     file: `file://${file}`,
     text: "captured A\nexact bytes",
     url: "https://example.test/A?exact=%20&x=1",
   }[type];
+  if (journey.contentCase === "flag") {
+    value = "--help";
+  }
+  if (journey.contentCase === "existing-path") {
+    value = "captured A.txt";
+  }
   writeFileSync(file, "exact file bytes");
   let attachment = { type, value };
   if (type === "file") {
@@ -97,25 +116,29 @@ function prepareJourney(root, journey) {
       '{"type":"file","name":"captured A.txt","size_bytes":16}',
     );
   }
+  let peer = "pixel-8";
+  if (journey.recover) {
+    peer = "galaxy-tab";
+  }
   prepared.env.CAPTURE_JOURNEY = JSON.stringify({
+    ...journey,
     attachment,
-    automatic,
-    captureFirst,
-    failReplacement: journey.failReplacement === true,
-    replacement: journey.replacement === true,
+    peer,
     value,
   });
   prepared.env.CLIPBOARD_LOG = join(root, "clipboard.log");
   prepared.env.CLIPBOARD_STARTED = join(root, "clipboard.started");
   prepared.env.CLIPBOARD_RELEASE = join(root, "clipboard.release");
-  prepared.env.CLIPBOARD_REPLACEMENT = String(journey.replacement === true);
+  prepared.env.CLIPBOARD_REPLACEMENT = String(
+    journey.replacement === true || Boolean(journey.invalidate),
+  );
   prepared.env.CLIPBOARD_FAILURE = String(journey.failReplacement === true);
   writeFileSync(prepared.env.CLIPBOARD_LOG, "");
   prepared.env.CLIPBOARD_VALUE = "changed B";
   if (!captureFirst && automatic) {
     prepared.env.CLIPBOARD_VALUE = value;
   }
-  return { ...prepared, attachment };
+  return { ...prepared, attachment, peer };
 }
 
 function assertJourneyOutcome(prepared, journey) {
@@ -125,11 +148,15 @@ function assertJourneyOutcome(prepared, journey) {
   });
   assert.equal(status.status, 0, status.stderr);
   const share = JSON.parse(status.stdout).response.snapshot.active_share;
-  if (journey.failReplacement) {
+  if (
+    journey.closedPaste ||
+    journey.failReplacement ||
+    (journey.invalidate && !journey.recover)
+  ) {
     assert.equal(share, null);
   } else {
     assert.deepEqual(share.attachment, prepared.attachment);
-    assert.equal(share.peer.id, "pixel-8");
+    assert.equal(share.peer.id, prepared.peer);
   }
   let expectedReads = "";
   if (!journey.captureFirst && journey.automatic) {
@@ -140,6 +167,9 @@ function assertJourneyOutcome(prepared, journey) {
   }
   if (journey.failReplacement) {
     expectedReads = "read\nread\nread\n";
+  }
+  if (journey.invalidate) {
+    expectedReads = "read\n";
   }
   assert.equal(readFileSync(prepared.env.CLIPBOARD_LOG, "utf8"), expectedReads);
 }
@@ -161,10 +191,22 @@ async function runJourney(journey) {
       { env: prepared.env, encoding: "utf8" },
     );
     assert.equal(setting.status, 0, setting.stderr);
+    if (journey.closedPaste) {
+      const pin = spawnSync(BINARY, ["peer", "pin", "pixel-8"], {
+        env: prepared.env,
+        encoding: "utf8",
+      });
+      assert.equal(pin.status, 0, pin.stderr);
+    }
     const result = spawnSync(
       process.env.QUICKSHELL ?? "quickshell",
       ["--no-color", "-p", prepared.harness],
-      { env: prepared.env, encoding: "utf8", timeout: HARNESS_TIMEOUT_MS },
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: prepared.env,
+        timeout: HARNESS_TIMEOUT_MS,
+      },
     );
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
     assert.equal(result.status, 0, output);
@@ -203,6 +245,89 @@ test("failed explicit replacement cannot fall back to auto", async () => {
     captureFirst: false,
     failReplacement: true,
     replacement: true,
+    type: "text",
+  });
+});
+
+for (const invalidate of ["close", "clear", "cancel"]) {
+  for (const automatic of [false, true]) {
+    test(`${invalidate}: auto=${automatic}`, async () => {
+      await runJourney({
+        automatic,
+        captureFirst: false,
+        invalidate,
+        type: "text",
+      });
+    });
+  }
+}
+
+test("close invalidates an already queued replacement", async () => {
+  await runJourney({
+    automatic: true,
+    captureFirst: false,
+    invalidate: "close",
+    queuedReplacement: true,
+    type: "text",
+  });
+});
+
+test("fresh Paste and recipient recover after preparation Cancel", async () => {
+  await runJourney({
+    automatic: false,
+    captureFirst: false,
+    invalidate: "cancel",
+    recover: true,
+    type: "text",
+  });
+});
+
+test("authoritative admission consumes its captured preparation", async () => {
+  await runJourney({
+    automatic: false,
+    captureFirst: true,
+    consume: true,
+    type: "text",
+  });
+});
+
+for (const newer of ["different", "same"]) {
+  test(`admission preserves independent ${newer} capture`, async () => {
+    await runJourney({
+      automatic: false,
+      captureFirst: true,
+      newer,
+      submissionMode: "after",
+      type: "text",
+    });
+  });
+}
+
+test("captured option-like text is sent literally", async () => {
+  await runJourney({
+    automatic: false,
+    captureFirst: true,
+    consume: true,
+    contentCase: "flag",
+    type: "text",
+  });
+});
+
+test("plain text matching a working-directory file stays text", async () => {
+  await runJourney({
+    automatic: false,
+    captureFirst: true,
+    consume: true,
+    contentCase: "existing-path",
+    type: "text",
+  });
+});
+
+test("closed-panel Paste never sends to a preferred peer", async () => {
+  await runJourney({
+    automatic: false,
+    captureFirst: true,
+    closedPaste: true,
     type: "text",
   });
 });

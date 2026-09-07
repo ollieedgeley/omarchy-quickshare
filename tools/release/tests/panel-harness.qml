@@ -294,7 +294,6 @@ ShellRoot {
     panel.cancel()
     return browsing && root.selectedPeer === "pixel-8"
       && root.selectedShare === ""
-      && root.stopDiscoveryRequests === 2
   }
 
   function verifyVisibilityStop() {

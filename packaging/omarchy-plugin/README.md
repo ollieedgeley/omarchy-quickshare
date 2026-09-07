@@ -47,10 +47,11 @@ Use `omarchy-quickshare config show` to inspect saved preferences and
 The CLI distinguishes applied, saved-offline, pending, and activation-error
 outcomes. Accepted transfers keep their settings until they finish.
 
-The plugin uses control protocol 5. Native status includes saved and applied
-preferences, pending activation, and errors. Pin/unpin actions require the
-daemon. `omarchy-quickshare config set pinned_peer_id pixel-8` also works
-offline.
+The plugin requires control protocol 6. Protocol 5 binaries are incompatible
+because they lack clipboard-safe submission. Native status includes saved
+and applied preferences, pending activation, and errors. Pin/unpin actions
+require the daemon. The CLI also updates an offline preference with
+`omarchy-quickshare config set pinned_peer_id pixel-8`.
 `discoverable` and `read_clipboard_on_select` default to `false`.
 The daemon applies discoverability policy independently of acknowledgement
 that all preferences have activated. The snapshot's `visibility_status` reports
@@ -104,6 +105,19 @@ An explicit keyboard Paste takes priority over an automatic clipboard read
 already in progress. The old result is discarded before the replacement
 capture completes. If the replacement fails, the old automatic value is not
 sent; the panel reports the failure and waits for another deliberate action.
+The keyboard Paste shortcut belongs to the focused panel window, not the bar
+window, so it also works when the popup holds keyboard focus.
+
+Panel submissions use the CLI's clipboard-input mode. Text that looks like a
+filename remains text even if that file exists in the working directory.
+File URIs retain send-time file validation. Values such as `--help` are
+passed after the end-of-options marker and sent literally.
+
+Closing or cancelling preparation clears captured content and recipient
+intent. Clear content uses the same invalidation: late clipboard results and
+queued replacement reads cannot restore the badge or start a share. Reopening
+does not replay a send. To recover, paste again and choose a current device.
+Closing the panel does not cancel an admitted transfer.
 
 ```sh
 omarchy shell io.github.ollieedgeley.omarchy-quickshare open
@@ -112,9 +126,9 @@ omarchy shell io.github.ollieedgeley.omarchy-quickshare open
 The plugin also accepts Omarchy's universal-paste IPC action. If the panel is
 open, this shows an attachment badge and sends to an explicitly selected
 recipient if one is waiting. Otherwise clicking a device sends the captured
-value without rereading the clipboard. If the panel is closed, the action
-submits immediately to a visible pinned peer or opens the chooser while
-discovery continues.
+value without rereading the clipboard. If the panel is closed, Paste opens
+it and captures the value for deliberate recipient selection. A preferred
+device is never selected or sent to automatically by the panel.
 
 ```sh
 sh -c 'value=$(wl-paste --type text/uri-list --no-newline 2>/dev/null || wl-paste --no-newline); omarchy shell io.github.ollieedgeley.omarchy-quickshare paste "$value"'

@@ -323,7 +323,7 @@ function reconcileTestPaths(gates, changedPaths, files) {
 function fixtureRustInputs(paths, files) {
   const owners = [
     [
-      "tests/fixtures/control/v5",
+      "tests/fixtures/control/v6",
       [
         "crates/app/tests/daemon_process/process_contract.rs",
         "tests/suites/contracts/tests/suite/control_contract.rs",

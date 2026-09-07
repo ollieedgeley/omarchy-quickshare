@@ -16,7 +16,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const SOURCE = join(ROOT, "packaging", "omarchy-plugin");
 const DESTINATION = join(ROOT, "dist", "omarchy-plugin");
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
-const CONTROL_PROTOCOL = 5;
+const CONTROL_PROTOCOL = 6;
 const PLUGIN_FILES = [
   "AttachmentBadge.qml",
   "BarWidget.qml",

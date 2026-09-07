@@ -52,6 +52,9 @@ pub(super) enum Command {
         /// Send to this observed peer instead of the preferred peer.
         #[arg(long, value_name = "PEER_ID")]
         peer: Option<String>,
+        /// Preserve clipboard text instead of guessing filesystem paths.
+        #[arg(long)]
+        clipboard: bool,
         /// Text, URL, filesystem path, or local file URI.
         #[arg(value_name = "CONTENT")]
         content: String,

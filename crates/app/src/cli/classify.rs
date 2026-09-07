@@ -126,17 +126,19 @@ fn hex_digit(byte: u8) -> io::Result<u8> {
 }
 
 /// Classifies one `send` argument without contacting the local endpoint.
+/// A missing current directory disables implicit filesystem path detection.
 pub(super) fn request(
     content: &str,
-    current_directory: &Path,
+    current_directory: Option<&Path>,
 ) -> io::Result<RequestEnvelope> {
     classified_request(content, current_directory, None)
 }
 
 /// Classifies one `send` argument and targets one observed peer.
+/// A missing current directory disables implicit filesystem path detection.
 pub(super) fn request_for_peer(
     content: &str,
-    current_directory: &Path,
+    current_directory: Option<&Path>,
     peer_id: &str,
 ) -> io::Result<RequestEnvelope> {
     classified_request(content, current_directory, Some(peer_id))
@@ -144,7 +146,7 @@ pub(super) fn request_for_peer(
 
 fn classified_request(
     content: &str,
-    current_directory: &Path,
+    current_directory: Option<&Path>,
     peer_id: Option<&str>,
 ) -> io::Result<RequestEnvelope> {
     if let Some(path) = file_uri_path(content)? {
@@ -156,9 +158,11 @@ fn classified_request(
             "file URI path does not exist",
         ));
     }
-    let path = current_directory.join(content);
-    if path.is_dir() || path.is_file() {
-        return Ok(file_request(&path, peer_id));
+    if let Some(directory) = current_directory {
+        let path = directory.join(content);
+        if path.is_dir() || path.is_file() {
+            return Ok(file_request(&path, peer_id));
+        }
     }
     if content.starts_with("http://") || content.starts_with("https://") {
         return Ok(url_request(content, peer_id));

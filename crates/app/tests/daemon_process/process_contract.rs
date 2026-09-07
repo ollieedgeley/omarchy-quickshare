@@ -19,16 +19,16 @@ use quickshare_sharing::{
 
 const BINARY: &str = env!("CARGO_BIN_EXE_omarchy-quickshare");
 const ACTIVE_TEXT_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v5/active-text-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v6/active-text-snapshot-response.jsonl"
 );
 const ACTIVE_FILE_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v5/active-file-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v6/active-file-snapshot-response.jsonl"
 );
 const ACTIVE_URL_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v5/active-url-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v6/active-url-snapshot-response.jsonl"
 );
 const CANCELLED_TEXT_SNAPSHOT: &str = include_str!(concat!(
-    "../../../../tests/fixtures/control/v5/",
+    "../../../../tests/fixtures/control/v6/",
     "cancelled-text-snapshot-response.jsonl"
 ));
 const RETRY_DELAY: Duration = Duration::from_millis(5);

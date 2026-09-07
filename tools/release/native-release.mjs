@@ -21,7 +21,7 @@ const DESTINATION = join(ROOT, "dist", "native");
 const BINARY_NAME = "omarchy-quickshare";
 const EXECUTABLE_MODE = 0o755;
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
-const CONTROL_PROTOCOL = 5;
+const CONTROL_PROTOCOL = 6;
 
 export function createNativeRelease({
   destination,

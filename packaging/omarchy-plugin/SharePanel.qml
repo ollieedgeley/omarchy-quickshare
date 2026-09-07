@@ -171,7 +171,7 @@ Item {
   function cancel() {
     if (actionBusy || viewState === "terminal") return
     if (!hasActiveShare && viewState === "peer_choice") {
-      stopDiscoveryRequested()
+      cancelRequested("")
     } else if (hasActiveShare) {
       cancelRequested(activeShareId)
     }

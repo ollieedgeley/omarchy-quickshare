@@ -152,7 +152,12 @@ where
             exchange(socket_path, &peer_request(&action))?.response(),
         ),
         Command::ProtocolVersion => writeln!(output, "{PROTOCOL_VERSION}"),
-        Command::Send { content, peer } => {
+        Command::Send {
+            clipboard,
+            content,
+            peer,
+        } => {
+            let current_directory = (!clipboard).then_some(current_directory);
             let request = match peer.as_deref() {
                 Some(peer_id) => {
                     request_for_peer(&content, current_directory, peer_id)?
@@ -160,19 +165,13 @@ where
                 None => request(&content, current_directory)?,
             };
             let response = exchange(socket_path, &request)?;
-            match response.response() {
-                Response::Queued { share_id } => {
-                    writeln!(output, "Share {share_id} queued.")
-                }
-                Response::Applied
-                | Response::Cancelled
-                | Response::NotFound
-                | Response::Ready
-                | Response::Snapshot { .. }
-                | _ => Err(io::Error::new(
+            if let Response::Queued { share_id } = response.response() {
+                writeln!(output, "Share {share_id} queued.")
+            } else {
+                Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "endpoint returned an unsupported response",
-                )),
+                ))
             }
         }
         Command::Share { action } => write_action(

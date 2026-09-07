@@ -20,5 +20,5 @@ pub mod request;
 /// Results returned by the local endpoint.
 pub mod response;
 
-/// The local control protocol version implemented by this crate.
-pub const PROTOCOL_VERSION: u16 = 5;
+/// The local control and CLI compatibility version, not Google's wire version.
+pub const PROTOCOL_VERSION: u16 = 6;

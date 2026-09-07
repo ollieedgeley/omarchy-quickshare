@@ -257,14 +257,15 @@ impl Daemon {
     ///
     /// # Errors
     ///
-    /// Returns an error when listener configuration or a client fails.
+    /// Returns an error when the listener or endpoint request handling fails.
     #[inline]
     pub fn serve_next(&mut self, listener: &UnixListener) -> io::Result<()> {
         self.apply_network_events()?;
         self.apply_timeouts()?;
         let (mut stream, _address) = listener.accept()?;
-        let mut reader = BufReader::new(stream.try_clone()?);
-        let request = read_request(&mut reader)?;
+        let Ok(request) = read_request(&mut BufReader::new(&mut stream)) else {
+            return Ok(());
+        };
         if request.version() != PROTOCOL_VERSION {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -275,14 +276,16 @@ impl Daemon {
         if matches!(response.response(), Response::Queued { .. }) {
             self.queued.push(request);
         }
-        write_response(&mut stream, &response)
+        // A disconnected client must not stop service for other clients.
+        let _delivery_result = write_response(&mut stream, &response);
+        Ok(())
     }
 
     /// Serves control clients until the owning process requests shutdown.
     ///
     /// # Errors
     ///
-    /// Returns an error when listener configuration or a client fails.
+    /// Returns an error when the listener or endpoint request handling fails.
     #[inline]
     pub fn serve_until<Stopped>(
         &mut self,
