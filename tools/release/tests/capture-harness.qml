@@ -42,6 +42,7 @@ ShellRoot {
     id: clipboardStarted
     path: journey.replacement || journey.invalidate || journey.peerChange
       || journey.explicitPending || journey.timeoutReplacement
+      || journey.providedEmpty
       ? Quickshell.env("CLIPBOARD_STARTED") : ""
     printErrors: false
     onLoaded: {
@@ -49,7 +50,11 @@ ShellRoot {
         return
       }
       if (journey.queuedReplacement) widget.readClipboard("preview", "")
-      if (journey.invalidate) root.invalidate()
+      if (journey.providedEmpty) {
+        if (widget.paste("") !== "empty") {
+          throw new Error("Provided empty value did not report failure")
+        }
+      } else if (journey.invalidate) root.invalidate()
       else if (journey.peerChange) root.panel.choosePeer(journey.peer)
       else if (!journey.explicitPending) widget.readClipboard("preview", "")
       if (!journey.timeoutReplacement) releaseClipboard.running = true
@@ -161,7 +166,7 @@ ShellRoot {
       } else if (root.step === 2
           && (journey.replacement || journey.invalidate
             || journey.peerChange || journey.explicitPending
-            || journey.timeoutReplacement)) {
+            || journey.timeoutReplacement || journey.providedEmpty)) {
         clipboardStarted.reload()
       } else if (root.step === 5 && !root.panel.actionBusy) {
         if (root.panel.activeShareId.length > 0 || !widget.opened
@@ -177,6 +182,18 @@ ShellRoot {
           && !root.panel.actionBusy && root.panel.activeShareId.length === 0) {
         console.error("LITERAL_NOT_ADMITTED")
         Qt.exit(3)
+      } else if (root.step === 3 && journey.providedEmpty
+          && !widget.clipboardBusy && root.panel.actionError.length > 0) {
+        if (root.panel.activeShareId.length > 0 || widget.showPasteBadge) {
+          throw new Error("Provided empty value restored superseded capture")
+        }
+        if (!root.failureObserved) {
+          root.failureObserved = true
+          root.failureSnapshots = 0
+        }
+        if (root.failureSnapshots < 2) return
+        root.paste()
+        root.step = 4
       } else if (root.step === 3 && journey.timeoutReplacement
           && root.panel.actionError.length > 0) {
         throw new Error("Expired old read overrode newer explicit capture")

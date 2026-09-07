@@ -106,6 +106,7 @@ function prepareClipboard(root, prepared, journey) {
       journey.invalidate ||
       journey.peerChange ||
       journey.explicitPending ||
+      journey.providedEmpty ||
       journey.readTimeout,
     ),
   );
@@ -420,6 +421,16 @@ test("unsupported clipboard MIME never becomes a text share", async () => {
     captureFirst: false,
     consume: true,
     invalidRead: "unsupported",
+    type: "text",
+  });
+});
+
+test("provided empty value invalidates pending automatic capture", async () => {
+  await runJourney({
+    automatic: true,
+    captureFirst: false,
+    consume: true,
+    providedEmpty: true,
     type: "text",
   });
 });

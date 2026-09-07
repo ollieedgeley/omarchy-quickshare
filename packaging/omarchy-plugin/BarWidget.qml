@@ -65,10 +65,14 @@ BarWidget {
     return false
   }
 
-  function clearPasteBadge() {
+  function invalidateClipboardRead() {
     captureGeneration += 1
     clipboardAction = ""
     pendingClipboardAction = ""
+  }
+
+  function clearPasteBadge() {
+    invalidateClipboardRead()
     selectedPeerId = ""
     capturedContent = null
   }
@@ -139,6 +143,7 @@ BarWidget {
   }
 
   function paste(value) {
+    invalidateClipboardRead()
     if (!opened) open()
     if (!captureClipboard(value)) return "empty"
     submitCaptured()
