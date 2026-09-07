@@ -42,7 +42,7 @@ ShellRoot {
     id: clipboardStarted
     path: journey.replacement || journey.invalidate || journey.peerChange
       || journey.explicitPending || journey.timeoutReplacement
-      || journey.providedEmpty
+      || journey.providedEmpty || journey.explicitFailure
       ? Quickshell.env("CLIPBOARD_STARTED") : ""
     printErrors: false
     onLoaded: {
@@ -56,7 +56,9 @@ ShellRoot {
         }
       } else if (journey.invalidate) root.invalidate()
       else if (journey.peerChange) root.panel.choosePeer(journey.peer)
-      else if (!journey.explicitPending) widget.readClipboard("preview", "")
+      else if (!journey.explicitPending && !journey.explicitFailure) {
+        widget.readClipboard("preview", "")
+      }
       if (!journey.timeoutReplacement) releaseClipboard.running = true
       root.step = 3
     }
@@ -141,6 +143,12 @@ ShellRoot {
         return
       }
       if (!widget.protocolReady) return
+      if (journey.explicitFailure && root.step >= 2 && root.step < 11
+          && root.panel.activeShareId.length > 0) {
+        console.error("Prior capture dispatched during explicit replacement")
+        Qt.exit(3)
+        return
+      }
       if (root.step === 0) {
         if (journey.closedPaste) {
           root.panel = root.findPanel(widget)
@@ -151,7 +159,9 @@ ShellRoot {
         widget.open()
         root.panel = root.findPanel(widget)
         if (journey.captureFirst) root.paste()
-        if (journey.explicitPending) widget.readClipboard("preview", "")
+        if (journey.explicitPending || journey.explicitFailure) {
+          widget.readClipboard("preview", "")
+        }
         root.step = 1
         if (journey.invalidate && !journey.automatic) {
           root.paste()
@@ -166,7 +176,8 @@ ShellRoot {
       } else if (root.step === 2
           && (journey.replacement || journey.invalidate
             || journey.peerChange || journey.explicitPending
-            || journey.timeoutReplacement || journey.providedEmpty)) {
+            || journey.timeoutReplacement || journey.providedEmpty
+            || journey.explicitFailure)) {
         clipboardStarted.reload()
       } else if (root.step === 5 && !root.panel.actionBusy) {
         if (root.panel.activeShareId.length > 0 || !widget.opened
@@ -182,6 +193,19 @@ ShellRoot {
           && !root.panel.actionBusy && root.panel.activeShareId.length === 0) {
         console.error("LITERAL_NOT_ADMITTED")
         Qt.exit(3)
+      } else if (root.step === 3 && journey.explicitFailure
+          && !widget.clipboardBusy && root.panel.actionError.length > 0) {
+        if (!widget.showPasteBadge
+            || widget.clipboardPreview !== journey.value) {
+          throw new Error("Failed explicit replacement discarded prior capture")
+        }
+        if (!root.failureObserved) {
+          root.failureObserved = true
+          root.failureSnapshots = 0
+        }
+        if (root.failureSnapshots < 2) return
+        root.panel.choosePeer(journey.peer)
+        root.step = 11
       } else if (root.step === 3 && journey.providedEmpty
           && !widget.clipboardBusy && root.panel.actionError.length > 0) {
         if (root.panel.activeShareId.length > 0 || widget.showPasteBadge) {

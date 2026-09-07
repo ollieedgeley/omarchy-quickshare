@@ -7,41 +7,59 @@ import {
 } from "node:fs";
 
 const POLL_MS = 10;
+const READ_FAILURE_EXIT_CODE = 7;
 const log = process.env.CLIPBOARD_LOG;
 const previousReads = readFileSync(log, "utf8");
 appendFileSync(log, "read\n");
 const journey = JSON.parse(process.env.CAPTURE_JOURNEY);
-let firstValue = "superseded automatic B";
-if (journey.explicitPending) {
-  firstValue = journey.value;
-}
-if (journey.invalidRead === "empty") {
-  process.exitCode = 0;
-} else if (journey.invalidRead === "unsupported") {
-  const args = process.argv.slice(2);
-  const index = args.findIndex((arg) => arg === "--type" || arg === "-t");
-  let requested = "";
-  if (index >= 0) {
-    requested = args[index + 1];
+
+function completeRead() {
+  const failure = journey.explicitFailure || journey.invalidRead;
+  if (failure === "empty") {
+    process.exitCode = 0;
+    return;
   }
-  if (requested === "" || requested === "image" || requested === "image/png") {
-    process.stdout.write("unsupported image bytes");
-  } else {
+  if (failure === "unsupported") {
+    const args = process.argv.slice(2);
+    const index = args.findIndex((arg) => arg === "--type" || arg === "-t");
+    let requested = "";
+    if (index >= 0) {
+      requested = args[index + 1];
+    }
+    if (
+      requested === "" ||
+      requested === "image" ||
+      requested === "image/png"
+    ) {
+      process.stdout.write("unsupported image bytes");
+    } else {
+      process.exitCode = 1;
+    }
+    return;
+  }
+  if (failure === "failed") {
+    process.exitCode = READ_FAILURE_EXIT_CODE;
+  } else if (process.env.CLIPBOARD_FAILURE === "true") {
     process.exitCode = 1;
+  } else {
+    process.stdout.write(process.env.CLIPBOARD_VALUE);
   }
-} else if (
-  process.env.CLIPBOARD_REPLACEMENT === "true" &&
-  previousReads === ""
-) {
+}
+
+if (process.env.CLIPBOARD_REPLACEMENT === "true" && previousReads === "") {
   writeFileSync(process.env.CLIPBOARD_STARTED, "started");
   const timer = setInterval(() => {
     if (existsSync(process.env.CLIPBOARD_RELEASE)) {
       clearInterval(timer);
-      process.stdout.write(firstValue);
+      if (journey.explicitFailure) {
+        completeRead();
+      } else if (journey.explicitPending) {
+        process.stdout.write(journey.value);
+      } else {
+        process.stdout.write("superseded automatic B");
+      }
     }
   }, POLL_MS);
-} else if (process.env.CLIPBOARD_FAILURE === "true") {
-  process.exitCode = 1;
 } else {
-  process.stdout.write(process.env.CLIPBOARD_VALUE);
+  completeRead();
 }

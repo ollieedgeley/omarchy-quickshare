@@ -133,6 +133,9 @@ BarWidget {
 
   function submitCaptured() {
     if (!opened || !pasteLatch || selectedPeerId.length === 0) return
+    if (clipboardAction === "preview" || pendingClipboardAction === "preview") {
+      return
+    }
     var peerId = selectedPeerId
     selectedPeerId = ""
     if (!status.submitTo(peerId, clipboardPreview)) {

@@ -106,6 +106,7 @@ function prepareClipboard(root, prepared, journey) {
       journey.invalidate ||
       journey.peerChange ||
       journey.explicitPending ||
+      journey.explicitFailure ||
       journey.providedEmpty ||
       journey.readTimeout,
     ),
@@ -176,7 +177,8 @@ function assertJourneyOutcome(prepared, journey) {
     journey.replacement ||
     journey.peerChange ||
     journey.timeoutReplacement ||
-    journey.invalidRead
+    journey.invalidRead ||
+    journey.explicitFailure
   ) {
     expectedReads = "read\nread\n";
   }
@@ -434,3 +436,17 @@ test("provided empty value invalidates pending automatic capture", async () => {
     type: "text",
   });
 });
+
+for (const automatic of [false, true]) {
+  for (const explicitFailure of ["empty", "unsupported", "failed"]) {
+    test(`A survives ${explicitFailure}, auto=${automatic}`, async () => {
+      await runJourney({
+        automatic,
+        captureFirst: true,
+        consume: true,
+        explicitFailure,
+        type: "text",
+      });
+    });
+  }
+}
