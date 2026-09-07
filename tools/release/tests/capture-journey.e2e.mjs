@@ -108,6 +108,7 @@ function prepareClipboard(root, prepared, journey) {
       journey.explicitPending ||
       journey.explicitFailure ||
       journey.providedEmpty ||
+      (journey.preference && automatic) ||
       journey.readTimeout,
     ),
   );
@@ -178,7 +179,8 @@ function assertJourneyOutcome(prepared, journey) {
     journey.peerChange ||
     journey.timeoutReplacement ||
     journey.invalidRead ||
-    journey.explicitFailure
+    journey.explicitFailure ||
+    journey.preference === "disable-queued"
   ) {
     expectedReads = "read\nread\n";
   }
@@ -449,4 +451,22 @@ for (const automatic of [false, true]) {
       });
     });
   }
+}
+
+for (const preference of [
+  "enable",
+  "disable",
+  "disable-current",
+  "disable-queued",
+]) {
+  test(`selection: preference ${preference}`, async () => {
+    await runJourney({
+      automatic: preference !== "enable",
+      captureFirst: false,
+      consume: true,
+      explicitPending: preference === "disable-current",
+      preference,
+      type: "text",
+    });
+  });
 }

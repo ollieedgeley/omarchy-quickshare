@@ -43,10 +43,19 @@ ShellRoot {
     path: journey.replacement || journey.invalidate || journey.peerChange
       || journey.explicitPending || journey.timeoutReplacement
       || journey.providedEmpty || journey.explicitFailure
+      || (journey.preference && journey.automatic)
       ? Quickshell.env("CLIPBOARD_STARTED") : ""
     printErrors: false
     onLoaded: {
       if (root.step !== 2 || text() !== "started" || root.panel.actionBusy) {
+        return
+      }
+      if (journey.preference) {
+        if (journey.preference === "disable-queued") {
+          widget.readClipboard("preview", "")
+        }
+        changePreference.running = true
+        root.step = 12
         return
       }
       if (journey.queuedReplacement) widget.readClipboard("preview", "")
@@ -131,6 +140,20 @@ ShellRoot {
     }
   }
 
+  Process {
+    id: changePreference
+    command: [
+      "env", "omarchy-quickshare", "config", "set", "read_clipboard_on_select",
+      String(!journey.automatic),
+    ]
+    onExited: function(code) {
+      if (code !== 0) {
+        console.error("Live preference change failed")
+        Qt.exit(3)
+      }
+    }
+  }
+
   Timer {
     interval: 25
     repeat: true
@@ -171,13 +194,40 @@ ShellRoot {
       } else if (root.step === 1 && !root.panel.actionBusy) {
         root.panel.choosePeer("pixel-8")
         root.step = 2
+      } else if (root.step === 2 && journey.preference === "enable") {
+        changePreference.running = true
+        root.step = 12
+      } else if (root.step === 12) {
+        if (widget.readClipboardOnSelect !== !journey.automatic) return
+        if (journey.automatic) {
+          releaseClipboard.running = true
+          root.step = journey.preference === "disable" ? 13 : 4
+          return
+        }
+        root.step = 13
+      } else if (root.step === 13) {
+        if (journey.automatic && widget.clipboardBusy) return
+        if (widget.clipboardBusy || root.panel.activeShareId.length > 0
+            || widget.showPasteBadge) {
+          console.error("Preference change triggered capture or share")
+          Qt.exit(3)
+          return
+        }
+        if (!root.failureObserved) {
+          root.failureObserved = true
+          root.failureSnapshots = 0
+        }
+        if (root.failureSnapshots < 2) return
+        root.paste()
+        root.step = 4
       } else if (root.step === 2 && journey.submissionMode) {
         submissionStarted.reload()
       } else if (root.step === 2
           && (journey.replacement || journey.invalidate
             || journey.peerChange || journey.explicitPending
             || journey.timeoutReplacement || journey.providedEmpty
-            || journey.explicitFailure)) {
+            || journey.explicitFailure
+            || (journey.preference && journey.automatic))) {
         clipboardStarted.reload()
       } else if (root.step === 5 && !root.panel.actionBusy) {
         if (root.panel.activeShareId.length > 0 || !widget.opened

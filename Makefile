@@ -188,10 +188,19 @@ test-plugin-release: ## Check the plugin export and native status states.
 	@QUICKSHELL=$(QUICKSHELL) $(TIMEOUT) node --test \
 		tools/release/tests/plugin-release-contract.test.mjs
 .PHONY: plugin-capture-prepare test-plugin-capture
+.PHONY: test-plugin-capture-content test-plugin-capture-selection
 plugin-capture-prepare: ## Prepare the CLI outside the capture test budget.
 	@cargo build -p omarchy-quickshare --bin omarchy-quickshare --locked
-test-plugin-capture: ## Check capture journeys with a prepared debug CLI.
+test-plugin-capture: ## Run both capture children serially, stopping on failure.
+	@$(MAKE) test-plugin-capture-content
+	@$(MAKE) test-plugin-capture-selection
+test-plugin-capture-content: ## Check content capture with a prepared debug CLI.
 	@QT_QPA_PLATFORM=offscreen QUICKSHELL=$(QUICKSHELL) $(TIMEOUT) node --test \
+		--test-skip-pattern='^selection:' \
+		tools/release/tests/capture-journey.e2e.mjs
+test-plugin-capture-selection: ## Check peer selection with a prepared CLI.
+	@QT_QPA_PLATFORM=offscreen QUICKSHELL=$(QUICKSHELL) $(TIMEOUT) node --test \
+		--test-name-pattern='^selection:' \
 		tools/release/tests/capture-journey.e2e.mjs
 test-local-install: ## Check local binary and systemd-user-service installation.
 	@$(TIMEOUT) node --test tools/release/tests/local-install-contract.test.mjs

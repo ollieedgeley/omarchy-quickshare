@@ -367,9 +367,17 @@ The initial hook change must include contract fixtures for staged-only behavior,
 - `make test-plugin-release` checks the allowlisted plugin export and every
   native availability state through Quick Shell.
 - `make plugin-capture-prepare` builds the current CLI outside the test budget.
-  `make test-plugin-capture` checks isolated real QML/CLI capture journeys.
-  Both plugin gates force offscreen Qt without the desktop platform theme,
-  private home/runtime/config/data paths, and no inherited live display.
+- `make test-plugin-capture` runs both capture children serially and fail-fast,
+  with no aggregate timeout.
+- `make test-plugin-capture-content` runs capture journeys without the
+  `selection:` name prefix, within 60s.
+- `make test-plugin-capture-selection` runs journeys with the `selection:`
+  prefix, within 60s. Every new selection case must use this prefix.
+
+Both children use `tools/release/tests/capture-journey.e2e.mjs` with the prepared
+CLI. Capture and release gates force offscreen Qt without the desktop platform
+theme, private home/runtime/config/data paths, and no inherited live display.
+
 - `make test-local-install` checks local binary installation and the systemd
   user-service lifecycle; `make install-local` performs the local install.
 - `make test-contracts` runs shared transfer scenarios against fast doubles; simulator adapters consume the same scenarios.

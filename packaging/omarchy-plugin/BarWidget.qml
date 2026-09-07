@@ -23,6 +23,11 @@ BarWidget {
   property string selectedPeerId: ""
   readonly property bool readClipboardOnSelect:
     status.appliedPreferences.read_clipboard_on_select === true
+  onReadClipboardOnSelectChanged: {
+    if (readClipboardOnSelect) return
+    if (clipboardAction === "send") clipboardAction = ""
+    if (pendingClipboardAction === "send") pendingClipboardAction = ""
+  }
   property real iconOpacity: 1.0
   readonly property bool opened: popupOpen
   readonly property bool transferring:
@@ -91,10 +96,11 @@ BarWidget {
     clipboardDeadline.stop()
     if (pendingClipboardAction.length > 0) {
       var pending = pendingClipboardAction
-      pendingClipboardAction = ""
       var generation = captureGeneration
       Qt.callLater(function() {
-        if (generation === root.captureGeneration) {
+        if (generation === root.captureGeneration
+            && root.pendingClipboardAction === pending) {
+          root.pendingClipboardAction = ""
           root.readClipboard(pending, root.selectedPeerId)
         }
       })
@@ -112,17 +118,19 @@ BarWidget {
   }
 
   function readClipboard(action, peerId) {
+    if (action === "send"
+        && (!readClipboardOnSelect || clipboardAction === "preview"
+          || pendingClipboardAction === "preview")) return false
     if (clipboardBusy) {
-      if (action === "send"
-          && (clipboardAction === "preview"
-            || pendingClipboardAction === "preview"
-            || (clipboardAction === "send" && peerId === clipboardPeerId))) {
+      if (action === "send" && clipboardAction === "send"
+          && peerId === clipboardPeerId) {
         return false
       }
       pendingClipboardAction = action
       clipboardAction = ""
       return true
     }
+    pendingClipboardAction = ""
     clipboardAction = action
     clipboardPeerId = String(peerId || "")
     clipboardOutput = ""
