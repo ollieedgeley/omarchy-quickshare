@@ -40,7 +40,7 @@ ShellRoot {
 
   FileView {
     id: clipboardStarted
-    path: journey.replacement || journey.invalidate
+    path: journey.replacement || journey.invalidate || journey.peerChange
       ? Quickshell.env("CLIPBOARD_STARTED") : ""
     printErrors: false
     onLoaded: {
@@ -49,6 +49,7 @@ ShellRoot {
       }
       if (journey.queuedReplacement) widget.readClipboard("preview", "")
       if (journey.invalidate) root.invalidate()
+      else if (journey.peerChange) root.panel.choosePeer(journey.peer)
       else widget.readClipboard("preview", "")
       releaseClipboard.running = true
       root.step = 3
@@ -156,7 +157,8 @@ ShellRoot {
       } else if (root.step === 2 && journey.submissionMode) {
         submissionStarted.reload()
       } else if (root.step === 2
-          && (journey.replacement || journey.invalidate)) {
+          && (journey.replacement || journey.invalidate
+            || journey.peerChange)) {
         clipboardStarted.reload()
       } else if (root.step === 5 && !root.panel.actionBusy) {
         if (root.panel.activeShareId.length > 0 || !widget.opened

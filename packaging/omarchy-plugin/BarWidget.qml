@@ -108,7 +108,12 @@ BarWidget {
 
   function readClipboard(action, peerId) {
     if (clipboardBusy) {
-      if (action !== "preview") return false
+      if (action === "send"
+          && (clipboardAction === "preview"
+            || pendingClipboardAction === "preview"
+            || (clipboardAction === "send" && peerId === clipboardPeerId))) {
+        return false
+      }
       pendingClipboardAction = action
       clipboardAction = ""
       return true

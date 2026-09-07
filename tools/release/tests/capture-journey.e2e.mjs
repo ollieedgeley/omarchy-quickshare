@@ -119,7 +119,7 @@ function prepareJourney(root, journey) {
     );
   }
   let peer = "pixel-8";
-  if (journey.recover) {
+  if (journey.recover || journey.peerChange) {
     peer = "galaxy-tab";
   }
   prepared.env.CAPTURE_JOURNEY = JSON.stringify({
@@ -132,7 +132,9 @@ function prepareJourney(root, journey) {
   prepared.env.CLIPBOARD_STARTED = join(root, "clipboard.started");
   prepared.env.CLIPBOARD_RELEASE = join(root, "clipboard.release");
   prepared.env.CLIPBOARD_REPLACEMENT = String(
-    journey.replacement === true || Boolean(journey.invalidate),
+    journey.replacement === true ||
+      Boolean(journey.invalidate) ||
+      journey.peerChange === true,
   );
   prepared.env.CLIPBOARD_FAILURE = String(journey.failReplacement === true);
   writeFileSync(prepared.env.CLIPBOARD_LOG, "");
@@ -164,7 +166,7 @@ function assertJourneyOutcome(prepared, journey) {
   if (!journey.captureFirst && journey.automatic) {
     expectedReads = "read\n";
   }
-  if (journey.replacement) {
+  if (journey.replacement || journey.peerChange) {
     expectedReads = "read\nread\n";
   }
   if (journey.failReplacement) {
@@ -348,5 +350,15 @@ test("failed dispatch retains capture for deliberate retry", async () => {
     failSubmission: true,
     submissionMode: "before",
     type: "file",
+  });
+});
+
+test("changing recipient during a read captures afresh", async () => {
+  await runJourney({
+    automatic: true,
+    captureFirst: false,
+    consume: true,
+    peerChange: true,
+    type: "text",
   });
 });
