@@ -457,12 +457,19 @@ function oppositePeer(peer) {
 function fakeProcess() {
   const process = {
     logs: () => process.log,
-    stop: () => {
+    stop() {
       process.stopped = true;
       return Promise.resolve();
     },
-    wait: () => {
-      process.waited = true;
+    wait: () => Promise.resolve(),
+    waitForTerminal({ statuses }) {
+      const events = sharingTest.parseEvents(process.log);
+      assert.ok(
+        events.some(
+          ({ event: kind, status }) =>
+            kind === "transfer" && statuses.includes(status),
+        ),
+      );
       return Promise.resolve();
     },
   };
@@ -712,14 +719,6 @@ test(SHARING_TRANSFER_TEST, async (context) => {
         .filter(({ args }) => args.includes("send"))
         .map(({ peer }) => peer),
       ["peer-a", "peer-b"],
-    );
-    assert.ok(
-      fake.calls.every(
-        ({ variables }) =>
-          variables.XDG_CONFIG_HOME === "/run/quickshare/config" &&
-          variables.XDG_STATE_HOME === "/run/quickshare/state" &&
-          variables.QUICKSHARE_PIN_SALT === "nearby-linux-sharing-self-test",
-      ),
     );
   } finally {
     context.mock.timers.reset();

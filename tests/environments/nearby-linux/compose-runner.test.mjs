@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import test from "node:test";
+
+import { createComposeRunner } from "./compose-runner.mjs";
 
 const WAIT_TIMEOUT_MS = 1_500;
 const MAX_REMAINING_HOLD_MS = 750;
@@ -48,4 +51,26 @@ test("Compose runner releases its timeout after an immediate exit", () => {
     remainingHoldMs < MAX_REMAINING_HOLD_MS,
     `completed wait kept the process alive for ${remainingHoldMs}ms`,
   );
+});
+
+test("receiver exit rejects an unterminated terminal record", async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.exitCode = null;
+  child.signalCode = null;
+  const peer = createComposeRunner({
+    compose: "compose.yaml",
+    docker: "docker",
+    environment: {},
+    spawn: () => child,
+  }).start({
+    args: ["/usr/local/bin/nearby_sharing_cli", "receive"],
+    peer: "peer-a",
+  });
+  const terminal = peer.waitForTerminal({ statuses: ["kComplete"] });
+  child.stdout.emit("data", "QS_EVENT event=transfer status=kComplete");
+  child.exitCode = 0;
+  child.emit("close", 0, null);
+  await assert.rejects(terminal);
 });

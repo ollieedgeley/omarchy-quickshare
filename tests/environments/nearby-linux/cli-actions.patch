@@ -236,7 +236,7 @@
  };
 
  void PrintTransferUpdate(const ShareTarget& share_target,
-@@ -176,26 +335,51 @@
+@@ -176,28 +335,53 @@
              << "% bytes=" << metadata.transferred_bytes() << "/"
              << attachment_container.GetTotalAttachmentsSize() << std::endl;
    if (metadata.token().has_value()) {
@@ -259,9 +259,9 @@
                          const TransferMetadata& transfer_metadata) override {
      PrintTransferUpdate(share_target, attachment_container, transfer_metadata);
      std::lock_guard<std::mutex> lock(state_.mutex);
++    PersistTextAttachment(transfer_metadata, attachment_container);
 +    PrintTransferEvent(transfer_metadata, attachment_container,
 +                       share_target.id);
-+    PersistTextAttachment(transfer_metadata, attachment_container);
      if (receive_mode_ &&
          transfer_metadata.status() ==
 -            TransferMetadata::Status::kAwaitingLocalConfirmation &&
@@ -294,7 +294,10 @@
 +      PrintActionRequested(action_, share_target.id);
      }
      if (TransferMetadata::IsFinalStatus(transfer_metadata.status())) {
-       state_.done = true;
+-      state_.done = true;
++      state_.done = !receive_mode_;
+       state_.exit_code =
+           transfer_metadata.status() == TransferMetadata::Status::kComplete ? 0
 @@ -209,6 +393,7 @@
   private:
    CliState& state_;

@@ -175,7 +175,10 @@ async function transfer(options, flow) {
     sender = options.runner.start(sendCommand(flow));
     await Promise.all([
       sender.wait({ timeoutMs: TRANSFER_TIMEOUT_MS }),
-      receiver.wait({ timeoutMs: TRANSFER_TIMEOUT_MS }),
+      receiver.waitForTerminal({
+        statuses: ["kComplete"],
+        timeoutMs: TRANSFER_TIMEOUT_MS,
+      }),
     ]);
     return assertTransfer({
       received: files.received,

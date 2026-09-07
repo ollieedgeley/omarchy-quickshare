@@ -12,10 +12,14 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { output, run } from "../../../tools/gates/lib/process.mjs";
+import { createComposeRunner } from "../nearby-linux/compose-runner.mjs";
 import { sha256FromOutput } from "./integrity.mjs";
 import { prepareNearShareSource } from "./nearshare-source.mjs";
 import { assertPreparedImages } from "./prepared-images.mjs";
-import { assertProcessSuccess } from "./process-evidence.mjs";
+import {
+  assertProcessSuccess,
+  receiverCompletion,
+} from "./process-evidence.mjs";
 
 const DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(DIRECTORY, "../../..");
@@ -35,6 +39,8 @@ const NEARSHARE_MANIFEST = join(
 );
 const LIFECYCLE_GOAL_MS = 30_000;
 const TRANSFER_TIMEOUT_SECONDS = 18;
+const MILLISECONDS_PER_SECOND = 1_000;
+const TRANSFER_TIMEOUT_MS = TRANSFER_TIMEOUT_SECONDS * MILLISECONDS_PER_SECOND;
 const TEST_LIMIT_MS = 60_000;
 const PIN_SALT_BYTES = 32;
 const CASE_DIRECTORY_MODE = 0o777;
@@ -191,6 +197,13 @@ function down() {
 }
 
 function child(arguments_, directories) {
+  if (!Array.isArray(arguments_)) {
+    return createComposeRunner({
+      compose: COMPOSE,
+      docker: process.env.DOCKER ?? "docker",
+      environment: environment(directories),
+    }).start(arguments_);
+  }
   const command = process.env.DOCKER ?? "docker";
   const result = spawn(command, ["compose", "--file", COMPOSE, ...arguments_], {
     env: environment(directories),
@@ -213,32 +226,18 @@ function child(arguments_, directories) {
 }
 
 function googleCommand({ file, name, role, salt }) {
-  const argumentsList = ["exec", "--tty=false"];
-  for (const [key, value] of Object.entries(XDG)) {
-    argumentsList.push("--env", `${key}=${value}`);
-  }
-  argumentsList.push("--env", `QUICKSHARE_PIN_SALT=${salt}`);
-  argumentsList.push(
-    "google",
-    "runuser",
-    "--user",
-    "quickshare",
-    "--",
-    "/usr/local/bin/nearby_sharing_cli",
-    role,
-  );
+  const args = ["/usr/local/bin/nearby_sharing_cli", role];
   if (role === "send") {
-    argumentsList.push(`/cases/outbound/${file}`);
+    args.push(`/cases/outbound/${file}`);
   } else {
-    argumentsList.push("--action", "accept");
+    args.push("--action", "accept");
   }
-  argumentsList.push(
-    "--name",
-    name,
-    "--timeout",
-    `${TRANSFER_TIMEOUT_SECONDS}`,
-  );
-  return argumentsList;
+  args.push("--name", name, "--timeout", `${TRANSFER_TIMEOUT_SECONDS}`);
+  return {
+    args,
+    peer: "google",
+    variables: { ...XDG, QUICKSHARE_PIN_SALT: salt },
+  };
 }
 
 function nearShareCommand({ file, role, salt }) {
@@ -406,30 +405,39 @@ async function runDirection(directories, direction, repeated = false) {
     receiverCommand(googleSends, file, directories.salt),
     directories,
   );
-  await waitForReceiver(receiver, googleSends);
-  const sender = child(
-    senderCommand(googleSends, file, directories.salt),
-    directories,
-  );
-  const results = await Promise.all([sender.wait(), receiver.wait()]);
-  assertProcessSuccess({ direction, receiver, results, sender });
-  const received = join(details.receiverDirectory, "received", file);
-  const logs = `${sender.logs()}\n${receiver.logs()}`;
-  assertTransferEvidence(direction, logs, received);
-  const sent = join(details.senderDirectory, "outbound", file);
-  assertMatchingHash({
-    direction,
-    directories,
-    file,
-    receiverPeer: details.receiverPeer,
-    sent,
-  });
-  return {
-    bytes: readFileSync(sent).byteLength,
-    direction,
-    pinMatch: true,
-    repeated,
-  };
+  let sender = null;
+  try {
+    await waitForReceiver(receiver, googleSends);
+    sender = child(
+      senderCommand(googleSends, file, directories.salt),
+      directories,
+    );
+    const results = await Promise.all([
+      sender.wait(),
+      receiverCompletion(receiver, googleSends, TRANSFER_TIMEOUT_MS),
+    ]);
+    assertProcessSuccess({ direction, receiver, results, sender });
+    const received = join(details.receiverDirectory, "received", file);
+    const logs = `${sender.logs()}\n${receiver.logs()}`;
+    assertTransferEvidence(direction, logs, received);
+    const sent = join(details.senderDirectory, "outbound", file);
+    assertMatchingHash({
+      direction,
+      directories,
+      file,
+      receiverPeer: details.receiverPeer,
+      sent,
+    });
+    return {
+      bytes: readFileSync(sent).byteLength,
+      direction,
+      pinMatch: true,
+      repeated,
+    };
+  } finally {
+    await receiver.stop?.();
+    await sender?.stop?.();
+  }
 }
 
 async function selfTest() {

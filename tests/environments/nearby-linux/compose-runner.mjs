@@ -307,6 +307,51 @@ async function waitFor({ completed, logs, options, stopChild }) {
   return result;
 }
 
+async function waitForTerminal({ child, completed, logs, options }) {
+  let inspect = null;
+  const terminal = new Promise((resolve) => {
+    inspect = () => {
+      if (
+        logs()
+          .split("\n")
+          .slice(0, -1)
+          .some(
+            (line) =>
+              line.startsWith("QS_EVENT") &&
+              EVENT_PATTERN.exec(line)?.groups?.event === "transfer" &&
+              options.statuses.includes(
+                STATUS_PATTERN.exec(line)?.groups?.status,
+              ),
+          )
+      ) {
+        resolve();
+      }
+    };
+    child.stdout.on("data", inspect);
+    child.stderr.on("data", inspect);
+  });
+  const exited = completed.then(({ code }) => {
+    throw new Error(`Nearby Linux receiver exited before parent stop: ${code}`);
+  });
+  try {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      await exited;
+    }
+    inspect();
+    const result = await raceTimeout(
+      Promise.race([terminal, exited]),
+      options.timeoutMs ?? DEFAULT_WAIT_MS,
+      null,
+    );
+    if (result === null) {
+      throw new Error("Nearby Linux receiver did not report terminal status");
+    }
+  } finally {
+    child.stdout.removeListener("data", inspect);
+    child.stderr.removeListener("data", inspect);
+  }
+}
+
 function startPeerProcess(options, command) {
   const marker = markerPath();
   const child = composeChild(
@@ -348,6 +393,8 @@ function startPeerProcess(options, command) {
         options: { ...waitOptions, failureDirectory: options.failureDirectory },
         stopChild,
       }),
+    waitForTerminal: (waitOptions) =>
+      waitForTerminal({ child, completed, logs, options: waitOptions }),
   };
 }
 

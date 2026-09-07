@@ -1,6 +1,14 @@
 const STAGE_PATTERN = /(?:QS_EVENT event=|"event":")(?<stage>[a-z-]+)/gu;
 const STATUS_PATTERN = /status=(?<status>k[A-Za-z]+)/gu;
 
+export async function receiverCompletion(receiver, googleSends, timeoutMs) {
+  if (googleSends) {
+    return receiver.wait();
+  }
+  await receiver.waitForTerminal({ statuses: ["kComplete"], timeoutMs });
+  return null;
+}
+
 function evidenceCount(log) {
   return log
     .split("\n")
@@ -16,7 +24,10 @@ function values(log, pattern, group) {
 
 export function assertProcessSuccess({ direction, receiver, results, sender }) {
   const [senderResult, receiverResult] = results;
-  if (senderResult.code === 0 && receiverResult.code === 0) {
+  if (
+    senderResult.code === 0 &&
+    (receiverResult === null || receiverResult.code === 0)
+  ) {
     return;
   }
   const senderLog = sender.logs();
@@ -24,7 +35,8 @@ export function assertProcessSuccess({ direction, receiver, results, sender }) {
   throw new Error(
     `diverse LAN ${direction} process failed ` +
       `(sender ${senderResult.code}/${evidenceCount(senderLog)}, ` +
-      `receiver ${receiverResult.code}/${evidenceCount(receiverLog)}; ` +
+      `receiver ${receiverResult?.code ?? "active"}/` +
+      `${evidenceCount(receiverLog)}; ` +
       `stages ${values(senderLog, STAGE_PATTERN, "stage")}|` +
       `${values(receiverLog, STAGE_PATTERN, "stage")}; ` +
       `statuses ${values(senderLog, STATUS_PATTERN, "status")}|` +

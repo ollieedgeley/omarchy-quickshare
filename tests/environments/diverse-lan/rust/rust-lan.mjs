@@ -33,6 +33,10 @@ const MULTI_FRAME_FILE_SIZE = 1_048_577;
 const POLL_MS = 100;
 const QUEUED_SHARE_PATTERN = /Share (?<id>\d+) queued/u;
 const RECEIVED_SUBDIRECTORY = "omarchy-quickshare";
+const REFERENCE_TERMINAL_STATUS = {
+  completed: "kComplete",
+  rejected: "kReject",
+};
 const RUST_LAN_IMAGE = "omarchy-quickshare/rust-lan-peer:development";
 const SAFE_REASON_SEPARATOR = /\s+/u;
 const SAFE_TERMINAL_REASONS = new Set(
@@ -579,13 +583,12 @@ async function finishRustToGoogle(options) {
   if (outcome === "failed") {
     await receiver.stop();
     directories.peerStopped = true;
+  } else if (outcome === "cancelled") {
+    await rustCommand(["share", "cancel", shareId], directories);
   } else {
-    if (outcome === "cancelled") {
-      await rustCommand(["share", "cancel", shareId], directories);
-    }
     recordCheckpoint(directories, "wait for reference terminal status");
-    await receiver.wait({
-      acceptedCodes: acceptedExitCodes(outcome),
+    await receiver.waitForTerminal({
+      statuses: [REFERENCE_TERMINAL_STATUS[outcome]],
       timeoutMs: DISCOVERY_TIMEOUT_MS,
     });
   }
