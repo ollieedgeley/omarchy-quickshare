@@ -134,12 +134,13 @@ function prepareJourney(root, journey) {
   prepared.env.CLIPBOARD_REPLACEMENT = String(
     journey.replacement === true ||
       Boolean(journey.invalidate) ||
-      journey.peerChange === true,
+      journey.peerChange === true ||
+      journey.explicitPending === true,
   );
   prepared.env.CLIPBOARD_FAILURE = String(journey.failReplacement === true);
   writeFileSync(prepared.env.CLIPBOARD_LOG, "");
   prepared.env.CLIPBOARD_VALUE = "changed B";
-  if (!captureFirst && automatic) {
+  if (!captureFirst && automatic && !journey.explicitPending) {
     prepared.env.CLIPBOARD_VALUE = value;
   }
   return { ...prepared, attachment, peer };
@@ -359,6 +360,16 @@ test("changing recipient during a read captures afresh", async () => {
     captureFirst: false,
     consume: true,
     peerChange: true,
+    type: "text",
+  });
+});
+
+test("pending explicit capture prevents automatic competition", async () => {
+  await runJourney({
+    automatic: true,
+    captureFirst: false,
+    consume: true,
+    explicitPending: true,
     type: "text",
   });
 });
