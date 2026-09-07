@@ -11,6 +11,7 @@ ShellRoot {
   property bool failureObserved: false
   property int failureSnapshots: 0
   property string lastPeerId: ""
+  property bool duplicateCompletionObserved: false
   readonly property var journey:
     JSON.parse(Quickshell.env("CAPTURE_JOURNEY"))
 
@@ -44,12 +45,21 @@ ShellRoot {
     path: journey.replacement || journey.invalidate || journey.peerChange
       || journey.explicitPending || journey.timeoutReplacement
       || journey.providedEmpty || journey.explicitFailure
-      || journey.peerProjection
+      || journey.peerProjection || journey.duplicates
       || (journey.preference && journey.automatic)
       ? Quickshell.env("CLIPBOARD_STARTED") : ""
     printErrors: false
     onLoaded: {
       if (root.step !== 2 || text() !== "started" || root.panel.actionBusy) {
+        return
+      }
+      if (journey.duplicates) {
+        root.panel.choosePeer(journey.peer)
+        root.panel.choosePeer(journey.peer)
+        widget.open()
+        widget.open()
+        releaseClipboard.running = true
+        root.step = 3
         return
       }
       if (journey.peerProjection) {
@@ -186,6 +196,17 @@ ShellRoot {
       root.checks += 1
       if (root.checks > 240) {
         console.error("CAPTURE_TIMEOUT", root.step)
+        console.error("CAPTURE_STATE", JSON.stringify({
+          selected: widget.selectedPeerId,
+          armed: widget.selectionArmed,
+          capture: widget.clipboardPreview,
+          clipboardBusy: widget.clipboardBusy,
+          currentRead: widget.clipboardAction,
+          queuedRead: widget.pendingClipboardAction,
+          active: root.panel ? root.panel.activeShare : null,
+          error: root.panel ? root.panel.actionError : "",
+          actionBusy: root.panel ? root.panel.actionBusy : false,
+        }))
         Qt.exit(2)
         return
       }
@@ -282,7 +303,7 @@ ShellRoot {
             || journey.peerChange || journey.explicitPending
             || journey.timeoutReplacement || journey.providedEmpty
             || journey.explicitFailure
-            || journey.peerProjection
+            || journey.peerProjection || journey.duplicates
             || (journey.preference && journey.automatic))) {
         clipboardStarted.reload()
       } else if (root.step === 5 && !root.panel.actionBusy) {
@@ -406,6 +427,28 @@ ShellRoot {
           console.error("CAPTURE_MISMATCH", JSON.stringify(share))
           Qt.exit(3)
           return
+        }
+        if (journey.duplicates) {
+          if (root.panel.actionBusy) return
+          if (!root.duplicateCompletionObserved) {
+            widget.paste(journey.value)
+            widget.paste(journey.value)
+            root.panel.choosePeer(journey.peer)
+            root.panel.choosePeer(journey.peer)
+            widget.open()
+            widget.open()
+            root.failureObserved = true
+            root.failureSnapshots = 0
+            root.duplicateCompletionObserved = true
+            return
+          }
+          if (root.failureSnapshots < 2) return
+          if (!widget.showPasteBadge
+              || widget.clipboardPreview !== journey.value) {
+            console.error("Duplicate events consumed independent next capture")
+            Qt.exit(3)
+            return
+          }
         }
         if (journey.newer) {
           if (root.panel.actionBusy) return

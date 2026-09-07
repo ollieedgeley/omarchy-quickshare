@@ -56,6 +56,7 @@ BarWidget {
     status.protocolState === "checking" ? "Checking" : "Unavailable"
 
   function open() {
+    if (popupOpen) return
     popupOpen = true
     if (!status.discover()) status.refresh()
   }

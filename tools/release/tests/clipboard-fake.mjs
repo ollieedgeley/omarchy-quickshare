@@ -53,7 +53,11 @@ if (process.env.CLIPBOARD_REPLACEMENT === "true" && previousReads === "") {
       clearInterval(timer);
       if (journey.explicitFailure) {
         completeRead();
-      } else if (journey.explicitPending || journey.peerProjection) {
+      } else if (
+        journey.explicitPending ||
+        journey.peerProjection ||
+        journey.duplicates
+      ) {
         process.stdout.write(journey.value);
       } else {
         process.stdout.write("superseded automatic B");
