@@ -4,6 +4,8 @@ This test-only executable wraps the pinned Google Nearby Connections v3
 production implementation. It does not implement a Connections frame or
 medium.
 
+## Build the reference executable
+
 Copy `connections_peer.cc` to `connections/file_share/` in the prepared pinned
 Nearby checkout and add the `cc_binary` declaration from `BUILD.bazel` to that
 checkout's `connections/file_share/BUILD` (it already loads `cc_binary`). Then
@@ -13,12 +15,20 @@ compile it with:
 bazel build //connections/file_share:connections_peer
 ```
 
+The build is complete when Bazel produces `bazel-bin/connections/file_share/connections_peer`.
+
+## Run a controlled LAN peer
+
 The LAN control is deterministic:
 
 ```sh
 bazel-bin/connections/file_share/connections_peer --advertise \
   --initial-medium=wifi_lan --upgrade-medium=wifi_lan --endpoint-name=peer-a
 ```
+
+Wait for its `ready` event before driving a scenario. A completed transfer requires terminal payload evidence; startup alone proves readiness.
+
+## Controls and observed events
 
 `--initial-medium` configures advertising, discovery, and the request's
 `ConnectionOptions.allowed`; `--upgrade-medium` configures only advertising's

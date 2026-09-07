@@ -121,10 +121,6 @@ function ensureCodeGraph(initialize) {
     }
     run(CODEGRAPH, ["init", "--yes", MIRROR], { cwd: ROOT });
   }
-  const version = output(CODEGRAPH, ["--version"], { cwd: ROOT });
-  if (!version.includes("1.6.0")) {
-    throw new Error(`expected CodeGraph 1.6.0, received ${version}`);
-  }
   run(CODEGRAPH, ["sync", "--quiet", MIRROR], { cwd: ROOT });
 }
 

@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 .DELETE_ON_ERROR:
-.NOTPARALLEL:
+.NOTPARALLEL: verify test-rust-lan release
 
 TIMEOUT ?= timeout --foreground 60s
 ANDROID_TEST_TIMEOUT ?= timeout --foreground 300s
@@ -62,8 +62,7 @@ help: ## List public and targeted gates.
 
 setup: ## Install pinned development tools and activate repository hooks.
 	@npm ci
-	@rustup toolchain install 1.98.0 --profile minimal \
-		--component rustfmt --component clippy --component rust-analyzer
+	@rustup show active-toolchain
 	@$(MAKE) ruff-provision
 	@$(MAKE) analyzers-provision
 	@$(MAKE) hooks-install

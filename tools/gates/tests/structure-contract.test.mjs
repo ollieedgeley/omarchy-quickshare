@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -334,4 +335,44 @@ test("function scans reject missing parser inputs", () => {
 
 test("formatter and linter metric settings agree", async () => {
   assert.deepEqual(await configurationFailures(), []);
+});
+
+test("application configuration accepts CI and a changed toolchain pin", () => {
+  const directory = mkdtempSync(join(tmpdir(), "quickshare-config-"));
+  try {
+    mkdirSync(join(directory, ".github", "workflows"), { recursive: true });
+    writeFileSync(
+      join(directory, "rust-toolchain.toml"),
+      '[toolchain]\nchannel = "1.99.0"\n' +
+        'components = ["clippy", "rust-analyzer", "rustfmt"]\n',
+    );
+    writeFileSync(join(directory, "rustfmt.toml"), "max_width = 80\n");
+    writeFileSync(
+      join(directory, "clippy.toml"),
+      "too-many-lines-threshold = 50\n",
+    );
+    writeFileSync(
+      join(directory, "sgconfig.yml"),
+      "ruleDirs: []\ntestConfigs: []\nutilDirs: []\n",
+    );
+    const moduleUrl = new URL(
+      "../structure-configuration.mjs",
+      import.meta.url,
+    );
+    const source = JSON.stringify(moduleUrl.href);
+    const script = `import { configurationFailures } from ${source};
+      console.log(JSON.stringify(await configurationFailures("app")));`;
+    const result = spawnSync(
+      process.execPath,
+      ["--input-type=module", "-e", script],
+      {
+        encoding: "utf8",
+        env: { ...process.env, GATE_ROOT: directory },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), []);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
 });

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,36 +10,9 @@ const CODE_LINE_LIMIT = 80;
 const FUNCTION_LINE_LIMIT = 50;
 const ESLINT_ERROR_SEVERITY = 2;
 
-function packageConfigurationFailures() {
-  const failures = [];
-  const packageJson = JSON.parse(
-    readFileSync(join(ROOT, "package.json"), "utf8"),
-  );
-  const requiredPins = {
-    "@ast-grep/cli": "0.45.3",
-    "@colbymchenry/codegraph": "1.6.0",
-    "@eslint/js": "10.0.1",
-    "@stylistic/eslint-plugin": "5.10.0",
-    eslint: "10.9.1",
-    globals: "17.12.0",
-    husky: "9.1.7",
-    "markdownlint-cli2": "0.23.2",
-    prettier: "3.9.6",
-  };
-  for (const [name, version] of Object.entries(requiredPins)) {
-    if (packageJson.devDependencies?.[name] !== version) {
-      failures.push(`package.json must pin ${name} to ${version}`);
-    }
-  }
-  return failures;
-}
-
 function rustConfigurationFailures() {
   const failures = [];
   const toolchain = readFileSync(join(ROOT, "rust-toolchain.toml"), "utf8");
-  if (!toolchain.includes('channel = "1.98.0"')) {
-    failures.push("rust-toolchain.toml must pin Rust 1.98.0");
-  }
   for (const component of ["clippy", "rust-analyzer", "rustfmt"]) {
     if (!toolchain.includes(component)) {
       failures.push(`missing Rust component: ${component}`);
@@ -66,9 +39,6 @@ function astConfigurationFailures() {
     if (!astConfig.includes(key)) {
       failures.push(`sgconfig.yml missing ${key}`);
     }
-  }
-  if (existsSync(join(ROOT, ".github/workflows"))) {
-    failures.push("hosted CI is out of scope; remove .github/workflows");
   }
   return failures;
 }
@@ -108,7 +78,6 @@ async function javascriptConfigurationFailures() {
 export async function configurationFailures(scope = "all") {
   const failures = [];
   if (scope !== "app") {
-    failures.push(...packageConfigurationFailures());
     failures.push(...(await javascriptConfigurationFailures()));
   }
   if (scope !== "tooling") {

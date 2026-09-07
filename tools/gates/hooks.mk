@@ -1,3 +1,6 @@
+# These phases share a staged mirror and must stop in order on failure.
+.NOTPARALLEL: pre-commit pre-commit-test
+
 .PHONY: commit-msg pre-commit pre-commit-prepare pre-commit-structure pre-push
 .PHONY: pre-commit-source-format pre-commit-source-lint pre-commit-source-ast
 .PHONY: pre-commit-source-analysis pre-commit-test-analysis

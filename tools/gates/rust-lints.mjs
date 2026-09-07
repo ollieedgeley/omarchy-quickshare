@@ -75,17 +75,6 @@ if (isDirectExecution) {
     );
   }
 
-  const rustcVersion = output("rustc", ["--version"], { cwd: ROOT });
-  const analyzerVersion = output("rust-analyzer", ["--version"], { cwd: ROOT });
-  if (!rustcVersion.includes("1.98.0")) {
-    throw new Error(`expected Rust 1.98.0, received ${rustcVersion}`);
-  }
-  if (!analyzerVersion.includes("1.98.0")) {
-    throw new Error(
-      `expected rust-analyzer 1.98.0, received ${analyzerVersion}`,
-    );
-  }
-
   const rustcHelp = output("rustc", ["-W", "help"], { cwd: ROOT });
   const allowedRustcLints = [
     ...rustcHelp.matchAll(ALLOWED_RUSTC_LINT_PATTERN),
