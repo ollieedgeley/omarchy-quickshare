@@ -306,3 +306,22 @@ for (const boundary of ["pause", "staleRoute"]) {
     });
   });
 }
+
+for (const busyPhase of [
+  "awaiting_local_consent",
+  "awaiting_peer_consent",
+  "transferring",
+]) {
+  test(`active: visible ${busyPhase} suspends P`, async () => {
+    await runJourney({
+      automatic: true,
+      busyPhase,
+      captureFirst: false,
+      consume: true,
+      contentCase: "next",
+      explicitPending: true,
+      submissionMode: "observe",
+      type: "text",
+    });
+  });
+}

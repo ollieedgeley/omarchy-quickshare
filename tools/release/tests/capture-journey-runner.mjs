@@ -38,6 +38,16 @@ const FILES = [
   "TerminalView.qml",
   "release.json",
 ];
+function copyCaptureHarness(harness) {
+  for (const file of [
+    "capture-harness.qml",
+    "capture/BusyCaptureJourney.qml",
+  ]) {
+    mkdirSync(dirname(join(harness, file)), { recursive: true });
+    copyFileSync(join(ROOT, "tools/release/tests", file), join(harness, file));
+  }
+}
+
 function prepare(root, journey) {
   const harness = join(root, "harness");
   const native = join(root, "bin");
@@ -53,10 +63,7 @@ function prepare(root, journey) {
     mkdirSync(dirname(join(harness, file)), { recursive: true });
     writeFileSync(join(harness, file), source);
   }
-  copyFileSync(
-    join(ROOT, "tools/release/tests/capture-harness.qml"),
-    join(harness, "capture-harness.qml"),
-  );
+  copyCaptureHarness(harness);
   const executable = join(native, "omarchy-quickshare");
   if (journey.submissionMode || journey.peerProjection || journey.duplicates) {
     copyFileSync(
@@ -148,6 +155,7 @@ function prepareJourney(root, journey) {
   let peer = "pixel-8";
   if (
     journey.recover ||
+    journey.busyPhase ||
     journey.pause ||
     journey.staleRoute ||
     journey.peerChange ||
@@ -235,6 +243,17 @@ function harnessOutput(result, prepared, journey) {
   return output;
 }
 
+function prepareIncoming(prepared, journey) {
+  if (journey.busyPhase !== "awaiting_local_consent") {
+    return;
+  }
+  const result = spawnSync(BINARY, ["visibility", "open"], {
+    encoding: "utf8",
+    env: prepared.env,
+  });
+  assert.equal(result.status, 0, result.stderr);
+}
+
 export async function runJourney(journey) {
   const root = mkdtempSync(join(tmpdir(), "quickshare-capture-"));
   const prepared = prepareJourney(root, journey);
@@ -252,6 +271,7 @@ export async function runJourney(journey) {
       { env: prepared.env, encoding: "utf8" },
     );
     assert.equal(setting.status, 0, setting.stderr);
+    prepareIncoming(prepared, journey);
     if (journey.closedPaste) {
       const pin = spawnSync(BINARY, ["peer", "pin", "pixel-8"], {
         env: prepared.env,

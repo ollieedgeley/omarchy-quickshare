@@ -126,6 +126,14 @@ queued replacement reads cannot restore the badge or start a share. Reopening
 does not replay a send. To recover, paste again and choose a current device.
 Closing the panel does not cancel an admitted transfer.
 
+An admitted share keeps its original content and recipient. Admission consumes
+only the submitted capture; a newer independent capture remains available.
+Failed submission retains the capture for a deliberate retry.
+
+Incoming consent or another active share preserves an interrupted recipient
+for display but suspends its send intent. Ending that share does not send a
+pending capture. Choose a device again to send it.
+
 ```sh
 omarchy shell io.github.ollieedgeley.omarchy-quickshare open
 ```

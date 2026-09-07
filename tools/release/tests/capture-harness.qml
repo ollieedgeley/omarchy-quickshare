@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import "capture" as CaptureJourneys
 
 ShellRoot {
   id: root
@@ -15,6 +16,7 @@ ShellRoot {
   property bool duplicateCompletionObserved: false
   property bool nativeActionDone: false
   property string externalShareId: ""
+  property string nativeOutput: ""
   readonly property var journey:
     JSON.parse(Quickshell.env("CAPTURE_JOURNEY"))
 
@@ -30,11 +32,16 @@ ShellRoot {
 
   function runNativeAction(arguments, nextStep) {
     nativeActionDone = false
+    nativeOutput = ""
     nativeTransition.command = [
       Quickshell.env("QUICKSHARE_REAL_BINARY"),
     ].concat(arguments)
     root.step = nextStep
     nativeTransition.running = true
+  }
+
+  function releaseRead() {
+    releaseClipboard.running = true
   }
 
   function requireFrozenRoute() {
@@ -73,6 +80,10 @@ ShellRoot {
     printErrors: false
     onLoaded: {
       if (root.step !== 2 || text() !== "started" || root.panel.actionBusy) {
+        return
+      }
+      if (journey.busyPhase) {
+        busyJourney.begin()
         return
       }
       if (journey.duplicates) {
@@ -124,6 +135,12 @@ ShellRoot {
     command: ["touch", Quickshell.env("CLIPBOARD_RELEASE")]
   }
   BarWidget { id: widget }
+  CaptureJourneys.BusyCaptureJourney {
+    id: busyJourney
+    harness: root
+    captureWidget: widget
+    journey: root.journey
+  }
 
   FileView {
     id: submissionStarted
@@ -265,6 +282,10 @@ ShellRoot {
 
   Process {
     id: nativeTransition
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.nativeOutput = String(text || "")
+    }
     onExited: function(code) {
       if (code !== 0) {
         console.error("Authoritative native transition failed", root.step, code)
@@ -302,6 +323,15 @@ ShellRoot {
       }
       if (!widget.protocolReady && !(journey.staleRoute && root.step === 52)) {
         return
+      }
+      if (journey.busyPhase) {
+        try {
+          if (busyJourney.advance()) return
+        } catch (error) {
+          console.error(String(error))
+          Qt.exit(3)
+          return
+        }
       }
       if (journey.explicitFailure && root.step >= 2 && root.step < 11
           && root.panel.activeShareId.length > 0) {

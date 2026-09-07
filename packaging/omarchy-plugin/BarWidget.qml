@@ -388,6 +388,9 @@ BarWidget {
           actionBusy: status.actionBusy
           clipboardPreview: root.clipboardPreview
           showPasteBadge: root.showPasteBadge
+          onHasActiveShareChanged: {
+            if (hasActiveShare) root.selectionArmed = false
+          }
           onAcceptRequested: function(shareId) {
             status.accept(shareId)
           }
