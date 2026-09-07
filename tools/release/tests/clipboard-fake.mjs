@@ -15,7 +15,12 @@ let firstValue = "superseded automatic B";
 if (journey.explicitPending) {
   firstValue = journey.value;
 }
-if (process.env.CLIPBOARD_REPLACEMENT === "true" && previousReads === "") {
+if (journey.invalidRead === "empty") {
+  process.exitCode = 0;
+} else if (
+  process.env.CLIPBOARD_REPLACEMENT === "true" &&
+  previousReads === ""
+) {
   writeFileSync(process.env.CLIPBOARD_STARTED, "started");
   const timer = setInterval(() => {
     if (existsSync(process.env.CLIPBOARD_RELEASE)) {

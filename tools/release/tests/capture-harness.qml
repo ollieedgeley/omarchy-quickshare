@@ -187,6 +187,18 @@ ShellRoot {
         }
         root.paste()
         root.step = 4
+      } else if (root.step === 2 && journey.invalidRead
+          && !widget.clipboardBusy && root.panel.actionError.length > 0) {
+        if (root.panel.activeShareId.length > 0 || widget.showPasteBadge) {
+          throw new Error("Invalid clipboard capture admitted content")
+        }
+        if (!root.failureObserved) {
+          root.failureObserved = true
+          root.failureSnapshots = 0
+        }
+        if (root.failureSnapshots < 2) return
+        root.paste()
+        root.step = 4
       } else if (root.step === 2 && !journey.captureFirst
           && !journey.automatic) {
         if (root.panel.activeShareId.length > 0 || widget.clipboardBusy) {

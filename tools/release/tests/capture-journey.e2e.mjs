@@ -171,7 +171,12 @@ function assertJourneyOutcome(prepared, journey) {
   if (!journey.captureFirst && journey.automatic) {
     expectedReads = "read\n";
   }
-  if (journey.replacement || journey.peerChange || journey.timeoutReplacement) {
+  if (
+    journey.replacement ||
+    journey.peerChange ||
+    journey.timeoutReplacement ||
+    journey.invalidRead
+  ) {
     expectedReads = "read\nread\n";
   }
   if (journey.failReplacement) {
@@ -395,6 +400,16 @@ test("expired automatic read preserves queued explicit capture", async () => {
     consume: true,
     readTimeout: true,
     timeoutReplacement: true,
+    type: "text",
+  });
+});
+
+test("empty automatic capture waits for deliberate recovery", async () => {
+  await runJourney({
+    automatic: true,
+    captureFirst: false,
+    consume: true,
+    invalidRead: "empty",
     type: "text",
   });
 });
