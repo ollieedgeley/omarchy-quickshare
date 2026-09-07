@@ -368,6 +368,8 @@ The initial hook change must include contract fixtures for staged-only behavior,
   native availability state through Quick Shell.
 - `make plugin-capture-prepare` builds the current CLI outside the test budget.
   `make test-plugin-capture` checks isolated real QML/CLI capture journeys.
+  Both plugin gates force offscreen Qt without the desktop platform theme,
+  private home/runtime/config/data paths, and no inherited live display.
 - `make test-local-install` checks local binary installation and the systemd
   user-service lifecycle; `make install-local` performs the local install.
 - `make test-contracts` runs shared transfer scenarios against fast doubles; simulator adapters consume the same scenarios.

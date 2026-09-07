@@ -1,3 +1,26 @@
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+
+const PRIVATE_DIRECTORY_MODE = 0o700;
+
+export function headlessEnvironment(root, overrides = {}) {
+  const runtime = join(root, "runtime");
+  mkdirSync(runtime, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  return {
+    ...process.env,
+    ...overrides,
+    DISPLAY: "",
+    HOME: root,
+    HYPRLAND_INSTANCE_SIGNATURE: "",
+    QT_QPA_PLATFORM: "offscreen",
+    QT_QPA_PLATFORMTHEME: "",
+    WAYLAND_DISPLAY: "",
+    XDG_CONFIG_HOME: join(root, "config"),
+    XDG_DATA_HOME: join(root, "data"),
+    XDG_RUNTIME_DIR: runtime,
+  };
+}
+
 export const HARNESS_STUBS = {
   "Commons/Border.qml": `pragma Singleton
 import QtQuick

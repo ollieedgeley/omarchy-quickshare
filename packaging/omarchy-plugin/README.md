@@ -49,7 +49,8 @@ outcomes. Accepted transfers keep their settings until they finish.
 
 The plugin uses control protocol 5. Native status includes saved and applied
 preferences, pending activation, and errors. Pin/unpin actions require the
-daemon; `omarchy-quickshare config set pinned_peer_id pixel-8` also works offline.
+daemon. `omarchy-quickshare config set pinned_peer_id pixel-8` also works
+offline.
 `discoverable` and `read_clipboard_on_select` default to `false`.
 The daemon applies discoverability policy independently of acknowledgement
 that all preferences have activated. The snapshot's `visibility_status` reports
@@ -98,6 +99,11 @@ are found. Clicking a device sends the content already captured in the badge
 to that exact peer. Without captured content, the default Off setting waits
 for an explicit Paste. Turning `read_clipboard_on_select` On lets that
 recipient selection read the current clipboard once instead.
+
+An explicit keyboard Paste takes priority over an automatic clipboard read
+already in progress. The old result is discarded before the replacement
+capture completes. If the replacement fails, the old automatic value is not
+sent; the panel reports the failure and waits for another deliberate action.
 
 ```sh
 omarchy shell io.github.ollieedgeley.omarchy-quickshare open

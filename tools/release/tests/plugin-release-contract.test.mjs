@@ -20,7 +20,7 @@ import {
   createPluginRepository,
   loadReleaseArtifacts,
 } from "../plugin-export.mjs";
-import { HARNESS_STUBS } from "./plugin-harness-stubs.mjs";
+import { HARNESS_STUBS, headlessEnvironment } from "./plugin-harness-stubs.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const STATUS_HARNESS = join(
@@ -258,7 +258,10 @@ test("plugin export records native and source-build checksums", () => {
 });
 
 test("Quick Shell runtime matches the supported version", () => {
-  const result = spawnSync(QUICKSHELL, ["--version"], { encoding: "utf8" });
+  const result = spawnSync(QUICKSHELL, ["--version"], {
+    encoding: "utf8",
+    env: headlessEnvironment(temporaryDirectory()),
+  });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
 
   assert.equal(result.status, 0, output);
@@ -269,11 +272,10 @@ test("Quick Shell exercises availability and busy paste integration", () => {
   const prepared = prepareHarness(temporaryDirectory());
   const result = spawnSync(QUICKSHELL, ["--no-color", "-p", prepared.harness], {
     encoding: "utf8",
-    env: {
-      ...process.env,
+    env: headlessEnvironment(dirname(prepared.nativeDirectory), {
       PATH: `${prepared.nativeDirectory}:${process.env.PATH ?? ""}`,
       QUICKSHARE_TEST_LOG: prepared.actionLog,
-    },
+    }),
     timeout: HARNESS_TIMEOUT_MS,
   });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
@@ -290,6 +292,7 @@ test("Quick Shell renders safe transfer states and exact controls", () => {
   const harness = preparePanelHarness(temporaryDirectory());
   const result = spawnSync(QUICKSHELL, ["--no-color", "-p", harness], {
     encoding: "utf8",
+    env: headlessEnvironment(dirname(dirname(harness))),
     timeout: HARNESS_TIMEOUT_MS,
   });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;

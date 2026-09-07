@@ -14,6 +14,7 @@ BarWidget {
   property bool pasteActionComplete: false
   property bool pastePending: false
   property string clipboardAction: ""
+  property string pendingClipboardAction: ""
   property string clipboardOutput: ""
   property string clipboardPeerId: ""
   property string clipboardPreview: ""
@@ -79,18 +80,32 @@ BarWidget {
   }
 
   function finishClipboard(value) {
+    if (pendingClipboardAction.length > 0) {
+      var pending = pendingClipboardAction
+      pendingClipboardAction = ""
+      Qt.callLater(function() {
+        root.readClipboard(pending, root.selectedPeerId)
+      })
+      return
+    }
     var action = clipboardAction
     var peerId = clipboardPeerId
     clipboardAction = ""
     clipboardPeerId = ""
     clipboardOutput = ""
     if (action === "send" && peerId !== selectedPeerId) return
+    if (action.length === 0) return
     if (!captureClipboard(value)) return
     if (action === "send" || action === "preview") submitCaptured()
   }
 
   function readClipboard(action, peerId) {
-    if (clipboardBusy) return false
+    if (clipboardBusy) {
+      if (action !== "preview") return false
+      pendingClipboardAction = action
+      clipboardAction = ""
+      return true
+    }
     clipboardAction = action
     clipboardPeerId = String(peerId || "")
     clipboardOutput = ""
@@ -137,6 +152,10 @@ BarWidget {
       onStreamFinished: root.clipboardOutput = String(text || "")
     }
     onExited: function(exitCode) {
+      if (root.pendingClipboardAction.length > 0) {
+        root.finishClipboard("")
+        return
+      }
       if (exitCode === 0 && root.clipboardOutput.length > 0) {
         root.finishClipboard(root.clipboardOutput)
         return

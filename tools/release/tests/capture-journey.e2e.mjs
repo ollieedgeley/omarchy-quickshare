@@ -6,6 +6,7 @@ import {
   copyFileSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -15,7 +16,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { setTimeout } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { HARNESS_STUBS } from "./plugin-harness-stubs.mjs";
+import { HARNESS_STUBS, headlessEnvironment } from "./plugin-harness-stubs.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const BINARY = resolve(
@@ -60,21 +61,13 @@ function prepare(root) {
   );
   symlinkSync(BINARY, join(native, "omarchy-quickshare"));
   const clipboard = join(native, "wl-paste");
-  writeFileSync(
-    clipboard,
-    "#!/usr/bin/env node\nprocess.stdout.write('changed B');\n",
-  );
+  copyFileSync(join(ROOT, "tools/release/tests/clipboard-fake.mjs"), clipboard);
   chmodSync(clipboard, EXECUTABLE_MODE);
   return {
     harness: join(harness, "capture-harness.qml"),
-    env: {
-      ...process.env,
-      HOME: root,
+    env: headlessEnvironment(root, {
       PATH: `${native}:${process.env.PATH ?? ""}`,
-      XDG_CONFIG_HOME: join(root, "config"),
-      XDG_DATA_HOME: join(root, "data"),
-      XDG_RUNTIME_DIR: join(root, "runtime"),
-    },
+    }),
   };
 }
 
@@ -88,21 +81,83 @@ async function waitForDaemon(binary, environment, attempts) {
   await waitForDaemon(binary, environment, attempts - 1);
 }
 
-async function runJourney(captureFirst) {
-  const root = mkdtempSync(join(tmpdir(), "quickshare-capture-"));
+function prepareJourney(root, journey) {
+  const { automatic, captureFirst, type } = journey;
   const prepared = prepare(root);
-  prepared.env.CAPTURE_FIRST = String(captureFirst);
-  const binary = BINARY;
-  const daemon = spawn(binary, ["daemon", "--simulate"], {
+  const file = join(root, "captured A.txt");
+  const value = {
+    file: `file://${file}`,
+    text: "captured A\nexact bytes",
+    url: "https://example.test/A?exact=%20&x=1",
+  }[type];
+  writeFileSync(file, "exact file bytes");
+  let attachment = { type, value };
+  if (type === "file") {
+    attachment = JSON.parse(
+      '{"type":"file","name":"captured A.txt","size_bytes":16}',
+    );
+  }
+  prepared.env.CAPTURE_JOURNEY = JSON.stringify({
+    attachment,
+    automatic,
+    captureFirst,
+    failReplacement: journey.failReplacement === true,
+    replacement: journey.replacement === true,
+    value,
+  });
+  prepared.env.CLIPBOARD_LOG = join(root, "clipboard.log");
+  prepared.env.CLIPBOARD_STARTED = join(root, "clipboard.started");
+  prepared.env.CLIPBOARD_RELEASE = join(root, "clipboard.release");
+  prepared.env.CLIPBOARD_REPLACEMENT = String(journey.replacement === true);
+  prepared.env.CLIPBOARD_FAILURE = String(journey.failReplacement === true);
+  writeFileSync(prepared.env.CLIPBOARD_LOG, "");
+  prepared.env.CLIPBOARD_VALUE = "changed B";
+  if (!captureFirst && automatic) {
+    prepared.env.CLIPBOARD_VALUE = value;
+  }
+  return { ...prepared, attachment };
+}
+
+function assertJourneyOutcome(prepared, journey) {
+  const status = spawnSync(BINARY, ["status", "--json"], {
+    env: prepared.env,
+    encoding: "utf8",
+  });
+  assert.equal(status.status, 0, status.stderr);
+  const share = JSON.parse(status.stdout).response.snapshot.active_share;
+  if (journey.failReplacement) {
+    assert.equal(share, null);
+  } else {
+    assert.deepEqual(share.attachment, prepared.attachment);
+    assert.equal(share.peer.id, "pixel-8");
+  }
+  let expectedReads = "";
+  if (!journey.captureFirst && journey.automatic) {
+    expectedReads = "read\n";
+  }
+  if (journey.replacement) {
+    expectedReads = "read\nread\n";
+  }
+  if (journey.failReplacement) {
+    expectedReads = "read\nread\nread\n";
+  }
+  assert.equal(readFileSync(prepared.env.CLIPBOARD_LOG, "utf8"), expectedReads);
+}
+
+async function runJourney(journey) {
+  const root = mkdtempSync(join(tmpdir(), "quickshare-capture-"));
+  const prepared = prepareJourney(root, journey);
+  const { automatic } = journey;
+  const daemon = spawn(BINARY, ["daemon", "--simulate"], {
     env: prepared.env,
     stdio: "ignore",
   });
   const exited = once(daemon, "exit");
   try {
-    await waitForDaemon(binary, prepared.env, START_ATTEMPTS);
+    await waitForDaemon(BINARY, prepared.env, START_ATTEMPTS);
     const setting = spawnSync(
-      binary,
-      ["config", "set", "read_clipboard_on_select", String(captureFirst)],
+      BINARY,
+      ["config", "set", "read_clipboard_on_select", String(automatic)],
       { env: prepared.env, encoding: "utf8" },
     );
     assert.equal(setting.status, 0, setting.stderr);
@@ -114,14 +169,7 @@ async function runJourney(captureFirst) {
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
     assert.equal(result.status, 0, output);
     assert.match(output, SUCCESS_PATTERN);
-    const status = spawnSync(binary, ["status", "--json"], {
-      env: prepared.env,
-      encoding: "utf8",
-    });
-    assert.equal(status.status, 0, status.stderr);
-    const share = JSON.parse(status.stdout).response.snapshot.active_share;
-    assert.equal(share.attachment.value, "captured A\nexact bytes");
-    assert.equal(share.peer.id, "pixel-8");
+    assertJourneyOutcome(prepared, journey);
   } finally {
     daemon.kill("SIGTERM");
     await exited;
@@ -129,10 +177,32 @@ async function runJourney(captureFirst) {
   }
 }
 
-test("composed capture-first never rereads changed clipboard", async () => {
-  await runJourney(true);
+for (const type of ["file", "text", "url"]) {
+  for (const automatic of [false, true]) {
+    for (const captureFirst of [true, false]) {
+      const name = `${type}: auto=${automatic}, first=${captureFirst}`;
+      test(name, async () => {
+        await runJourney({ automatic, captureFirst, type });
+      });
+    }
+  }
+}
+
+test("explicit Paste replaces a pending automatic read", async () => {
+  await runJourney({
+    automatic: true,
+    captureFirst: false,
+    replacement: true,
+    type: "text",
+  });
 });
 
-test("Off recipient-first waits for Paste without reading", async () => {
-  await runJourney(false);
+test("failed explicit replacement cannot fall back to auto", async () => {
+  await runJourney({
+    automatic: true,
+    captureFirst: false,
+    failReplacement: true,
+    replacement: true,
+    type: "text",
+  });
 });
