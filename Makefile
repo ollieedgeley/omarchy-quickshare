@@ -467,3 +467,4 @@ build: ## Build the complete locked workspace after verification.
 include tools/gates/rust-lints.mk
 include tools/gates/environments.mk
 include tools/gates/hooks.mk
+include tools/gates/ci.mk
