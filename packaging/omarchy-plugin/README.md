@@ -108,6 +108,11 @@ sent; the panel reports the failure and waits for another deliberate action.
 The keyboard Paste shortcut belongs to the focused panel window, not the bar
 window, so it also works when the popup holds keyboard focus.
 
+Each clipboard capture has a three-second deadline across MIME fallbacks.
+Timeout stops that read without automatic retries. Paste or select a device
+again to retry deliberately. A newer queued explicit Paste keeps its intent
+when an older automatic read expires.
+
 Panel submissions use the CLI's clipboard-input mode. Text that looks like a
 filename remains text even if that file exists in the working directory.
 File URIs retain send-time file validation. Values such as `--help` are

@@ -41,7 +41,7 @@ ShellRoot {
   FileView {
     id: clipboardStarted
     path: journey.replacement || journey.invalidate || journey.peerChange
-      || journey.explicitPending
+      || journey.explicitPending || journey.timeoutReplacement
       ? Quickshell.env("CLIPBOARD_STARTED") : ""
     printErrors: false
     onLoaded: {
@@ -52,7 +52,7 @@ ShellRoot {
       if (journey.invalidate) root.invalidate()
       else if (journey.peerChange) root.panel.choosePeer(journey.peer)
       else if (!journey.explicitPending) widget.readClipboard("preview", "")
-      releaseClipboard.running = true
+      if (!journey.timeoutReplacement) releaseClipboard.running = true
       root.step = 3
     }
   }
@@ -160,7 +160,8 @@ ShellRoot {
         submissionStarted.reload()
       } else if (root.step === 2
           && (journey.replacement || journey.invalidate
-            || journey.peerChange || journey.explicitPending)) {
+            || journey.peerChange || journey.explicitPending
+            || journey.timeoutReplacement)) {
         clipboardStarted.reload()
       } else if (root.step === 5 && !root.panel.actionBusy) {
         if (root.panel.activeShareId.length > 0 || !widget.opened
@@ -176,6 +177,9 @@ ShellRoot {
           && !root.panel.actionBusy && root.panel.activeShareId.length === 0) {
         console.error("LITERAL_NOT_ADMITTED")
         Qt.exit(3)
+      } else if (root.step === 3 && journey.timeoutReplacement
+          && root.panel.actionError.length > 0) {
+        throw new Error("Expired old read overrode newer explicit capture")
       } else if (root.step === 2 && journey.readTimeout
           && !widget.clipboardBusy && root.panel.actionError.length > 0) {
         if (root.panel.activeShareId.length > 0 || widget.showPasteBadge) {

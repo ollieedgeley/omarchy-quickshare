@@ -171,7 +171,7 @@ function assertJourneyOutcome(prepared, journey) {
   if (!journey.captureFirst && journey.automatic) {
     expectedReads = "read\n";
   }
-  if (journey.replacement || journey.peerChange) {
+  if (journey.replacement || journey.peerChange || journey.timeoutReplacement) {
     expectedReads = "read\nread\n";
   }
   if (journey.failReplacement) {
@@ -384,6 +384,17 @@ test("a stalled clipboard read permits deliberate recovery", async () => {
     captureFirst: false,
     consume: true,
     readTimeout: true,
+    type: "text",
+  });
+});
+
+test("expired automatic read preserves queued explicit capture", async () => {
+  await runJourney({
+    automatic: true,
+    captureFirst: false,
+    consume: true,
+    readTimeout: true,
+    timeoutReplacement: true,
     type: "text",
   });
 });
