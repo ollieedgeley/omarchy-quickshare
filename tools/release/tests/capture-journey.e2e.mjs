@@ -254,3 +254,15 @@ for (const automatic of [false, true]) {
     });
   });
 }
+
+for (const automatic of [false, true]) {
+  test(`selection: preferred peer appears, auto=${automatic}`, async () => {
+    await runJourney({
+      automatic,
+      captureFirst: true,
+      consume: true,
+      peerProjection: "appear",
+      type: "text",
+    });
+  });
+}

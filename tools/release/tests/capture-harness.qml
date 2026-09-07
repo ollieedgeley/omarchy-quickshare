@@ -188,6 +188,19 @@ ShellRoot {
     command: ["touch", Quickshell.env("PROJECTION_ACTIVE")]
   }
 
+  Process {
+    id: configurePreferred
+    command: ["env", "omarchy-quickshare", "peer", "pin", "pixel-8"]
+    onExited: function(code) {
+      if (code !== 0) {
+        console.error("Preferred peer configuration failed")
+        Qt.exit(3)
+        return
+      }
+      activateProjection.running = true
+    }
+  }
+
   Timer {
     interval: 25
     repeat: true
@@ -237,8 +250,39 @@ ShellRoot {
           root.step = 2
         }
       } else if (root.step === 1 && !root.panel.actionBusy) {
+        if (journey.peerProjection === "appear") {
+          if (root.panel.peers.some(function(peer) {
+            return peer.id === "pixel-8"
+          })) {
+            console.error("Preferred arrival fixture did not hide P")
+            Qt.exit(3)
+            return
+          }
+          configurePreferred.running = true
+          root.step = 18
+          return
+        }
         root.panel.choosePeer("pixel-8")
         root.step = 2
+      } else if (root.step === 18) {
+        var preferred = root.panel.peers.find(function(peer) {
+          return peer.id === "pixel-8"
+        })
+        if (!preferred || !preferred.pinned) return
+        if (widget.clipboardBusy || root.panel.activeShareId.length > 0
+            || widget.selectedPeerId.length > 0 || !widget.showPasteBadge
+            || widget.clipboardPreview !== journey.value) {
+          console.error("Preferred peer appearance captured or dispatched")
+          Qt.exit(3)
+          return
+        }
+        if (!root.failureObserved) {
+          root.failureObserved = true
+          root.failureSnapshots = 0
+        }
+        if (root.failureSnapshots < 2) return
+        root.panel.choosePeer(journey.peer)
+        root.step = 4
       } else if (root.step === 2 && journey.preference === "enable") {
         changePreference.running = true
         root.step = 12

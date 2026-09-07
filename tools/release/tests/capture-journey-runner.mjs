@@ -146,7 +146,8 @@ function prepareJourney(root, journey) {
   if (
     journey.recover ||
     journey.peerChange ||
-    (journey.peerProjection && journey.peerProjection !== "reorder")
+    journey.peerProjection === "drop" ||
+    journey.peerProjection === "replace"
   ) {
     peer = "galaxy-tab";
   }

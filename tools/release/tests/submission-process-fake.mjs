@@ -51,11 +51,12 @@ function waitForRelease(complete) {
   }, POLL_MS);
 }
 
-if (
-  args[0] === "status" &&
-  journey.peerProjection &&
-  existsSync(process.env.PROJECTION_ACTIVE)
-) {
+let projectionActive = existsSync(process.env.PROJECTION_ACTIVE);
+if (journey.peerProjection === "appear") {
+  projectionActive = !projectionActive;
+}
+
+if (args[0] === "status" && journey.peerProjection && projectionActive) {
   process.exitCode = projectStatus();
 } else if (args[0] !== "send" || !process.env.SUBMISSION_MODE) {
   process.exitCode = execute();
