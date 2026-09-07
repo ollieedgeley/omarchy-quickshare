@@ -60,7 +60,7 @@ function prepare(root, journey) {
     join(harness, "capture-harness.qml"),
   );
   const executable = join(native, "omarchy-quickshare");
-  if (journey.submissionMode) {
+  if (journey.submissionMode || journey.peerProjection) {
     copyFileSync(
       join(ROOT, "tools/release/tests/submission-process-fake.mjs"),
       executable,
@@ -76,6 +76,7 @@ function prepare(root, journey) {
     harness: join(harness, "capture-harness.qml"),
     env: headlessEnvironment(root, {
       PATH: `${native}:${process.env.PATH ?? ""}`,
+      PROJECTION_ACTIVE: join(root, "projection.active"),
       QUICKSHARE_REAL_BINARY: BINARY,
       SUBMISSION_ATTEMPTS: join(root, "submission.attempts"),
       SUBMISSION_MODE: journey.submissionMode || "",
@@ -105,6 +106,7 @@ function prepareClipboard(root, prepared, journey) {
       journey.replacement ||
       journey.invalidate ||
       journey.peerChange ||
+      journey.peerProjection ||
       journey.explicitPending ||
       journey.explicitFailure ||
       journey.providedEmpty ||
@@ -144,11 +146,16 @@ function prepareJourney(root, journey) {
     );
   }
   let peer = "pixel-8";
-  if (journey.recover || journey.peerChange) {
+  if (
+    journey.recover ||
+    journey.peerChange ||
+    (journey.peerProjection && journey.peerProjection !== "reorder")
+  ) {
     peer = "galaxy-tab";
   }
   const capture = { ...journey, attachment, peer, value };
   prepared.env.CAPTURE_JOURNEY = JSON.stringify(capture);
+  writeFileSync(prepared.env.SUBMISSION_ATTEMPTS, "");
   prepareClipboard(root, prepared, capture);
   return { ...prepared, attachment, peer };
 }
@@ -171,7 +178,7 @@ function assertJourneyOutcome(prepared, journey) {
     assert.equal(share.peer.id, prepared.peer);
   }
   let expectedReads = "";
-  if (!journey.captureFirst && journey.automatic) {
+  if ((!journey.captureFirst && journey.automatic) || journey.explicitPending) {
     expectedReads = "read\n";
   }
   if (
@@ -191,10 +198,14 @@ function assertJourneyOutcome(prepared, journey) {
     expectedReads = "read\n";
   }
   assert.equal(readFileSync(prepared.env.CLIPBOARD_LOG, "utf8"), expectedReads);
-  if (journey.failSubmission) {
+  if (journey.failSubmission || journey.peerProjection) {
+    let expectedAttempts = "send\n";
+    if (journey.failSubmission) {
+      expectedAttempts += "send\n";
+    }
     assert.equal(
       readFileSync(prepared.env.SUBMISSION_ATTEMPTS, "utf8"),
-      "send\nsend\n",
+      expectedAttempts,
     );
   }
 }
@@ -469,4 +480,19 @@ for (const preference of [
       type: "text",
     });
   });
+}
+
+for (const automatic of [false, true]) {
+  for (const peerProjection of ["drop", "replace", "reorder"]) {
+    test(`selection: ${peerProjection} P, auto=${automatic}`, async () => {
+      await runJourney({
+        automatic,
+        captureFirst: false,
+        consume: true,
+        explicitPending: !automatic,
+        peerProjection,
+        type: "text",
+      });
+    });
+  }
 }

@@ -10,6 +10,7 @@ ShellRoot {
   property int waitingChecks: 0
   property bool failureObserved: false
   property int failureSnapshots: 0
+  property string lastPeerId: ""
   readonly property var journey:
     JSON.parse(Quickshell.env("CAPTURE_JOURNEY"))
 
@@ -43,11 +44,18 @@ ShellRoot {
     path: journey.replacement || journey.invalidate || journey.peerChange
       || journey.explicitPending || journey.timeoutReplacement
       || journey.providedEmpty || journey.explicitFailure
+      || journey.peerProjection
       || (journey.preference && journey.automatic)
       ? Quickshell.env("CLIPBOARD_STARTED") : ""
     printErrors: false
     onLoaded: {
       if (root.step !== 2 || text() !== "started" || root.panel.actionBusy) {
+        return
+      }
+      if (journey.peerProjection) {
+        root.lastPeerId = root.panel.peers[root.panel.peers.length - 1].id
+        activateProjection.running = true
+        root.step = 14
         return
       }
       if (journey.preference) {
@@ -118,9 +126,20 @@ ShellRoot {
   }
   FileView {
     id: submissionAttempts
-    path: journey.failSubmission ? Quickshell.env("SUBMISSION_ATTEMPTS") : ""
+    path: journey.failSubmission || journey.peerProjection
+      ? Quickshell.env("SUBMISSION_ATTEMPTS") : ""
     printErrors: false
     onLoaded: {
+      if (root.step === 16) {
+        if (text() !== "") {
+          console.error("Vanished recipient triggered submission")
+          Qt.exit(3)
+          return
+        }
+        root.panel.choosePeer(journey.peer)
+        root.step = 17
+        return
+      }
       if (root.step !== 8) return
       if (text() !== "send\n") throw new Error("Failed dispatch retried itself")
       restoreCapture.running = true
@@ -152,6 +171,11 @@ ShellRoot {
         Qt.exit(3)
       }
     }
+  }
+
+  Process {
+    id: activateProjection
+    command: ["touch", Quickshell.env("PROJECTION_ACTIVE")]
   }
 
   Timer {
@@ -197,6 +221,37 @@ ShellRoot {
       } else if (root.step === 2 && journey.preference === "enable") {
         changePreference.running = true
         root.step = 12
+      } else if (root.step === 14) {
+        var peers = root.panel.peers
+        var hasP = peers.some(function(peer) { return peer.id === "pixel-8" })
+        var replacement = peers.some(function(peer) {
+          return peer.id === "replacement-for-pixel-8"
+        })
+        if (journey.peerProjection === "reorder") {
+          if (peers[0].id !== root.lastPeerId) return
+          releaseClipboard.running = true
+          root.step = 4
+          return
+        }
+        if (hasP || (journey.peerProjection === "replace" && !replacement)) {
+          return
+        }
+        releaseClipboard.running = true
+        root.step = 15
+      } else if (root.step === 15 && !widget.clipboardBusy) {
+        if (root.panel.activeShareId.length > 0 || !widget.showPasteBadge
+            || widget.clipboardPreview !== journey.value) {
+          console.error("Lost recipient dispatched or discarded capture")
+          Qt.exit(3)
+          return
+        }
+        if (!root.failureObserved) {
+          root.failureObserved = true
+          root.failureSnapshots = 0
+        }
+        if (root.failureSnapshots < 2) return
+        root.step = 16
+        submissionAttempts.reload()
       } else if (root.step === 12) {
         if (widget.readClipboardOnSelect !== !journey.automatic) return
         if (journey.automatic) {
@@ -227,6 +282,7 @@ ShellRoot {
             || journey.peerChange || journey.explicitPending
             || journey.timeoutReplacement || journey.providedEmpty
             || journey.explicitFailure
+            || journey.peerProjection
             || (journey.preference && journey.automatic))) {
         clipboardStarted.reload()
       } else if (root.step === 5 && !root.panel.actionBusy) {

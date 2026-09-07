@@ -21,6 +21,18 @@ BarWidget {
   readonly property string clipboardPreview:
     capturedContent ? capturedContent.value : ""
   property string selectedPeerId: ""
+  property bool selectionArmed: false
+  readonly property bool selectedPeerIsCurrent: {
+    if (selectedPeerId.length === 0) return false
+    var peers = status.endpointSnapshot.peers || []
+    for (var i = 0; i < peers.length; i++) {
+      if (String(peers[i].id || "") === selectedPeerId) return true
+    }
+    return false
+  }
+  onSelectedPeerIsCurrentChanged: {
+    if (!selectedPeerIsCurrent) selectionArmed = false
+  }
   readonly property bool readClipboardOnSelect:
     status.appliedPreferences.read_clipboard_on_select === true
   onReadClipboardOnSelectChanged: {
@@ -78,6 +90,7 @@ BarWidget {
 
   function clearPasteBadge() {
     invalidateClipboardRead()
+    selectionArmed = false
     selectedPeerId = ""
     capturedContent = null
   }
@@ -119,7 +132,8 @@ BarWidget {
 
   function readClipboard(action, peerId) {
     if (action === "send"
-        && (!readClipboardOnSelect || clipboardAction === "preview"
+        && (!readClipboardOnSelect || !selectionArmed || !selectedPeerIsCurrent
+          || clipboardAction === "preview"
           || pendingClipboardAction === "preview")) return false
     if (clipboardBusy) {
       if (action === "send" && clipboardAction === "send"
@@ -140,11 +154,14 @@ BarWidget {
   }
 
   function submitCaptured() {
-    if (!opened || !pasteLatch || selectedPeerId.length === 0) return
+    if (!opened || !pasteLatch || !selectionArmed || !selectedPeerIsCurrent) {
+      return
+    }
     if (clipboardAction === "preview" || pendingClipboardAction === "preview") {
       return
     }
     var peerId = selectedPeerId
+    selectionArmed = false
     selectedPeerId = ""
     if (!status.submitTo(peerId, clipboardPreview)) {
       status.actionError = "Quick Share is busy. Select a device to try again."
@@ -394,6 +411,11 @@ BarWidget {
               return
             }
             root.selectedPeerId = peerId
+            root.selectionArmed = root.selectedPeerIsCurrent
+            if (!root.selectionArmed) {
+              status.actionError = "Select a currently available device."
+              return
+            }
             if (root.pasteLatch) root.submitCaptured()
             else if (root.readClipboardOnSelect) {
               root.readClipboard("send", peerId)
