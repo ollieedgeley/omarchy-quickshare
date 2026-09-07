@@ -10,6 +10,7 @@ QtObject {
   property string actionError: ""
   property bool actionBusy: false
   property var endpointSnapshot: ({})
+  property var appliedPreferences: ({})
   property int minimumProtocol: -1
   property int maximumProtocol: -1
   property string statusOutput: ""
@@ -133,6 +134,7 @@ QtObject {
       return
     }
     endpointSnapshot = snapshot
+    appliedPreferences = (response.preferences || {}).applied || ({})
     activeShare = snapshot.active_share || ({})
     protocolState = "ready"
   }

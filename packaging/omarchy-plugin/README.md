@@ -54,8 +54,8 @@ daemon; `omarchy-quickshare config set pinned_peer_id pixel-8` also works offlin
 The daemon applies discoverability policy independently of acknowledgement
 that all preferences have activated. The snapshot's `visibility_status` reports
 the applied policy and runtime permission even while other preferences remain
-pending. `read_clipboard_on_select` remains stored only; it does not yet change
-the clipboard behavior described below.
+pending. The plugin consumes the applied `read_clipboard_on_select` value,
+not a pending saved change. Changing it alone does not read or send content.
 
 ## Receive visibility
 
@@ -95,14 +95,17 @@ omarchy-quickshare "https://example.test/share"
 
 Opening the panel starts discovery immediately. Nearby devices appear as they
 are found. Clicking a device sends the content already captured in the badge
-to that exact peer. When no content has been captured, it reads the clipboard.
+to that exact peer. Without captured content, the default Off setting waits
+for an explicit Paste. Turning `read_clipboard_on_select` On lets that
+recipient selection read the current clipboard once instead.
 
 ```sh
 omarchy shell io.github.ollieedgeley.omarchy-quickshare open
 ```
 
 The plugin also accepts Omarchy's universal-paste IPC action. If the panel is
-open, this shows an attachment badge; clicking a device sends that captured
+open, this shows an attachment badge and sends to an explicitly selected
+recipient if one is waiting. Otherwise clicking a device sends the captured
 value without rereading the clipboard. If the panel is closed, the action
 submits immediately to a visible pinned peer or opens the chooser while
 discovery continues.

@@ -17,6 +17,9 @@ BarWidget {
   property string clipboardOutput: ""
   property string clipboardPeerId: ""
   property string clipboardPreview: ""
+  property string selectedPeerId: ""
+  readonly property bool readClipboardOnSelect:
+    status.appliedPreferences.read_clipboard_on_select === true
   property real iconOpacity: 1.0
   readonly property bool opened: popupOpen
   readonly property bool transferring:
@@ -39,6 +42,7 @@ BarWidget {
 
   function close() {
     popupOpen = false
+    selectedPeerId = ""
   }
 
   function closeForPopoutSwitch() {
@@ -80,14 +84,9 @@ BarWidget {
     clipboardAction = ""
     clipboardPeerId = ""
     clipboardOutput = ""
+    if (action === "send" && peerId !== selectedPeerId) return
     if (!captureClipboard(value)) return
-    if (action === "send") {
-      if (!status.submitTo(peerId, value)) {
-        status.actionError = "Quick Share is busy. Try again."
-        return
-      }
-      clearPasteBadge()
-    }
+    if (action === "send" || action === "preview") submitCaptured()
   }
 
   function readClipboard(action, peerId) {
@@ -99,8 +98,21 @@ BarWidget {
     return true
   }
 
+  function submitCaptured() {
+    if (!opened || !pasteLatch || selectedPeerId.length === 0) return
+    var peerId = selectedPeerId
+    selectedPeerId = ""
+    if (!status.submitTo(peerId, clipboardPreview)) {
+      status.actionError = "Quick Share is busy. Select a device to try again."
+    }
+  }
+
   function paste(value) {
-    if (opened) return captureClipboard(value) ? "ok" : "empty"
+    if (opened) {
+      if (!captureClipboard(value)) return "empty"
+      submitCaptured()
+      return "ok"
+    }
     if (!status.submit(value)) return "busy"
     pasteActionComplete = false
     pastePending = true
@@ -317,10 +329,18 @@ BarWidget {
             status.stopDiscovery()
           }
           onPeerSelected: function(shareId, peerId) {
-            if (shareId.length > 0) status.sendTo(shareId, peerId)
-            else if (root.pasteLatch) {
-              status.submitTo(peerId, root.clipboardPreview)
-            } else root.readClipboard("send", peerId)
+            if (shareId.length > 0) {
+              status.sendTo(shareId, peerId)
+              return
+            }
+            root.selectedPeerId = peerId
+            if (root.pasteLatch) root.submitCaptured()
+            else if (root.readClipboardOnSelect) {
+              root.readClipboard("send", peerId)
+            } else {
+              status.actionError =
+                "Paste content to send to the selected device."
+            }
           }
           onPinRequested: function(peerId, shouldPin) {
             if (shouldPin) status.pin(peerId)

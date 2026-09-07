@@ -6,6 +6,9 @@ ShellRoot {
   property int checks: 0
   property int step: 0
   property var panel: null
+  property int waitingChecks: 0
+  readonly property bool captureFirst:
+    Quickshell.env("CAPTURE_FIRST") === "true"
 
   function findPanel(item) {
     if (item.choosePeer !== undefined) return item
@@ -17,6 +20,14 @@ ShellRoot {
     return null
   }
 
+
+  function paste() {
+    if (widget.paste("captured A\nexact bytes") !== "ok"
+        || widget.clipboardPreview !== "captured A\nexact bytes"
+        || !widget.showPasteBadge) {
+      throw new Error("Paste did not display captured A")
+    }
+  }
   BarWidget { id: widget }
 
   Timer {
@@ -34,17 +45,22 @@ ShellRoot {
       if (root.step === 0) {
         widget.open()
         root.panel = root.findPanel(widget)
-        if (!root.panel) throw new Error("Composed SharePanel missing")
-        if (widget.paste("captured A\nexact bytes") !== "ok"
-            || widget.clipboardPreview !== "captured A\nexact bytes"
-            || !widget.showPasteBadge) {
-          throw new Error("Paste did not display captured A")
-        }
+        if (root.captureFirst) root.paste()
         root.step = 1
       } else if (root.step === 1 && !root.panel.actionBusy) {
         root.panel.choosePeer("pixel-8")
         root.step = 2
-      } else if (root.step === 2 && root.panel.activeShareId.length > 0) {
+      } else if (root.step === 2 && !root.captureFirst) {
+        if (root.panel.activeShareId.length > 0 || widget.clipboardBusy) {
+          console.error("OFF_SELECTION_READ_OR_SENT")
+          Qt.exit(3)
+          return
+        }
+        root.waitingChecks += 1
+        if (root.waitingChecks < 8) return
+        root.paste()
+        root.step = 3
+      } else if (root.step >= 2 && root.panel.activeShareId.length > 0) {
         var share = root.panel.activeShare
         if (share.attachment.value !== "captured A\nexact bytes"
             || share.peer.id !== "pixel-8") {

@@ -88,9 +88,10 @@ async function waitForDaemon(binary, environment, attempts) {
   await waitForDaemon(binary, environment, attempts - 1);
 }
 
-test("composed capture-first never rereads changed clipboard", async () => {
+async function runJourney(captureFirst) {
   const root = mkdtempSync(join(tmpdir(), "quickshare-capture-"));
   const prepared = prepare(root);
+  prepared.env.CAPTURE_FIRST = String(captureFirst);
   const binary = BINARY;
   const daemon = spawn(binary, ["daemon", "--simulate"], {
     env: prepared.env,
@@ -101,7 +102,7 @@ test("composed capture-first never rereads changed clipboard", async () => {
     await waitForDaemon(binary, prepared.env, START_ATTEMPTS);
     const setting = spawnSync(
       binary,
-      ["config", "set", "read_clipboard_on_select", "true"],
+      ["config", "set", "read_clipboard_on_select", String(captureFirst)],
       { env: prepared.env, encoding: "utf8" },
     );
     assert.equal(setting.status, 0, setting.stderr);
@@ -126,4 +127,12 @@ test("composed capture-first never rereads changed clipboard", async () => {
     await exited;
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+test("composed capture-first never rereads changed clipboard", async () => {
+  await runJourney(true);
+});
+
+test("Off recipient-first waits for Paste without reading", async () => {
+  await runJourney(false);
 });
