@@ -112,6 +112,8 @@ Each clipboard capture has a three-second deadline across MIME fallbacks.
 Timeout stops that read without automatic retries. Paste or select a device
 again to retry deliberately. A newer queued explicit Paste keeps its intent
 when an older automatic read expires.
+Only file URIs and offered text MIME types are read. Unsupported non-text
+clipboard data is not reinterpreted as a text share.
 
 Panel submissions use the CLI's clipboard-input mode. Text that looks like a
 filename remains text even if that file exists in the working directory.
@@ -136,8 +138,10 @@ it and captures the value for deliberate recipient selection. A preferred
 device is never selected or sent to automatically by the panel.
 
 ```sh
-sh -c 'value=$(wl-paste --type text/uri-list --no-newline 2>/dev/null || wl-paste --no-newline); omarchy shell io.github.ollieedgeley.omarchy-quickshare paste "$value"'
+sh -c 'value=$(wl-paste --type text/uri-list --no-newline 2>/dev/null || wl-paste --type text --no-newline; printf x); value="${value%x}"; omarchy shell io.github.ollieedgeley.omarchy-quickshare paste "$value"'
 ```
+
+The temporary sentinel preserves trailing newlines during command substitution.
 
 For a file or folder, `wl-paste` supplies one `file://` URI. Plain text,
 including line breaks, remains one quoted argument. The plugin forwards the

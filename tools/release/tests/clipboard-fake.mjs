@@ -17,6 +17,18 @@ if (journey.explicitPending) {
 }
 if (journey.invalidRead === "empty") {
   process.exitCode = 0;
+} else if (journey.invalidRead === "unsupported") {
+  const args = process.argv.slice(2);
+  const index = args.findIndex((arg) => arg === "--type" || arg === "-t");
+  let requested = "";
+  if (index >= 0) {
+    requested = args[index + 1];
+  }
+  if (requested === "" || requested === "image" || requested === "image/png") {
+    process.stdout.write("unsupported image bytes");
+  } else {
+    process.exitCode = 1;
+  }
 } else if (
   process.env.CLIPBOARD_REPLACEMENT === "true" &&
   previousReads === ""

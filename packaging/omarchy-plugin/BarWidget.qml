@@ -176,7 +176,7 @@ BarWidget {
   }
 
   property Process clipboardTextProbe: Process {
-    command: ["wl-paste", "--no-newline"]
+    command: ["wl-paste", "--type", "text", "--no-newline"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.clipboardOutput = String(text || "")

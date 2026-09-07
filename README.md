@@ -388,9 +388,12 @@ without a peer.
 This project does not edit your Hyprland config. Add binds yourself.
 
 ```conf
-bindd = SUPER SHIFT, S, Quick Share paste, exec, sh -c 'value=$(wl-paste --type text/uri-list --no-newline 2>/dev/null || wl-paste --no-newline); omarchy shell io.github.ollieedgeley.omarchy-quickshare paste "$value"'
+bindd = SUPER SHIFT, S, Quick Share paste, exec, sh -c 'value=$(wl-paste --type text/uri-list --no-newline 2>/dev/null || wl-paste --type text --no-newline; printf x); value="${value%x}"; omarchy shell io.github.ollieedgeley.omarchy-quickshare paste "$value"'
 bindd = SUPER SHIFT, Q, Quick Share panel, exec, omarchy shell io.github.ollieedgeley.omarchy-quickshare open
 ```
+
+The temporary trailing `x` prevents command substitution from stripping copied
+newlines.
 
 Paste captures clipboard text, a URL, or one copied file or folder. A closed
 panel opens for preparation without selecting a preferred peer or sending.

@@ -413,3 +413,13 @@ test("empty automatic capture waits for deliberate recovery", async () => {
     type: "text",
   });
 });
+
+test("unsupported clipboard MIME never becomes a text share", async () => {
+  await runJourney({
+    automatic: true,
+    captureFirst: false,
+    consume: true,
+    invalidRead: "unsupported",
+    type: "text",
+  });
+});
