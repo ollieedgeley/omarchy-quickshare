@@ -94,17 +94,18 @@ omarchy-quickshare "https://example.test/share"
 ## Shell actions and keybindings
 
 Opening the panel starts discovery immediately. Nearby devices appear as they
-are found. Clicking a device reads the current clipboard and submits its text,
-URL, or single copied file/folder to that exact peer.
+are found. Clicking a device sends the content already captured in the badge
+to that exact peer. When no content has been captured, it reads the clipboard.
 
 ```sh
 omarchy shell io.github.ollieedgeley.omarchy-quickshare open
 ```
 
 The plugin also accepts Omarchy's universal-paste IPC action. If the panel is
-open, this only shows an attachment badge; clicking a device reads the current
-clipboard. If the panel is closed, the action submits immediately to a visible
-pinned peer or opens the chooser while discovery continues.
+open, this shows an attachment badge; clicking a device sends that captured
+value without rereading the clipboard. If the panel is closed, the action
+submits immediately to a visible pinned peer or opens the chooser while
+discovery continues.
 
 ```sh
 sh -c 'value=$(wl-paste --type text/uri-list --no-newline 2>/dev/null || wl-paste --no-newline); omarchy shell io.github.ollieedgeley.omarchy-quickshare paste "$value"'

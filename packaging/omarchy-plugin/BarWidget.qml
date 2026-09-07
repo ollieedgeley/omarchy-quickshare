@@ -114,7 +114,7 @@ BarWidget {
 
   Shortcut {
     enabled: root.opened
-    sequence: StandardKey.Paste
+    sequences: [StandardKey.Paste]
     onActivated: root.readClipboard("preview", "")
   }
 
@@ -318,7 +318,9 @@ BarWidget {
           }
           onPeerSelected: function(shareId, peerId) {
             if (shareId.length > 0) status.sendTo(shareId, peerId)
-            else root.readClipboard("send", peerId)
+            else if (root.pasteLatch) {
+              status.submitTo(peerId, root.clipboardPreview)
+            } else root.readClipboard("send", peerId)
           }
           onPinRequested: function(peerId, shouldPin) {
             if (shouldPin) status.pin(peerId)

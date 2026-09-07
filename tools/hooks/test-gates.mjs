@@ -85,6 +85,7 @@ const FAMILIES = {
     ),
   ],
   oracleReference: family(["test-oracle-reference"], ORACLE_PREPARE),
+  pluginCapture: family(["test-plugin-capture"], ["plugin-capture-prepare"]),
   proxy: family(
     ["test-proxy-toxiproxy"],
     [...SOURCE_PREPARE, "proxy-provision"],
@@ -109,6 +110,10 @@ const REGISTERED_TESTS = new Map(
     FAMILIES.rustLan.find(({ target }) => target === `test-rust-lan-${name}`),
   ]),
 );
+REGISTERED_TESTS.set(
+  "tools/release/tests/capture-journey.e2e.mjs",
+  FAMILIES.pluginCapture[0],
+);
 const ALL_FAMILIES = Object.keys(FAMILIES);
 
 function within(path, directory) {
@@ -116,6 +121,12 @@ function within(path, directory) {
 }
 
 function sharedInputFamilies(path) {
+  if (
+    within(path, "packaging/omarchy-plugin") ||
+    within(path, "tools/release/tests")
+  ) {
+    return ["pluginCapture"];
+  }
   if (
     within(path, "crates/core/crypto") ||
     within(path, "crates/core/wire") ||
@@ -128,10 +139,10 @@ function sharedInputFamilies(path) {
       "clippy.toml",
     ].includes(path)
   ) {
-    return ["rustLan", "oracleReference"];
+    return ["rustLan", "oracleReference", "pluginCapture"];
   }
   if (within(path, "crates") || within(path, "packaging/systemd")) {
-    return ["rustLan"];
+    return ["rustLan", "pluginCapture"];
   }
   if (
     ["Makefile", "tools/gates/environments.mk"].includes(path) ||

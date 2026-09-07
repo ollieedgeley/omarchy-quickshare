@@ -366,6 +366,8 @@ The initial hook change must include contract fixtures for staged-only behavior,
   quality-gate and hook contract tests.
 - `make test-plugin-release` checks the allowlisted plugin export and every
   native availability state through Quick Shell.
+- `make plugin-capture-prepare` builds the current CLI outside the test budget.
+  `make test-plugin-capture` checks isolated real QML/CLI capture journeys.
 - `make test-local-install` checks local binary installation and the systemd
   user-service lifecycle; `make install-local` performs the local install.
 - `make test-contracts` runs shared transfer scenarios against fast doubles; simulator adapters consume the same scenarios.

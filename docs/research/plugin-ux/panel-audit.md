@@ -8,6 +8,13 @@ CodeGraph was queried first for `QuickShare plugin QML Panel discovery cancel pa
 
 Repository references below describe the working tree on the research date, not a release or the user's installed copy. Read policies were `CONTEXT.md`, `AGENTS.md`, `docs/architecture/project-structure.md`, the feasibility documents, `docs/connection-mocking-tools.md` local-control and transfer seams, and `docs/development-workflow.md` behavior-development policy. This is repository-specific research; no external platform behavior is asserted.
 
+The F2.1 capture-first regression now runs real `BarWidget` and `StatusProbe`
+with the real CLI and an isolated simulated daemon. After capturing A and
+changing the fake clipboard to B, explicit selection admits A to the chosen
+peer. This replaces the capture-reread finding below for the implemented
+capture-first path; it does not establish browse cleanup or native keyboard
+behavior.
+
 The reported inability to stop searching and capture content before selecting a device is accepted as real. The full runtime cause is not proven. Main owns runtime evidence and reported that native desktop inspection could not capture this environment. This note does not claim a visual audit or physical-peer test.
 
 ## Current flow

@@ -187,6 +187,12 @@ test-tooling: ## Run quality-gate and hook contract tests.
 test-plugin-release: ## Check the plugin export and native status states.
 	@QUICKSHELL=$(QUICKSHELL) $(TIMEOUT) node --test \
 		tools/release/tests/plugin-release-contract.test.mjs
+.PHONY: plugin-capture-prepare test-plugin-capture
+plugin-capture-prepare: ## Prepare the CLI outside the capture test budget.
+	@cargo build -p omarchy-quickshare --bin omarchy-quickshare --locked
+test-plugin-capture: ## Check capture journeys with a prepared debug CLI.
+	@QT_QPA_PLATFORM=offscreen QUICKSHELL=$(QUICKSHELL) $(TIMEOUT) node --test \
+		tools/release/tests/capture-journey.e2e.mjs
 test-local-install: ## Check local binary and systemd-user-service installation.
 	@$(TIMEOUT) node --test tools/release/tests/local-install-contract.test.mjs
 install-local: ## Build, install, and start the local user service.
@@ -427,7 +433,8 @@ verify: format-check lint-structure lint-javascript lint-python lint-docs \
 	test-dbus-bluez test-dbus-networkmanager test-bluetooth-controller \
 	test-bluetooth-ble test-bluetooth-classic test-network-wmediumd \
 	test-network-netem test-network-lan test-network-hotspot-client \
-	test-network-hotspot-owner test-network-wifi-direct-client
+	test-network-hotspot-owner test-network-wifi-direct-client \
+	plugin-capture-prepare test-plugin-capture
 	@set -Eeuo pipefail; \
 		trap 'node tests/environments/oracle/environment.mjs \
 			reference-down' EXIT; \

@@ -70,27 +70,8 @@ const PANEL_FILES = [
   "TransferView.qml",
 ];
 const QML_FILES = ["BarWidget.qml", ...PANEL_FILES, "StatusProbe.qml"];
-const FADE_DURATION_PATTERN = /duration: 1000/gu;
 const FORBIDDEN_QML_COMMAND_PATTERN =
   /\b(?:bluetoothctl|cargo|curl|nmcli|pacman|paru|rsync|scp|wget|yay)\b/u;
-const IPC_PASTE_FUNCTION_PATTERN =
-  /function paste\(value: string\): string \{/u;
-const TARGETED_SEND_ACTION_PATTERN =
-  /runAction\(\[\s*"send",\s*"--peer",[\s\S]*String\(value\)/u;
-const PASTE_FORWARD_PATTERN = /return root\.paste\(value\)/u;
-const OPEN_DISCOVERY_PATTERN =
-  /function open\(\) \{[\s\S]{0,200}status\.discover\(\)/u;
-const CLIPBOARD_READ_PATTERN =
-  /command: \["wl-paste", "--type", "text\/uri-list", "--no-newline"\]/u;
-const CLOSED_PASTE_SUBMIT_PATTERN =
-  /if \(opened\)[\s\S]{0,120}status\.submit\(value\)/u;
-const STALE_PASTE_INSTRUCTION =
-  /Paste while this panel is open to choose a nearby device\./u;
-const SUBMIT_FUNCTION_PATTERN = /function submit\(value\) \{/u;
-const KEYBOARD_PANEL_PATTERN = /\bKeyboardPanel\s*\{/u;
-const POPUP_CARD_PATTERN = /\bPopupCard\s*\{/u;
-const SHOW_PASTE_BADGE_PATTERN = /showPasteBadge:/u;
-const ACTION_BUSY_PATTERN = /actionBusy:/u;
 const MAX_QML_LINES = 500;
 const EXECUTABLE_MODE = 0o755;
 const NATIVE_COMMIT_MISMATCH =
@@ -198,7 +179,7 @@ test("plugin export contains only its allowlisted release files", () => {
   assert.equal("sourceBuild" in release, false);
 });
 
-test("plugin QML captures clipboard data and targets a selected peer", () => {
+test("plugin QML stays bounded and avoids external system commands", () => {
   for (const file of QML_FILES) {
     const source = readFileSync(join(PLUGIN_SOURCE, file), "utf8");
     assert.ok(
@@ -207,25 +188,6 @@ test("plugin QML captures clipboard data and targets a selected peer", () => {
     );
     assert.doesNotMatch(source, FORBIDDEN_QML_COMMAND_PATTERN);
   }
-
-  const bar = readFileSync(join(PLUGIN_SOURCE, "BarWidget.qml"), "utf8");
-  assert.match(bar, IPC_PASTE_FUNCTION_PATTERN);
-  assert.match(bar, PASTE_FORWARD_PATTERN);
-  assert.match(bar, OPEN_DISCOVERY_PATTERN);
-  assert.match(bar, CLIPBOARD_READ_PATTERN);
-  assert.match(bar, CLOSED_PASTE_SUBMIT_PATTERN);
-  assert.equal((bar.match(FADE_DURATION_PATTERN) ?? []).length, 2);
-  assert.match(bar, KEYBOARD_PANEL_PATTERN);
-  assert.doesNotMatch(bar, POPUP_CARD_PATTERN);
-  assert.match(bar, SHOW_PASTE_BADGE_PATTERN);
-  assert.match(bar, ACTION_BUSY_PATTERN);
-
-  const panel = readFileSync(join(PLUGIN_SOURCE, "SharePanel.qml"), "utf8");
-  assert.doesNotMatch(panel, STALE_PASTE_INSTRUCTION);
-
-  const status = readFileSync(join(PLUGIN_SOURCE, "StatusProbe.qml"), "utf8");
-  assert.match(status, SUBMIT_FUNCTION_PATTERN);
-  assert.match(status, TARGETED_SEND_ACTION_PATTERN);
 });
 
 test("plugin export omits checksums when native artifacts are absent", () => {

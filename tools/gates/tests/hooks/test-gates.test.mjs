@@ -11,6 +11,7 @@ const SCENARIOS = "tests/environments/diverse-lan/rust/scenarios";
 const INBOUND = `${SCENARIOS}/rust-lan-inbound.e2e.mjs`;
 const FAILURE = `${SCENARIOS}/rust-lan-failure-inbound.e2e.mjs`;
 const CONSENT = "crates/app/src/daemon/network/inbound/consent.rs";
+const CAPTURE = "tools/release/tests/capture-journey.e2e.mjs";
 const CASES = [
   "cancellation-inbound",
   "cancellation-outbound",
@@ -38,10 +39,10 @@ function targets(selection) {
 
 test("daemon consent selects all Rust LAN cases without graph edges", () => {
   const selection = plan([CONSENT]);
-  assert.deepEqual(
-    targets(selection),
-    CASES.map((name) => `test-rust-lan-${name}`),
-  );
+  assert.deepEqual(targets(selection), [
+    "test-plugin-capture",
+    ...CASES.map((name) => `test-rust-lan-${name}`),
+  ]);
   assert.deepEqual(selection.fastNodeTests, []);
   const failure = selection.gates.find(
     (gate) => gate.target === "test-rust-lan-failure-inbound",
@@ -74,12 +75,19 @@ test("every current E2E has an exact runnable child registration", () => {
   const e2e = files.filter((path) => path.includes(".e2e."));
   assert.deepEqual(
     e2e.sort(),
-    CASES.map((name) => `${SCENARIOS}/rust-lan-${name}.e2e.mjs`).sort(),
+    [
+      CAPTURE,
+      ...CASES.map((name) => `${SCENARIOS}/rust-lan-${name}.e2e.mjs`),
+    ].sort(),
   );
   for (const path of e2e) {
     const selection = plan([], [path], files);
     const name = path.split("/").pop().replace(".e2e.mjs", "");
-    assert.deepEqual(targets(selection), [`test-${name}`]);
+    let target = `test-${name}`;
+    if (path === CAPTURE) {
+      target = "test-plugin-capture";
+    }
+    assert.deepEqual(targets(selection), [target]);
     assert.deepEqual(selection.gates[0].testPaths, [path]);
   }
 });
@@ -117,12 +125,12 @@ test("experimental Android executable cannot admit its live route", () => {
 
 test("deleted sources and tests retain remaining family coverage", () => {
   const selection = plan([CONSENT, FAILURE], [FAILURE], [INBOUND]);
-  assert.deepEqual(
-    targets(selection),
-    CASES.filter((name) => name !== "failure-inbound").map(
+  assert.deepEqual(targets(selection), [
+    "test-plugin-capture",
+    ...CASES.filter((name) => name !== "failure-inbound").map(
       (name) => `test-rust-lan-${name}`,
     ),
-  );
+  ]);
   assert.ok(selection.gates.every((gate) => !gate.testPaths.includes(FAILURE)));
 });
 
@@ -216,6 +224,15 @@ test("shared source inputs retain all admitted environment families", () => {
     assert.ok(selection.includes("test-rust-lan-failure-inbound"));
     assert.ok(selection.includes("test-oracle-bwu-fallback"));
     assert.ok(!selection.includes("test-android-nearby"));
+  }
+});
+
+test("composed capture prepares the CLI before its Make gate", () => {
+  for (const input of [CAPTURE, "packaging/omarchy-plugin/BarWidget.qml"]) {
+    const selection = plan([input], [], [input, CAPTURE]);
+    assert.deepEqual(selection.fastNodeTests, []);
+    assert.deepEqual(targets(selection), ["test-plugin-capture"]);
+    assert.deepEqual(selection.gates[0].prepare, ["plugin-capture-prepare"]);
   }
 });
 
