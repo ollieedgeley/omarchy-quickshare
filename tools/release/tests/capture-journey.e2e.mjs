@@ -292,3 +292,17 @@ for (const automatic of [false, true]) {
     });
   });
 }
+
+for (const boundary of ["pause", "staleRoute"]) {
+  test(`active: frozen and stale route ${boundary}`, async () => {
+    await runJourney({
+      automatic: false,
+      [boundary]: true,
+      captureFirst: true,
+      consume: true,
+      contentCase: "next",
+      submissionMode: "observe",
+      type: "text",
+    });
+  });
+}

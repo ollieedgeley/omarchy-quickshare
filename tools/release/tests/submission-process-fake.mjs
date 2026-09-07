@@ -35,7 +35,7 @@ function executeConflictingSend() {
 }
 
 function execute() {
-  if (args[0] === "send" && journey.conflict) {
+  if (args[0] === "send" && (journey.conflict || journey.staleRoute)) {
     return executeConflictingSend();
   }
   const result = spawnSync(process.env.QUICKSHARE_REAL_BINARY, args, {
@@ -81,6 +81,15 @@ if (journey.conflict) {
 }
 
 if (
+  args[0] === "status" &&
+  journey.staleRoute &&
+  projectionActive &&
+  !existsSync(process.env.SUBMISSION_RELEASE)
+) {
+  waitForRelease(() => {
+    process.exitCode = execute();
+  });
+} else if (
   args[0] === "status" &&
   (journey.peerProjection || journey.conflict) &&
   projectionActive

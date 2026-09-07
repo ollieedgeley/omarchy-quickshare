@@ -25,7 +25,7 @@ const BINARY = resolve(
 const EXECUTABLE_MODE = 0o755;
 const START_ATTEMPTS = 100;
 const RETRY_MS = 10;
-const HARNESS_TIMEOUT_MS = 8000;
+const HARNESS_TIMEOUT_MS = 12_000;
 const SUCCESS_PATTERN = /HARNESS_OK/u;
 const FILES = [
   "BarWidget.qml",
@@ -148,6 +148,8 @@ function prepareJourney(root, journey) {
   let peer = "pixel-8";
   if (
     journey.recover ||
+    journey.pause ||
+    journey.staleRoute ||
     journey.peerChange ||
     journey.peerEvent === "drop" ||
     journey.peerEvent === "replace"
@@ -164,7 +166,7 @@ function prepareJourney(root, journey) {
 function assertSubmissionAttempts(journey, prepared) {
   if (journey.submissionMode || journey.peerProjection || journey.duplicates) {
     let expectedAttempts = "send\n";
-    if (journey.failSubmission || journey.conflict) {
+    if (journey.failSubmission || journey.conflict || journey.staleRoute) {
       expectedAttempts += "send\n";
     }
     assert.equal(
@@ -224,7 +226,7 @@ function actualStatus(prepared) {
 
 function harnessOutput(result, prepared, journey) {
   let output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  if (journey.conflict) {
+  if (journey.conflict || journey.staleRoute) {
     output += readFileSync(`${prepared.env.SUBMISSION_ATTEMPTS}.proof`, "utf8");
   }
   if (result.status !== 0) {

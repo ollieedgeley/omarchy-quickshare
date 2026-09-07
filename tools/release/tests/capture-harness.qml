@@ -37,6 +37,16 @@ ShellRoot {
     nativeTransition.running = true
   }
 
+  function requireFrozenRoute() {
+    var share = root.panel.activeShare
+    if (root.panel.activeShareId !== root.externalShareId
+        || share.attachment.value !== "active frozen A"
+        || share.peer.id !== "pixel-8" || !widget.showPasteBadge
+        || widget.clipboardPreview !== journey.value || widget.clipboardBusy) {
+      throw new Error("Observation drain changed frozen A/P or next capture B")
+    }
+  }
+
 
   function paste() {
     if (widget.paste(journey.value) !== "ok"
@@ -118,10 +128,17 @@ ShellRoot {
   FileView {
     id: submissionStarted
     path: journey.submissionMode === "before"
-      || journey.submissionMode === "after"
+      || journey.submissionMode === "after" || journey.staleRoute
       ? Quickshell.env("SUBMISSION_STARTED") : ""
     printErrors: false
     onLoaded: {
+      if (root.step === 50 && text() === "started") {
+        if (!root.panel.peers.some(function(peer) {
+          return peer.id === "pixel-8"
+        })) throw new Error("Held status did not retain the prior P")
+        root.runNativeAction(["simulate", "peer-lost", "pixel-8"], 51)
+        return
+      }
       if (root.step !== 2 || text() !== "started") return
       if (journey.failSubmission) {
         removeCapture.running = true
@@ -158,10 +175,19 @@ ShellRoot {
   FileView {
     id: submissionAttempts
     path: journey.failSubmission || journey.peerProjection || journey.conflict
-      || journey.peerEvent
+      || journey.peerEvent || journey.pause || journey.staleRoute
       ? Quickshell.env("SUBMISSION_ATTEMPTS") : ""
     printErrors: false
     onLoaded: {
+      if (root.step === 46 || root.step === 54) {
+        var expectedAttempts = journey.staleRoute ? "send\n" : ""
+        if (text() !== expectedAttempts) {
+          throw new Error("Route transition initiated an unsolicited share")
+        }
+        root.panel.choosePeer(journey.peer)
+        root.step = 4
+        return
+      }
       if (root.step === 22) {
         if (text() !== "send\n") {
           console.error("Rejected conflict retried without user intent")
@@ -255,7 +281,7 @@ ShellRoot {
     running: true
     onTriggered: {
       root.checks += 1
-      if (root.checks > 240) {
+      if (root.checks > 360) {
         console.error("CAPTURE_TIMEOUT", root.step)
         console.error("CAPTURE_STATE", JSON.stringify({
           selected: widget.selectedPeerId,
@@ -274,7 +300,9 @@ ShellRoot {
         Qt.exit(2)
         return
       }
-      if (!widget.protocolReady) return
+      if (!widget.protocolReady && !(journey.staleRoute && root.step === 52)) {
+        return
+      }
       if (journey.explicitFailure && root.step >= 2 && root.step < 11
           && root.panel.activeShareId.length > 0) {
         console.error("Prior capture dispatched during explicit replacement")
@@ -301,11 +329,17 @@ ShellRoot {
           root.step = 2
         }
       } else if (root.step === 1 && !root.panel.actionBusy) {
-        if (journey.conflict) {
+        if (journey.staleRoute) {
+          activateProjection.running = true
+          root.step = 50
+          return
+        }
+        if (journey.conflict || journey.pause) {
           root.runNativeAction([
-            "send", "--clipboard", "--peer", "galaxy-tab", "--",
+            "send", "--clipboard", "--peer",
+            journey.pause ? "pixel-8" : "galaxy-tab", "--",
             "active frozen A",
-          ], 20)
+          ], journey.pause ? 40 : 20)
           return
         }
         if (journey.peerEvent === "appear") {
@@ -317,6 +351,69 @@ ShellRoot {
         }
         root.panel.choosePeer("pixel-8")
         root.step = 2
+      } else if (root.step === 40 && root.nativeActionDone
+          && root.panel.activeShareId.length > 0) {
+        root.externalShareId = root.panel.activeShareId
+        root.lastPeerName = root.panel.activeShare.peer.name
+        root.runNativeAction(["simulate", "peer-lost", "pixel-8"], 41)
+      } else if (root.step === 41 && root.nativeActionDone) {
+        if (root.panel.peers.some(function(peer) {
+          return peer.id === "pixel-8"
+        })) return
+        root.requireFrozenRoute()
+        root.runNativeAction(["simulate", "peer-lost", "galaxy-tab"], 42)
+      } else if (root.step === 42 && root.nativeActionDone) {
+        if (root.panel.peers.length > 0) return
+        root.requireFrozenRoute()
+        root.runNativeAction([
+          "simulate", "peer-seen", "galaxy-tab", root.lastPeerName,
+        ], 43)
+      } else if (root.step === 43 && root.nativeActionDone) {
+        if (root.panel.peers.length === 0) return
+        root.requireFrozenRoute()
+        root.runNativeAction(["share", "cancel", root.externalShareId], 44)
+      } else if (root.step === 44 && root.nativeActionDone
+          && root.panel.phase === "cancelled") {
+        root.runNativeAction(["share", "dismiss", root.externalShareId], 45)
+      } else if (root.step === 53 && root.panel.phase === "cancelled") {
+        if (!widget.showPasteBadge
+            || widget.clipboardPreview !== journey.value) {
+          throw new Error("Rejected stale route consumed captured B")
+        }
+        root.runNativeAction(["share", "dismiss", root.panel.activeShareId], 55)
+      } else if (root.step === 55 && root.nativeActionDone
+          && root.panel.activeShareId.length === 0) {
+        root.step = 53
+      } else if ((root.step === 45 || root.step === 53)
+          && !root.panel.actionBusy && root.panel.activeShareId.length === 0) {
+        if (root.step === 53 && root.panel.peers.some(function(peer) {
+          return peer.id === "pixel-8"
+        })) return
+        if (!widget.showPasteBadge || widget.clipboardPreview !== journey.value
+            || widget.clipboardBusy || widget.selectionArmed) {
+          throw new Error("Route transition discarded or armed next capture")
+        }
+        if (!root.failureObserved) {
+          root.failureObserved = true
+          root.failureSnapshots = 0
+        }
+        if (root.failureSnapshots < 2) return
+        root.step = root.step === 45 ? 46 : 54
+        submissionAttempts.reload()
+      } else if (root.step === 50) {
+        submissionStarted.reload()
+      } else if (root.step === 51 && root.nativeActionDone) {
+        root.panel.choosePeer("pixel-8")
+        root.step = 52
+      } else if (root.step === 52 && !root.panel.actionBusy
+          && root.panel.actionError.length > 0) {
+        if ((root.panel.activeShareId.length > 0
+            && root.panel.phase !== "cancelled") || !widget.showPasteBadge
+            || widget.clipboardPreview !== journey.value) {
+          throw new Error("Stale route admitted or discarded captured B")
+        }
+        releaseSubmission.running = true
+        root.step = 53
       } else if (root.step === 30 && root.nativeActionDone) {
         if (journey.peerEvent === "replace") {
           root.runNativeAction([
@@ -585,7 +682,8 @@ ShellRoot {
         root.step = 8
         submissionAttempts.reload()
       } else if (root.step >= 2 && root.panel.activeShareId.length > 0
-          && (!journey.conflict || root.step === 4)) {
+          && (!(journey.conflict || journey.pause || journey.staleRoute)
+            || root.step === 4)) {
         var share = root.panel.activeShare
         var expected = journey.attachment
         var actual = share.attachment
