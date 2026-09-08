@@ -14,8 +14,10 @@
 - Making project structure decisions: use [structure guidance](docs/project-structure.md).
 - How to write Documentation: Follow [documentation policy](docs/documentation.md).
 - Any plan, research, spec or ticket files should go in `.scratch` and not the repo `docs/`.
+- README and `docs/` are user owned and require approval for changes.
 
 ## CodeGraph
+
 - Use codegraph. If its not initialised, run `codegraph init`.
 - Use this tool to explore the codebase and get focused file sets and more. `codegraph --help` for more.
 
@@ -30,6 +32,7 @@
 Going over these limit is an indication to make a decision. Use [structure guidance](docs/project-structure.md) to make that decision.
 
 ### TDD
+
 - TDD should be used when writing application code
 - Don't write tests for repo configuration or tooling
 

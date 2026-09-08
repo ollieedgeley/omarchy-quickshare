@@ -16,7 +16,12 @@ network access for the ISO and guest packages, and disk space for the ISO, a
 emulation fallback.
 
 On Arch Linux, the QEMU installation must include both the `virtio-vga` and
-`virtio-gpu` device modules. Prefer installed packages matching your QEMU build.
+`virtio-gpu` device modules. On Omarchy, install the matching packages with:
+
+```sh
+omarchy pkg add qemu-hw-display-virtio-vga qemu-hw-display-virtio-gpu
+```
+
 If using private modules, set `QEMU_MODULE_DIR` to a directory containing both
 matching QEMU device modules. Modules from a different QEMU build
 may not load. Set `MCOPY` to a private `mcopy` executable if mtools is not on
@@ -88,7 +93,7 @@ disks, firmware, SSH forwards, QMP/VNC sockets and lifecycle locks are not.
 
 ### Native deployment
 
-Build the current combined application and deploy it into a running lab:
+Build both native executables and deploy them into a running lab:
 
 ```sh
 make native-build
@@ -97,8 +102,17 @@ make native-deploy DESKTOP_LAB=alpha
 
 Builds use the locked release profile and one Cargo job by default. Each build
 retains source and toolchain identity, artifact checksums and its build log under
-`.cache/test-env/desktop/native/`. Deployment selects the latest successful build,
-or the directory passed as `NATIVE_ARTIFACT=/absolute/build/directory`.
+`.cache/test-env/desktop/native/`. `NATIVE_COMPONENT=all` is the default;
+`cli` and `daemon` select one component. Each selection has a latest successful
+build pointer. `NATIVE_ARTIFACT=/absolute/build/directory` selects exact retained
+bytes instead.
+
+```sh
+make native-build NATIVE_COMPONENT=cli
+make native-deploy DESKTOP_LAB=alpha NATIVE_COMPONENT=cli
+make native-build NATIVE_COMPONENT=daemon
+make native-deploy DESKTOP_LAB=alpha NATIVE_COMPONENT=daemon
+```
 
 `DESKTOP_NATIVE_PROFILE=dev` selects an identified development build; the default
 is `release`. `DESKTOP_NATIVE_TARGET=<triple>` selects a target supported by the
@@ -107,11 +121,16 @@ Metadata records the actual Cargo executable and freshness, effective profile,
 toolchain/configuration hashes and cache compatibility identity. Artifact files
 are private read-only copies, separate from reusable compiler output.
 
-Deployment verifies artifact bytes, copies them over pinned SSH, atomically
-replaces the executable and unit, and restarts only the user service. Readiness
-requires the public `health` command and the loaded process executable checksum
-to match the artifact. It never starts or recreates a guest. Every attempt retains
-its outcome, copy/install/readiness logs and available service journal in
+Deployment verifies selected bytes and atomically replaces each selected
+executable over pinned SSH. A daemon deployment also installs its unit and
+starts or restarts `omarchy-quickshare.service`. Readiness uses the versioned
+socket directly and checks the loaded daemon executable against the artifact.
+The daemon-only path does not invoke the CLI.
+
+CLI-only deployment preserves the daemon's state, PID and loaded bytes. Both
+paths preserve the compositor and shell processes, and neither starts or
+recreates a guest. Every attempt retains its outcome, component hashes,
+copy/install/readiness logs and available service journal in
 `labs/<name>/deployments/<uuid>/`. Failed deployment leaves the lab accessible.
 
 ### Panel deployment
@@ -386,6 +405,37 @@ under `desktop/cleanups/<uuid>/`. Logical bytes and allocated file blocks are
 reported separately. Guest-file blocks are not claimed as reclaimed host qcow2
 space; shared copy-on-write extents are not exclusive physical disk usage.
 
+### Operation identity and recovery
+
+The standalone CLI is `omarchy-quickshare`; the user service runs
+`omarchy-quickshare-daemon`. Submission acknowledgement means accepted work,
+not completed delivery. Keep the request ID printed by the CLI when acceptance
+is uncertain, and query it rather than sending the content again:
+
+```sh
+omarchy-quickshare operation <request-id> --json
+omarchy-quickshare status --json
+omarchy-quickshare protocol-version
+```
+
+An operation query reads retained metadata; it neither retries nor resumes a
+transfer. An unknown outcome does not prove the daemon never accepted the
+request. The daemon keeps its bounded operation journal at
+`${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-quickshare/operations.json`.
+Do not delete it to resolve uncertain delivery.
+
+After a restart, previously active work is reported as failed with terminal
+reason `interrupted`. The remote outcome can be uncertain; check the recipient
+before deliberately submitting new work. Neither client automatically resumes
+or replays the payload. Saved preferences and committed received content are
+separate from the operation journal.
+
+Protocol 7 versions only the local daemon/CLI/panel JSON API, not Google's
+Connections or Sharing wire protocol. Deploy compatible local components.
+Snapshot responses contain sibling `snapshot`, `preferences`, and `operations`
+fields. Submission envelopes require `request_id`; the CLI and panel generate
+it. Deterministic `simulate` fixtures do not prove independent-peer compatibility.
+
 ### Fresh candidate installation
 
 Build native bytes first, then assemble a local candidate without publishing it:
@@ -403,6 +453,18 @@ Set `NATIVE_ARTIFACT` to an identified native build directory,
 `DESKTOP_BASE` to the selected prepared-base fingerprint. Candidate assembly
 defaults to the latest successful native build when no artifact is supplied.
 Installation requires a new lab name; it never adopts a retained owner.
+
+To use an exact, already-exported plugin repository:
+
+```sh
+make desktop-candidate NATIVE_ARTIFACT="$NATIVE_ARTIFACT" \
+  DESKTOP_PLUGIN=/absolute/clean-export-repo
+```
+
+The equivalent candidate helper option is `candidate.py --artifact <native-dir>
+--plugin <clean-export-repo>`. Assembly copies and verifies that export without
+re-exporting it, preserving private source-proof provenance. Assembly alone
+does not prove a source-built candidate installs or runs in a fresh guest.
 
 The candidate contains the real Arch package and a private Git export of the
 plugin. The guest installs them with `pacman -U` and
@@ -424,7 +486,8 @@ installed panel:
 ```sh
 make desktop-peer-prepare
 make desktop-peer-start DESKTOP_LAB=clean-example
-make desktop-ui-scenario DESKTOP_INSTALLATION="$DESKTOP_INSTALLATION"
+make desktop-ui-scenario DESKTOP_LAB=clean-example \
+  DESKTOP_INSTALLATION="$DESKTOP_INSTALLATION"
 ```
 
 Set `DESKTOP_INSTALLATION` to the absolute `installation.json` path reported by
@@ -435,6 +498,37 @@ selected peer, completed public share and exact received bytes. Sent and Done
 must be observed on the panel; backend completion alone cannot pass the journey.
 Original frames, OCR word bounds/confidence and input observations remain with
 the result under `labs/<name>/scenarios/<uuid>/`.
+
+Before file input, the driver closes only the installed plugin's identified
+popup. It checks the private file-manager window's current focus and geometry
+before input, uses Ctrl+A to select the payload directory's contents, and
+requires visible selection feedback before Ctrl+C. The copied URI must still
+identify exactly the one synthetic payload; extra selections fail the journey.
+
+The default rejects a guest process that differs from the original installation
+record. After explicitly restarting the same owned guest, use
+`--reattest-installation` to retain fresh evidence without editing that record.
+Use `--cli-unavailable` to prove the panel works while the installed CLI cannot
+execute. These options are independent and can be combined:
+
+```sh
+python3 tests/environments/desktop/ui_scenario.py \
+  --installation "$DESKTOP_INSTALLATION" \
+  --reattest-installation --cli-unavailable
+```
+
+Re-attestation checks the original owner directory identity, guest UUID, storage
+paths and backing image, plus the image files held by the live QEMU process.
+It re-probes installed native bytes, units and the loaded plugin, recording
+`installation-attestation.json` linked to the original manifest's SHA-256.
+It does not invent a historical writable-image inode or checksum that the
+original installation did not record.
+
+The CLI proof records the selected executable's identity and mode, removes only
+its execute bits after preparation, and checks it at framebuffer and input
+boundaries through capture, send and dismissal. Public state comes directly
+from the daemon socket. A `finally` block restores the exact mode before the
+final native probe; `cli-unavailable.json` retains the checks and restoration.
 
 For an isolated install, journey and cleanup in one command:
 
@@ -510,3 +604,76 @@ key. Do not expose it to untrusted users or use real credentials inside it. Disk
 images, seed credentials, private keys, logs and screenshots are private local
 artifacts. Do not commit or share the cache as routine diagnostics. Review and
 redact any diagnostic material before sharing it.
+
+## Focused tests
+
+Install the locked JavaScript dependencies with `npm ci` using Node 24 or
+Node 26 and newer. Vitest runs the retained tooling tests and orchestrates
+cross-process scenarios; Rust and QML keep their native test runners.
+
+```sh
+make test-tooling
+make test-release-tools
+make test-environment-tools
+node_modules/.bin/vitest run tools/gates/tests/source-manifest-contract.test.mjs
+make test-rust-focused RUST_TEST_FILTER=contradictory_scenarios
+make test-qml-components
+```
+
+The default Vitest configuration selects only fast tooling, release and
+environment-helper tests. Release tests that simulate build or service commands
+do not prove a real installation. The headless QML tests exercise the production
+peer-choice component with controlled shell presentation dependencies, not a
+running desktop or daemon.
+
+Process scenarios use a separate configuration and require their real runtime
+prerequisites. Select an already-ready retained lab explicitly:
+
+```sh
+make desktop-scenario DESKTOP_LAB=alpha
+```
+
+The scenario owns its attempt and temporary fault, not the guest or reference
+service. Both remain available after passing and failing attempts. Disposable
+`desktop-clean-job` verification invokes Vitest for the installed-panel journey;
+the enclosing job still owns installation, evidence and cleanup. It also requires
+the locked JavaScript dependencies on the host. Neither Vitest route replaces
+explicit lab preparation, deployment or peer startup.
+
+## Language formatting and size checks
+
+Use clang-format 22.1.8 and Qt's qmlformat 6.11.2. `CLANG_FORMAT` and
+`QMLFORMAT` override their executable paths. Install the additional pinned
+dependencies into `.cache/tools`, without changing system packages:
+
+```sh
+make language-style-provision
+make lint-language-style STYLE_FILES="path/to/source.py path/to/source.cc"
+make format-native
+make format-native-check
+```
+
+Omit `STYLE_FILES` to check all discovered files. Native formatting covers C++
+and QML; it also runs through `format-tooling` and `format-tooling-check`.
+Size checks run through the existing focused analyzer selection and
+`lint-analysis-general`.
+
+The policies are 80 columns, 500 source-file lines, 800 test-file lines and
+50 function lines, using each dependency's counting semantics:
+
+- ESLint owns JavaScript line, file and function limits.
+- Ruff owns Python line width; rustfmt owns Rust formatting and Clippy owns
+  Rust function length.
+- Checkstyle owns non-JavaScript file lengths, Java method length and line
+  width for Rust, C++, Java, QML and Bash. Test classification uses the
+  existing analyzer path rules. Generated directories are excluded, matching
+  the existing duplication-check policy.
+- Lizard owns Python and C++ function length. Its standard complexity and
+  parameter checks remain enabled.
+- clang-format and qmlformat use an 80-column formatting target.
+  clang-tidy also uses a 50-line function threshold in its existing scope.
+
+These tools differ in their treatment of comments, blank lines and formatting
+exceptions. There is no project-written counting or normalization pass.
+Bash and QML function length is not enforced: the selected tools do not
+provide that rule. Existing violations are reported, not baselined or hidden.

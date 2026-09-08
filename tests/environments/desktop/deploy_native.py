@@ -20,47 +20,12 @@ import vm_control
 SESSION = """export XDG_RUNTIME_DIR=/run/user/$(id -u)
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
 """
-INSTALL = (
-    SESSION
-    + """set -Eeuo pipefail
-stage=$1
-expected=$2
-unit_hash=$3
-name=omarchy-quickshare
-binary="$HOME/.local/bin/$name"
-unit="$HOME/.config/systemd/user/$name.service"
-test "$(sha256sum "$stage/$name" | cut -d ' ' -f 1)" = "$expected"
-test "$(sha256sum "$stage/$name.service" | cut -d ' ' -f 1)" = "$unit_hash"
-mkdir -p "$(dirname "$binary")" "$(dirname "$unit")"
-binary_tmp=$(mktemp "${binary}.XXXXXXXX")
-unit_tmp=$(mktemp "${unit}.XXXXXXXX")
-trap 'rm -f -- "$binary_tmp" "$unit_tmp"' EXIT
-install -m 755 "$stage/$name" "$binary_tmp"
-install -m 644 "$stage/$name.service" "$unit_tmp"
-# Check loadability without starting a daemon.
-timeout 10 "$binary_tmp" --version >"$stage/version.log" 2>&1
-mv -fT -- "$binary_tmp" "$binary"
-mv -fT -- "$unit_tmp" "$unit"
-systemctl --user daemon-reload
-systemctl --user restart "$name.service"
-"""
+GUEST = (
+    Path(__file__)
+    .with_name("deploy_native_guest.py")
+    .read_text(encoding="utf-8")
 )
-PROBE = (
-    SESSION
-    + """set -Eeuo pipefail
-name=omarchy-quickshare
-binary="$HOME/.local/bin/$name"
-systemctl --user is-active --quiet "$name.service"
-pid=$(systemctl --user show "$name.service" -p MainPID --value)
-test "$pid" -gt 0
-timeout 5 "$binary" health
-sha256sum "/proc/$pid/exe"
-readlink "/proc/$pid/exe"
-printf '%s\\n' "$pid"
-test "$(systemctl --user show "$name.service" -p MainPID --value)" = "$pid"
-systemctl --user is-active --quiet "$name.service"
-"""
-)
+PROBE = SESSION + shlex.join(["python3", "-c", GUEST, "probe"])
 JOURNAL = (
     SESSION
     + """systemctl --user status omarchy-quickshare.service --no-pager;
@@ -69,32 +34,54 @@ journalctl --user -u omarchy-quickshare.service -b -n 150 --no-pager
 )
 
 
-def _artifact(selected: Path | None) -> tuple[Path, dict[str, Any]]:
+def _artifact(  # ruff: ignore[too-many-branches] - Reject every unsupported artifact identity before deployment.
+    selected: Path | None, component: str = "all"
+) -> tuple[Path, dict[str, Any]]:
+    roles = build_native.components(component)
     if selected is None:
+        pointer = (
+            "latest.json" if component == "all" else f"latest-{component}.json"
+        )
         selected = Path(
             json.loads(
-                (build_native.BUILDS / "latest.json").read_text(
-                    encoding="utf-8"
-                )
+                (build_native.BUILDS / pointer).read_text(encoding="utf-8")
             )["artifact"]
         )
     selected = selected.resolve(strict=True)
     metadata = json.loads((selected / "build.json").read_text(encoding="utf-8"))
-    if metadata.get("status") != "built":
-        message = "Artifact has no successful native build record"
+    if metadata.get("schemaVersion") != build_native.SCHEMA_VERSION:
+        message = "Unsupported native build schema; rebuild separate components"
         raise RuntimeError(message)
-    for name, field in (
-        (build_native.NAME, "sha256"),
-        (build_native.UNIT.name, "unitSha256"),
+    if (
+        metadata.get("status") != "built"
+        or type(metadata.get("controlProtocol")) is not int
+        or metadata["controlProtocol"] <= 0
     ):
-        if build_native.digest(selected / name) != metadata.get(field):
-            message = f"Artifact bytes differ from build record: {name}"
-            raise RuntimeError(message)
-    if build_native.digest(build_native.UNIT) != metadata["unitSha256"]:
-        message = (
-            "Artifact service differs from current shipped service; rebuild"
-        )
+        message = "Artifact has no successful versioned native build record"
         raise RuntimeError(message)
+    records = metadata.get("components", {})
+    if (
+        not isinstance(records, dict)
+        or not set(roles) <= records.keys()
+        or not records.keys() <= build_native.COMPONENTS.keys()
+    ):
+        message = f"Native artifact lacks requested components: {component}"
+        raise RuntimeError(message)
+    for role in roles:
+        record = records[role]
+        name = build_native.COMPONENTS[role]["file"]
+        if record.get("file") != name or build_native.digest(
+            selected / name
+        ) != record.get("sha256"):
+            message = f"Artifact bytes differ from build record: {role}"
+            raise RuntimeError(message)
+    if "daemon" in roles:
+        for path in (selected / build_native.UNIT.name, build_native.UNIT):
+            if build_native.digest(path) != metadata.get("unitSha256"):
+                message = (
+                    "Artifact service differs from shipped service; rebuild"
+                )
+                raise RuntimeError(message)
     return selected, metadata
 
 
@@ -106,7 +93,9 @@ def _guest(state: dict[str, Any], command: str, log: Path) -> str:
     return result.stdout
 
 
-def _copy(state: dict[str, Any], artifact: Path, attempt: Path) -> str:
+def _copy(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - Copy selected roles using owned transport and evidence.
+    state: dict[str, Any], artifact: Path, attempt: Path, component: str
+) -> str:
     stage = f".cache/omarchy-quickshare-deploy/{attempt.name}"
     _guest(state, f"mkdir -p -- {shlex.quote(stage)}", attempt / "copy.log")
     with (attempt / "copy.log").open("a", encoding="utf-8") as log:
@@ -115,8 +104,15 @@ def _copy(state: dict[str, Any], artifact: Path, attempt: Path) -> str:
                 "scp",
                 "-F",
                 Path(state["directory"]) / "ssh.config",
-                artifact / build_native.NAME,
-                artifact / build_native.UNIT.name,
+                *[
+                    artifact / build_native.COMPONENTS[role]["file"]
+                    for role in build_native.components(component)
+                ],
+                *(
+                    [artifact / build_native.UNIT.name]
+                    if "daemon" in build_native.components(component)
+                    else []
+                ),
                 f"desktop:{stage}/",
             ],
             stdout=log,
@@ -126,31 +122,98 @@ def _copy(state: dict[str, Any], artifact: Path, attempt: Path) -> str:
     return stage
 
 
-def _verify(
-    state: dict[str, Any], metadata: dict[str, Any], attempt: Path
+def _identity(  # ruff: ignore[too-many-arguments] - Bind a protocol probe to its guest and evidence file.
+    state: dict[str, Any],
+    attempt: Path,
+    name: str,
+    *,
+    version: int | None = None,
 ) -> dict[str, Any]:
-    # SSH and public readiness calls each have a timeout.
+    return json.loads(
+        _guest(
+            state,
+            "bash -lc "
+            + shlex.quote(
+                SESSION
+                + shlex.join([
+                    "python3",
+                    "-c",
+                    GUEST,
+                    "identity",
+                    *([str(version)] if version is not None else []),
+                ])
+            ),
+            attempt / name,
+        )
+    )
+
+
+def _check_identity(
+    after: dict[str, Any], before: dict[str, Any], expected: dict[str, Any]
+) -> None:
+    if after["runtime"] != before["runtime"]:
+        message = "Desktop or shell process changed during native deployment"
+        raise RuntimeError(message)
+    for role, record in expected.items():
+        if after["components"][role]["installedSha256"] != record["sha256"]:
+            message = f"Installed {role} differs from selected artifact"
+            raise ValueError(message)
+    daemon = after["components"]["daemon"]
+    if "daemon" in expected and (
+        daemon["activeState"] != "active"
+        or daemon["loadedSha256"] != daemon["installedSha256"]
+    ):
+        message = "Selected daemon is not active with the installed executable"
+        raise ValueError(message)
+    for role in build_native.COMPONENTS.keys() - expected.keys():
+        if before["components"].get(role) != after["components"].get(role):
+            message = f"Unselected {role} identity changed"
+            raise RuntimeError(message)
+
+
+def _verify(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - Compare pre/post identity against the selected immutable build.
+    state: dict[str, Any],
+    metadata: dict[str, Any],
+    attempt: Path,
+    component: str,
+    before: dict[str, Any],
+) -> dict[str, Any]:
     import time  # ruff: ignore[import-outside-top-level] - Readiness polling only.
 
     deadline = time.monotonic() + 60
-    last = "No public readiness attempt completed"
+    last = "No readiness attempt completed"
     while time.monotonic() < deadline:
         try:
-            result = _guest(
+            after = _identity(
                 state,
-                "bash -lc " + shlex.quote(PROBE),
-                attempt / "readiness.log",
+                attempt,
+                "readiness.log",
+                version=metadata["controlProtocol"],
             )
-            health, checksum, executable, pid = result.strip().splitlines()
-            loaded = checksum.split()[0]
-            if health == "available" and loaded == metadata["sha256"]:
-                return {
-                    "health": health,
-                    "loadedSha256": loaded,
-                    "executable": executable,
-                    "mainPid": int(pid),
-                }
-            last = f"Readiness or loaded executable mismatch: {result.strip()}"
+            expected = {
+                role: metadata["components"][role]
+                for role in build_native.components(component)
+            }
+            _check_identity(after, before, expected)
+            daemon = after["components"]["daemon"]
+            return {
+                "health": "available"
+                if daemon["activeState"] == "active"
+                else daemon["activeState"],
+                "components": after["components"],
+                "runtimeBefore": before["runtime"],
+                "runtimeAfter": after["runtime"],
+                **{
+                    key: daemon[key]
+                    for key in (
+                        "mainPid",
+                        "executable",
+                        "loadedSha256",
+                        "installedSha256",
+                    )
+                    if key in daemon
+                },
+            }
         except (ValueError, OSError, subprocess.SubprocessError) as error:
             last = str(error)
         time.sleep(1)
@@ -158,28 +221,42 @@ def _verify(
     raise RuntimeError(message)
 
 
-def _deploy(
-    state: dict[str, Any], artifact: Path, attempt: Path
+def _deploy(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - Carry one selected role set across copy, install and verification.
+    state: dict[str, Any], artifact: Path, attempt: Path, component: str = "all"
 ) -> dict[str, Any]:
-    artifact, metadata = _artifact(artifact)
+    artifact, metadata = _artifact(artifact, component)
     diagnostics.desktop_ready(state, 30)
-    stage = _copy(state, artifact, attempt)
-    command = (
-        "bash -lc "
-        + shlex.quote(INSTALL)
-        + " -- "
-        + " ".join(
-            map(
-                shlex.quote, (stage, metadata["sha256"], metadata["unitSha256"])
-            )
-        )
+    before = _identity(
+        state,
+        attempt,
+        "before.log",
+        version=metadata["controlProtocol"] if component == "cli" else None,
     )
-    _guest(state, command, attempt / "install.log")
+    roles = build_native.components(component)
+    stage = _copy(state, artifact, attempt, component)
+    script = SESSION + shlex.join([
+        "python3",
+        "-c",
+        GUEST,
+        "install",
+        stage,
+        json.dumps({
+            "controlProtocol": metadata["controlProtocol"],
+            "components": {
+                role: {"sha256": metadata["components"][role]["sha256"]}
+                for role in roles
+            },
+            "unitSha256": metadata.get("unitSha256"),
+        }),
+        json.dumps(roles),
+    ])
+    _guest(state, "bash -lc " + shlex.quote(script), attempt / "install.log")
     return {
         "artifact": str(artifact),
         "build": metadata,
         "guestStage": stage,
-        **_verify(state, metadata, attempt),
+        "component": component,
+        **_verify(state, metadata, attempt, component, before),
     }
 
 
@@ -191,23 +268,24 @@ def _running(owner: Path) -> dict[str, Any]:
     return state
 
 
-def _attempt(owner: Path, selected: Path | None) -> None:
+def _attempt(owner: Path, selected: Path | None, component: str) -> None:
     attempt = owner / "deployments" / str(uuid.uuid4())
     attempt.mkdir(parents=True)
     report = {
         "deploymentId": attempt.name,
         "lab": owner.name,
         "startedAt": datetime.now(UTC).isoformat(),
+        "component": component,
         "status": "failed",
     }
     state = None
     try:  # ruff: ignore[too-many-statements-in-try-clause] - Persist selected artifact intent before any guest mutation.
-        artifact, _ = _artifact(selected)
+        artifact, _ = _artifact(selected, component)
         state = _running(owner)
         report.update({"guestUuid": state["uuid"], "qemuPid": state["pid"]})
         report["artifact"] = str(artifact)
         vm_control.save(attempt / "deployment.json", report)
-        report.update(_deploy(state, artifact, attempt))
+        report.update(_deploy(state, artifact, attempt, component))
         report["status"] = "ready"
     except (
         OSError,
@@ -263,7 +341,11 @@ def main() -> None:
         )
         with os.fdopen(descriptor, "a") as artifacts:
             fcntl.flock(artifacts, fcntl.LOCK_SH | fcntl.LOCK_NB)
-            _attempt(owner, options.artifact)
+            _attempt(
+                owner,
+                options.artifact,
+                os.environ.get("NATIVE_COMPONENT", "all"),
+            )
 
 
 if __name__ == "__main__":

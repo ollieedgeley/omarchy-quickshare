@@ -8,6 +8,7 @@ impl Envelope {
     pub const fn simulate_complete(share_id: u64) -> Self {
         Self {
             request: Request::SimulateComplete { share_id },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -18,6 +19,7 @@ impl Envelope {
     pub const fn simulate_discovery_timeout() -> Self {
         Self {
             request: Request::SimulateDiscoveryTimeout,
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -28,6 +30,7 @@ impl Envelope {
     pub const fn simulate_fail(share_id: u64) -> Self {
         Self {
             request: Request::SimulateFail { share_id },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -41,6 +44,7 @@ impl Envelope {
                 name: String::from(name),
                 size_bytes,
             },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -53,6 +57,7 @@ impl Envelope {
             request: Request::SimulateIncomingText {
                 text: String::from(text),
             },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -65,6 +70,7 @@ impl Envelope {
             request: Request::SimulateIncomingUrl {
                 url: String::from(url),
             },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -75,6 +81,7 @@ impl Envelope {
     pub const fn simulate_peer_accept(share_id: u64) -> Self {
         Self {
             request: Request::SimulatePeerAccept { share_id },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -87,6 +94,7 @@ impl Envelope {
             request: Request::SimulatePeerLost {
                 peer_id: String::from(peer_id),
             },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -97,6 +105,7 @@ impl Envelope {
     pub const fn simulate_peer_reject(share_id: u64) -> Self {
         Self {
             request: Request::SimulatePeerReject { share_id },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -110,6 +119,7 @@ impl Envelope {
                 name: String::from(name),
                 peer_id: String::from(peer_id),
             },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -126,6 +136,7 @@ impl Envelope {
                 share_id,
                 transferred_bytes,
             },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }

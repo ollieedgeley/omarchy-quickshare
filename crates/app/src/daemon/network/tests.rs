@@ -1,14 +1,15 @@
+mod terminal;
 mod visibility;
 
 use super::{
     NetworkCommand, NetworkEvent, TransferCancellation, emit_peer_lost,
     inbound::receive_share, remember_seen, transfer::outbound_event,
 };
-use crate::config::Config;
 use crate::daemon::media::PeerRoute;
 use crate::daemon::outbound::OutboundState;
 use crate::daemon::visibility::{Resources, Visibility};
 use core::net::{Ipv4Addr, SocketAddrV4};
+use quickshare_config::Config;
 use quickshare_connections::Medium;
 use std::fs;
 use std::net::TcpListener;

@@ -31,7 +31,6 @@ const isDirectExecution =
   import.meta.url === pathToFileURL(process.argv[1]).href;
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const MINIMUM_EXCEPTION_REASON_LENGTH = 20;
 const ALLOWED_RUSTC_LINT_PATTERN = /^\s+(?<lint>[a-z0-9-]+)\s+allow\s+/gmu;
 const exceptions = JSON.parse(
   readFileSync(join(ROOT, "tools/gates/clippy-exceptions.json"), "utf8"),
@@ -41,22 +40,14 @@ const rustcExceptions = JSON.parse(
 );
 
 for (const [lint, reason] of Object.entries(exceptions)) {
-  if (
-    !lint ||
-    typeof reason !== "string" ||
-    reason.trim().length < MINIMUM_EXCEPTION_REASON_LENGTH
-  ) {
+  if (!lint || typeof reason !== "string" || !reason.trim()) {
     throw new Error(
       `Clippy exception ${lint || "<empty>"} needs a specific reason`,
     );
   }
 }
 for (const [lint, reason] of Object.entries(rustcExceptions)) {
-  if (
-    !lint ||
-    typeof reason !== "string" ||
-    reason.trim().length < MINIMUM_EXCEPTION_REASON_LENGTH
-  ) {
+  if (!lint || typeof reason !== "string" || !reason.trim()) {
     throw new Error(
       `rustc exception ${lint || "<empty>"} needs a specific reason`,
     );

@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+NATIVE_SCHEMA_VERSION = 2
+
 
 def output(*args: str) -> str:
     """Execute trusted command via subprocess and return stripped output.
@@ -42,6 +44,8 @@ def absent(plugin_id: str) -> dict[str, Any]:
     paths: list[Path] = [
         home / ".local/bin/omarchy-quickshare",
         Path("/usr/bin/omarchy-quickshare"),
+        home / ".local/bin/omarchy-quickshare-daemon",
+        Path("/usr/bin/omarchy-quickshare-daemon"),
         home / ".config/systemd/user/omarchy-quickshare.service",
         Path("/usr/lib/systemd/user/omarchy-quickshare.service"),
         home / ".config/omarchy/plugins" / plugin_id,
@@ -106,6 +110,43 @@ def _unit_identity(unit: str) -> tuple[str, str]:
     return pid, fragment
 
 
+def _installed_components(candidate: dict[str, Any]) -> dict[str, Any]:
+    metadata = candidate["nativeBuild"]["metadata"]
+    expected_protocol = metadata.get("controlProtocol")
+    if (
+        metadata.get("schemaVersion") != NATIVE_SCHEMA_VERSION
+        or type(expected_protocol) is not int
+        or expected_protocol <= 0
+        or set(metadata.get("components", {})) != {"cli", "daemon"}
+    ):
+        message = "Candidate requires both components and a valid protocol"
+        raise RuntimeError(message)
+    components = {}
+    for role, name, argument in [
+        ("cli", "omarchy-quickshare", "protocol-version"),
+        ("daemon", "omarchy-quickshare-daemon", "--protocol-version"),
+    ]:
+        binary = Path("/usr/bin") / name
+        expected = metadata["components"][role]
+        if binary.is_symlink() or not binary.is_file():
+            message = f"Installed {role} must be a regular executable: {binary}"
+            raise RuntimeError(message)
+        installed = digest(binary)
+        if expected["file"] != name or installed != expected["sha256"]:
+            message = f"Installed {role} checksum differs from candidate"
+            raise RuntimeError(message)
+        protocol = output(str(binary), argument)
+        if protocol != str(expected_protocol):
+            message = f"Installed {role} control protocol mismatch: {protocol}"
+            raise RuntimeError(message)
+        components[role] = {
+            "executable": str(binary),
+            "installedSha256": installed,
+            "controlProtocol": expected_protocol,
+        }
+    return components
+
+
 def native(candidate: dict[str, Any]) -> dict[str, Any]:
     """Verify packaged native files, loaded daemon and public interfaces.
 
@@ -117,17 +158,16 @@ def native(candidate: dict[str, Any]) -> dict[str, Any]:
     """
     name = "omarchy-quickshare"
     unit = name + ".service"
-    binary = "/usr/bin/" + name
+    components = _installed_components(candidate)
+    binary = components["daemon"]["executable"]
     pid, fragment = _unit_identity(unit)
     executable = str(Path(f"/proc/{pid}/exe").readlink())
-    expected = candidate["nativeBuild"]["metadata"]["sha256"]
-    hashes = {"installed": digest(binary), "loaded": digest(f"/proc/{pid}/exe")}
-    if executable != binary or any(
-        value != expected for value in hashes.values()
-    ):
-        msg = (
-            f"Installed/loaded native identity mismatch: {executable}, {hashes}"
-        )
+    hashes = {
+        "installed": components["daemon"]["installedSha256"],
+        "loaded": digest(f"/proc/{pid}/exe"),
+    }
+    if executable != binary or hashes["loaded"] != hashes["installed"]:
+        msg = f"Loaded daemon identity mismatch: {executable}, {hashes}"
         raise RuntimeError(msg)
     if digest(fragment) != candidate["package"]["unitSha256"]:
         msg = "Installed shipped unit checksum mismatch"
@@ -141,8 +181,9 @@ def native(candidate: dict[str, Any]) -> dict[str, Any]:
     if package != expected_pkg:
         msg = f"Installed package identity mismatch: {package}"
         raise RuntimeError(msg)
-    health = output(binary, "health")
-    status = json.loads(output(binary, "status", "--json"))
+    cli = components["cli"]["executable"]
+    health = output(cli, "health")
+    status = json.loads(output(cli, "status", "--json"))
     if health != "available" or status["response"]["type"] != "snapshot":
         msg = "Candidate public interfaces are unavailable"
         raise RuntimeError(msg)
@@ -155,10 +196,14 @@ def native(candidate: dict[str, Any]) -> dict[str, Any]:
     ):
         msg = "Candidate daemon changed during readiness probe"
         raise RuntimeError(msg)
+    components["daemon"]["loadedSha256"] = hashes["loaded"]
     return {
         "mainPid": int(pid),
         "executable": executable,
         "hashes": hashes,
+        "components": components,
+        "installedSha256": hashes["installed"],
+        "loadedSha256": hashes["loaded"],
         "effectiveUnitPath": fragment,
         "unitSha256": digest(fragment),
         "package": package,

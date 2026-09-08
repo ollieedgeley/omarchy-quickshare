@@ -23,7 +23,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const DESTINATION = join(ROOT, "dist", "source");
 const SPARSE_DESTINATION = join(ROOT, "dist", "sparse");
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
-const CONTROL_PROTOCOL = 6;
+const CONTROL_PROTOCOL = 7;
 
 export function hashFile(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -54,15 +54,55 @@ export function assertCleanReleaseInputs({
   }
 }
 
-export function buildLockedBinary({ root, runCommand = run }) {
-  runCommand(
-    "cargo",
-    ["build", "--release", "--locked", "--package", "omarchy-quickshare"],
-    { cwd: root },
-  );
-  const binary = join(root, "target", "release", "omarchy-quickshare");
-  runCommand("strip", ["--strip-unneeded", binary]);
-  return { binary, version: readAppVersion(root) };
+export function buildLockedBinaries({ root, runCommand = run }) {
+  const version = readAppVersion(root);
+  const components = {};
+  let controlProtocol = null;
+  for (const [role, file, packageName, protocolArgument] of [
+    ["cli", "omarchy-quickshare", "omarchy-quickshare-cli", "protocol-version"],
+    [
+      "daemon",
+      "omarchy-quickshare-daemon",
+      "omarchy-quickshare",
+      "--protocol-version",
+    ],
+  ]) {
+    runCommand(
+      "cargo",
+      [
+        "build",
+        "--release",
+        "--locked",
+        "--package",
+        packageName,
+        "--bin",
+        file,
+      ],
+      { cwd: root },
+    );
+    const binary = join(root, "target", "release", file);
+    runCommand("strip", ["--strip-unneeded", binary]);
+    const protocol = runCommand(binary, [protocolArgument], {
+      capture: true,
+      quiet: true,
+    }).stdout.trim();
+    const reported = Number(protocol);
+    if (
+      !Number.isSafeInteger(reported) ||
+      reported <= 0 ||
+      String(reported) !== protocol
+    ) {
+      throw new Error(
+        `${role} reported an invalid control protocol: ${protocol}`,
+      );
+    }
+    if (controlProtocol !== null && controlProtocol !== reported) {
+      throw new Error("CLI and daemon control protocols differ");
+    }
+    controlProtocol = reported;
+    components[role] = { file, binary, sha256: hashFile(binary) };
+  }
+  return { components, controlProtocol, version };
 }
 
 export function createSourceBundle({
@@ -108,7 +148,7 @@ export function extractAndBuild({ archive, runCommand = run, workDirectory }) {
   }
   runCommand("tar", ["-xzf", archive, "-C", workDirectory]);
   assertClosedTree(workDirectory);
-  return buildLockedBinary({ root: workDirectory, runCommand });
+  return buildLockedBinaries({ root: workDirectory, runCommand });
 }
 
 export function materializeSparseCheckout({

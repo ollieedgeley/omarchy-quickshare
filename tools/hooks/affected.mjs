@@ -172,27 +172,6 @@ export function isCodeGraphIndexableSource(path) {
   }
   return true;
 }
-export function isTestPath(path) {
-  if (!isCodeGraphIndexableSource(path)) {
-    return false;
-  }
-  const name = path.split("/").pop();
-  const testMarker = /\.(?:test|spec)\./u;
-  const testSuffix = /_test\./u;
-  const testPrefix = /^test_/u;
-  const testName =
-    testMarker.test(name) ||
-    testSuffix.test(name) ||
-    testPrefix.test(name) ||
-    name === "tests.rs";
-  const testDirectory = /\/tests?\//u;
-  const inTestDirectory =
-    testDirectory.test(path) ||
-    path.startsWith("tests/") ||
-    path.startsWith("test/");
-  return testName || inTestDirectory;
-}
-
 export function getLanguage(path) {
   if (typeof path !== "string") {
     return "unknown";
@@ -223,6 +202,26 @@ export function getLanguage(path) {
     return "qml";
   }
   return "unknown";
+}
+export function isTestPath(path) {
+  if (getLanguage(path) === "unknown") {
+    return false;
+  }
+  const name = path.split("/").pop();
+  const testMarker = /\.(?:test|spec)\./u;
+  const testSuffix = /_test\./u;
+  const testPrefix = /^test_/u;
+  const testName =
+    testMarker.test(name) ||
+    testSuffix.test(name) ||
+    testPrefix.test(name) ||
+    name === "tests.rs";
+  const testDirectory = /\/tests?\//u;
+  const inTestDirectory =
+    testDirectory.test(path) ||
+    path.startsWith("tests/") ||
+    path.startsWith("test/");
+  return testName || inTestDirectory;
 }
 
 function isWithin(path, root) {

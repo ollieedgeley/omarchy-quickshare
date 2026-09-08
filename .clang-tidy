@@ -44,7 +44,7 @@ FormatStyle: file
 CheckOptions:
   readability-function-cognitive-complexity.Threshold: 15
   readability-function-size.BranchThreshold: 10
-  readability-function-size.LineThreshold: 80
+  readability-function-size.LineThreshold: 50
   readability-function-size.NestingThreshold: 4
   readability-function-size.ParameterThreshold: 6
   readability-function-size.StatementThreshold: 40

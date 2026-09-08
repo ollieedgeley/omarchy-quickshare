@@ -65,10 +65,7 @@ for path in sorted(root.iterdir()):
 print(json.dumps({'manifest': json.loads((root / 'manifest.json').read_text()),
                   'files': files, 'directory': str(root)}))
 """
-NATIVE = """set -Eeuo pipefail
-systemctl --user is-active --quiet omarchy-quickshare.service
-systemctl --user show omarchy-quickshare.service -p MainPID --value
-"""
+NATIVE = deploy_native.PROBE
 UNLOCKED = """import json, os, subprocess
 instances = json.loads(subprocess.check_output(
     ['hyprctl', 'instances', '-j'], text=True))
@@ -260,7 +257,15 @@ def _loaded(
     # Registry rescans can keep the old compiled QML alive on the installed
     # runtime. The supported restart command creates a fresh shell engine,
     # preserves the compositor/native service, and refuses an active lock.
-    _guest(state, "omarchy-restart-shell", attempt / "reload.log")
+    report["shellRestart"] = {"exitCode": 0, "log": "reload.log"}
+    try:
+        _guest(state, "omarchy-restart-shell", attempt / "reload.log")
+    except (OSError, subprocess.SubprocessError) as error:
+        report["shellRestart"].update(
+            exitCode=getattr(error, "returncode", None), error=str(error)
+        )
+    # The host's shorter readiness wait may expire after a successful launch.
+    # Restart only once; the loaded stamp and nonce below decide readiness.
     deadline = time.monotonic() + 45
     last = "No runtime identity response"
     while time.monotonic() < deadline:
@@ -276,7 +281,8 @@ def _loaded(
             last = str(error)
         time.sleep(1)
     message = (
-        f"Panel reload failed: {last}; see shell-journal.log and identity.log"
+        f"Panel reload failed: {last}; restart={report['shellRestart']}; "
+        "see reload.log, shell-journal.log and identity.log"
     )
     raise RuntimeError(message)
 
@@ -285,7 +291,8 @@ def _deploy(
     state: dict[str, Any], attempt: Path, report: dict[str, Any]
 ) -> None:
     before = _guest(state, NATIVE, attempt / "native-before.log").strip()
-    report["nativePidBefore"] = int(before)
+    report["nativeBefore"] = before.splitlines()
+    report["nativePidBefore"] = int(before.splitlines()[-1])
     # The host watcher reloads lock services as soon as installation changes.
     # Refuse locked/indeterminate desktops before touching the plugin tree.
     report["lockPreflight"] = json.loads(
@@ -305,7 +312,8 @@ def _deploy(
         raise RuntimeError(message)
     report.update(_loaded(state, report, attempt))
     after = _guest(state, NATIVE, attempt / "native-after.log").strip()
-    report["nativePidAfter"] = int(after)
+    report["nativeAfter"] = after.splitlines()
+    report["nativePidAfter"] = int(after.splitlines()[-1])
     if before != after:
         message = "Native service changed during a QML-only deployment"
         raise RuntimeError(message)

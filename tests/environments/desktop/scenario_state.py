@@ -75,7 +75,7 @@ def public_cli(state: dict[str, Any], attempt: Path, *args: str) -> str:
 
 
 def public_snapshot(state: dict[str, Any], attempt: Path) -> dict[str, Any]:
-    """Read the current versioned public snapshot.
+    """Read the versioned public snapshot directly from the owned daemon.
 
     Returns:
         The endpoint snapshot.
@@ -83,7 +83,57 @@ def public_snapshot(state: dict[str, Any], attempt: Path) -> dict[str, Any]:
     Raises:
         RuntimeError: Public status did not return a snapshot.
     """
-    envelope = json.loads(public_cli(state, attempt, "status", "--json"))
+    if not vm_control.running(state):
+        message = "Owned guest is not running"
+        raise RuntimeError(message)
+    daemon = state.get("daemonExecutable") or str(
+        Path(
+            state.get("cliExecutable", "~/.local/bin/omarchy-quickshare")
+        ).with_name("omarchy-quickshare-daemon")
+    )
+    script = """import json, os, socket, struct, subprocess, sys
+from pathlib import Path
+def output(*args):
+    return subprocess.check_output(args, text=True, timeout=5).strip()
+def pid():
+    return int(output('systemctl', '--user', 'show',
+                      'omarchy-quickshare.service', '-p', 'MainPID', '--value'))
+selected = Path(sys.argv[1]).expanduser()
+before = pid()
+loaded = Path(f'/proc/{before}/exe')
+if before <= 0 or str(loaded.readlink()) != str(selected):
+    raise RuntimeError('Selected installed daemon is not the loaded service')
+version = int(output(str(loaded), '--protocol-version'))
+if version <= 0:
+    raise RuntimeError('Loaded daemon has no valid protocol identity')
+path = Path(os.environ['XDG_RUNTIME_DIR']) / 'omarchy-quickshare/control.sock'
+limit = 1_048_576
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+    stream.settimeout(5)
+    stream.connect(str(path))
+    credentials = stream.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+    if struct.unpack('3i', credentials)[0] != before:
+        raise RuntimeError('Control socket does not belong to selected daemon')
+    stream.sendall(json.dumps({
+        'version': version, 'request': {'type': 'snapshot'},
+    }).encode() + b'\\n')
+    with stream.makefile('rb') as response:
+        frame = response.readline(limit + 2)
+if len(frame) > limit + 1 or not frame.endswith(b'\\n'):
+    raise RuntimeError('Invalid bounded public snapshot response')
+result = json.loads(frame)
+if result.get('version') != version or pid() != before:
+    raise RuntimeError('Daemon identity changed during public snapshot')
+print(json.dumps(result))
+"""
+    envelope = json.loads(
+        guest_command(
+            state,
+            deploy_native.SESSION
+            + shlex.join(["timeout", "20", "python", "-c", script, daemon]),
+            attempt,
+        )
+    )
     response = envelope["response"]
     if response["type"] != "snapshot":
         message = "Public status did not return a snapshot envelope"

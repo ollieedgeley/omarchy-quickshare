@@ -7,33 +7,31 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import test, { afterEach } from "node:test";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { afterEach, test } from "vitest";
 
 import { output, run } from "../../gates/lib/process.mjs";
 import { createArchPackage } from "../arch-package.mjs";
 import { createNativeRelease } from "../native-release.mjs";
 import { hashFile } from "../source-build.mjs";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const temporaryDirectories = new Set();
 const COMMIT_LENGTH = 40;
-const CONTROL_PROTOCOL = 6;
+const CONTROL_PROTOCOL = 7;
 const SOURCE_COMMIT = "b".repeat(COMMIT_LENGTH);
-const PKGVER_PATTERN = /^pkgver=0\.0\.0$/mu;
-const ARCH_BINARY_PATTERN = /usr\/bin\/omarchy-quickshare/u;
+const ARCH_BINARY_PATTERN = /^usr\/bin\/omarchy-quickshare$/mu;
+const ARCH_DAEMON_PATTERN = /^usr\/bin\/omarchy-quickshare-daemon$/mu;
 const ARCH_SERVICE_PATTERN =
   /usr\/lib\/systemd\/user\/omarchy-quickshare\.service/u;
 const ARCH_CONFIG_PATTERN = /usr\/share\/omarchy-quickshare\/config.toml/u;
-const ARCH_LICENSE_PATTERN = /usr\/share\/licenses\/\$pkgname\/LICENSE/u;
+const ARCH_LICENSE_PATTERN =
+  /usr\/share\/licenses\/omarchy-quickshare\/LICENSE/u;
 const PACKAGE_EXEC_PATTERN =
-  /^ExecStart=\/usr\/bin\/omarchy-quickshare daemon$/mu;
+  /^ExecStart=\/usr\/bin\/omarchy-quickshare-daemon$/mu;
 const LOCAL_BIN_PATTERN = /%h\/\.local\/bin/u;
 const PKGINFO_NAME_PATTERN = /^pkgname = omarchy-quickshare$/mu;
 const PKGINFO_VERSION_PATTERN = /^pkgver = 0\.0\.0-1$/mu;
 const PKGINFO_MEMBER = /^\.PKGINFO$/mu;
-const RELEASE_ARCH_DEPENDS_PATTERN = /^release-arch: release-native(?: |$)/mu;
 
 function temporaryDirectory() {
   const directory = mkdtempSync(join(tmpdir(), "quickshare-native-"));
@@ -52,10 +50,15 @@ function preparedNativeRoot(root) {
   mkdirSync(join(root, "target", "release"), { recursive: true });
   mkdirSync(join(root, "packaging", "systemd"), { recursive: true });
   mkdirSync(join(root, "crates", "app"), { recursive: true });
-  writeFileSync(join(root, "target", "release", "omarchy-quickshare"), "bin");
+  mkdirSync(join(root, "crates", "cli"), { recursive: true });
+  writeFileSync(join(root, "target", "release", "omarchy-quickshare"), "cli");
+  writeFileSync(
+    join(root, "target", "release", "omarchy-quickshare-daemon"),
+    "daemon",
+  );
   writeFileSync(
     join(root, "packaging", "systemd", "omarchy-quickshare.service"),
-    "[Service]\nExecStart=%h/.local/bin/omarchy-quickshare daemon\n",
+    "[Service]\nExecStart=%h/.local/bin/omarchy-quickshare-daemon\n",
   );
   writeFileSync(
     join(root, "packaging", "systemd", "omarchy-quickshare.toml"),
@@ -66,30 +69,32 @@ function preparedNativeRoot(root) {
     join(root, "crates", "app", "Cargo.toml"),
     '[package]\nname = "omarchy-quickshare"\nversion = "0.0.0"\n',
   );
+  writeFileSync(
+    join(root, "crates", "cli", "Cargo.toml"),
+    '[package]\nname = "omarchy-quickshare-cli"\nversion = "0.0.0"\n',
+  );
 }
 
-function runReleaseCommand(calls) {
+function runReleaseCommand() {
   return (command, args, options) => {
-    const call = { args, command };
-    if (options) {
-      call.options = options;
+    if (args[0] === "protocol-version" || args[0] === "--protocol-version") {
+      return { stdout: String(CONTROL_PROTOCOL) };
     }
-    calls.push(call);
     if (command === "tar") {
       run(command, args, options);
     }
+    return null;
   };
 }
 
-test("native release strips the locked binary and records its checksum", () => {
+test("native release checksums fixture bytes with simulated builds", () => {
   const root = temporaryDirectory();
   preparedNativeRoot(root);
   const destination = temporaryDirectory();
-  const calls = [];
   const result = createNativeRelease({
     destination,
     root,
-    runCommand: runReleaseCommand(calls),
+    runCommand: runReleaseCommand(),
     sourceCommit: SOURCE_COMMIT,
   });
   const checksums = readFileSync(join(destination, "SHA256SUMS"), "utf8");
@@ -102,30 +107,38 @@ test("native release strips the locked binary and records its checksum", () => {
   );
 
   assert.equal(result.version, "0.0.0");
+  assert.equal(result.controlProtocol, CONTROL_PROTOCOL);
+  const components = {
+    cli: {
+      file: "omarchy-quickshare",
+      sha256: hashFile(join(destination, "omarchy-quickshare")),
+    },
+    daemon: {
+      file: "omarchy-quickshare-daemon",
+      sha256: hashFile(join(destination, "omarchy-quickshare-daemon")),
+    },
+  };
+  for (const role of ["cli", "daemon"]) {
+    const file = join(destination, components[role].file);
+    assert.equal(readFileSync(file, "utf8"), role);
+  }
+  assert.deepEqual(result.components, components);
   assert.equal(
-    result.sha256,
-    hashFile(join(destination, "omarchy-quickshare")),
+    checksums,
+    `${components.cli.sha256}  omarchy-quickshare\n` +
+      `${components.daemon.sha256}  omarchy-quickshare-daemon\n`,
   );
-  assert.equal(checksums, `${result.sha256}  omarchy-quickshare\n`);
   assert.deepEqual(meta, {
+    components,
     controlProtocol: CONTROL_PROTOCOL,
-    sha256: result.sha256,
+    schemaVersion: 2,
     sourceCommit: SOURCE_COMMIT,
     version: result.version,
   });
   assert.equal(config, "# default\n");
-  assert.equal(calls[0].command, "cargo");
-  assert.deepEqual(calls[0].args, [
-    "build",
-    "--release",
-    "--locked",
-    "--package",
-    "omarchy-quickshare",
-  ]);
-  assert.equal(calls[1].command, "strip");
 });
 
-test("Arch package layout ships binary unit config and license", () => {
+test("Arch archive ships both fixture binaries unit config and license", () => {
   const root = temporaryDirectory();
   preparedNativeRoot(root);
   const nativeDirectory = temporaryDirectory();
@@ -133,39 +146,33 @@ test("Arch package layout ships binary unit config and license", () => {
   createNativeRelease({
     destination: nativeDirectory,
     root,
-    runCommand: runReleaseCommand([]),
+    runCommand: runReleaseCommand(),
     sourceCommit: SOURCE_COMMIT,
   });
   const result = createArchPackage({
     destination,
     nativeDirectory,
     root,
-    runCommand: runReleaseCommand([]),
+    runCommand: runReleaseCommand(),
   });
-  const packaged = readFileSync(
-    join(destination, "pkg", "usr", "bin", "omarchy-quickshare"),
-    "utf8",
-  );
-
   assert.equal(result.version, "0.0.0");
-  assert.match(result.pkgbuild, PKGVER_PATTERN);
-  assert.match(result.pkgbuild, ARCH_BINARY_PATTERN);
-  assert.match(result.pkgbuild, ARCH_SERVICE_PATTERN);
-  assert.match(result.pkgbuild, ARCH_CONFIG_PATTERN);
-  assert.match(result.pkgbuild, ARCH_LICENSE_PATTERN);
-  assert.equal(packaged, "bin");
-  const unit = readFileSync(
-    join(
-      destination,
-      "pkg",
-      "usr",
-      "lib",
-      "systemd",
-      "user",
-      "omarchy-quickshare.service",
-    ),
-    "utf8",
+  assert.equal(
+    output("tar", ["-xOf", result.artifact, "usr/bin/omarchy-quickshare"]),
+    "cli",
   );
+  assert.equal(
+    output("tar", [
+      "-xOf",
+      result.artifact,
+      "usr/bin/omarchy-quickshare-daemon",
+    ]),
+    "daemon",
+  );
+  const unit = output("tar", [
+    "-xOf",
+    result.artifact,
+    "usr/lib/systemd/user/omarchy-quickshare.service",
+  ]);
   const pkginfo = readFileSync(join(destination, "pkg", ".PKGINFO"), "utf8");
   const listing = output("tar", ["-tf", result.artifact]);
 
@@ -174,9 +181,9 @@ test("Arch package layout ships binary unit config and license", () => {
   assert.match(pkginfo, PKGINFO_NAME_PATTERN);
   assert.match(pkginfo, PKGINFO_VERSION_PATTERN);
   assert.match(listing, PKGINFO_MEMBER);
-});
-
-test("release-arch depends on the native artifact", () => {
-  const makefile = readFileSync(join(ROOT, "Makefile"), "utf8");
-  assert.match(makefile, RELEASE_ARCH_DEPENDS_PATTERN);
+  assert.match(listing, ARCH_BINARY_PATTERN);
+  assert.match(listing, ARCH_DAEMON_PATTERN);
+  assert.match(listing, ARCH_SERVICE_PATTERN);
+  assert.match(listing, ARCH_CONFIG_PATTERN);
+  assert.match(listing, ARCH_LICENSE_PATTERN);
 });

@@ -11,12 +11,12 @@ use std::time::Instant;
 use super::inbound::{advertisement, receive_share};
 use super::transfer::outbound_event;
 use super::{NetworkCommand, NetworkEvent, TransferCancellation};
-use crate::config::Config;
 use crate::daemon::media::{
     DiscoveryLeases, PeerRoute, endpoint_name, start_discovery,
 };
 use core::time::Duration;
 use quickshare_bluez::Adapter;
+use quickshare_config::Config;
 use quickshare_connections::Medium;
 use quickshare_network::{Browser, DnsSd, NetworkManager, ResolvedService};
 use quickshare_sharing::{EndpointInfo, MdnsInstance};

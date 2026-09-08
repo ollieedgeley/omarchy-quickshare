@@ -27,6 +27,7 @@ const GOOGLE_MANIFEST = join(
   "tests/environments/nearby-linux/environment.json",
 );
 const BINARY = "/usr/local/bin/omarchy-quickshare";
+const DAEMON = "/usr/local/bin/omarchy-quickshare-daemon";
 const CASE_DIRECTORY_MODE = 0o777;
 const DISCOVERY_TIMEOUT_MS = 18_000;
 const MULTI_FRAME_FILE_SIZE = 1_048_577;
@@ -660,8 +661,7 @@ function startDaemon(directories) {
       "exec",
       "--tty=false",
       "rust",
-      BINARY,
-      "daemon",
+      DAEMON,
       "--log-level",
       "trace",
     ],

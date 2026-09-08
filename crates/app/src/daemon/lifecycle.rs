@@ -19,7 +19,7 @@ use super::observations::{
     io_error_kind, recovery_guidance, trace_protocol, trace_storage,
 };
 use crate::archive;
-use crate::config::Config;
+use quickshare_config::Config;
 
 /// Settings retained for already admitted operations.
 #[derive(Debug, Default)]
@@ -71,12 +71,10 @@ impl Daemon {
         Ok(())
     }
 
-    /// Queues a file or a ZIP of a folder and remembers temporary archives.
-    pub(super) fn queue_file(
-        &mut self,
+    /// Opens content before admitting work, without starting any transfer.
+    pub(super) fn prepare_file(
         path: &Path,
-        peer_id: Option<&str>,
-    ) -> io::Result<u64> {
+    ) -> io::Result<(Attachment, OutboundSource, Option<PathBuf>)> {
         if path.is_dir() {
             let archive_path =
                 archive::zip_directory(path).inspect_err(|error| {
@@ -89,23 +87,19 @@ impl Daemon {
                     );
                 })?;
             trace_protocol("source", "archive", "completed", None, None);
-            let source = open_source(&archive_path)?;
+            let source = open_source(&archive_path).inspect_err(|_| {
+                let _removed = fs::remove_file(&archive_path);
+            })?;
             let attachment = Attachment::file(
                 &source.name().to_string_lossy(),
                 source.len(),
             );
-            let share_id =
-                self.queue_attachment_for(attachment, peer_id.is_some());
-            self.outbound.remember_file(share_id, source);
-            self.outbound.remember_archive(share_id, archive_path);
-            return Ok(share_id);
+            return Ok((attachment, source, Some(archive_path)));
         }
         let source = open_source(path)?;
         let attachment =
             Attachment::file(&source.name().to_string_lossy(), source.len());
-        let share_id = self.queue_attachment_for(attachment, peer_id.is_some());
-        self.outbound.remember_file(share_id, source);
-        Ok(share_id)
+        Ok((attachment, source, None))
     }
 
     fn timeout_discovery(&mut self) -> io::Result<()> {
@@ -152,6 +146,13 @@ impl Daemon {
         {
             return Ok(());
         }
+        if self
+            .network
+            .as_ref()
+            .is_some_and(|network| !network.cancel_transfer(share_id))
+        {
+            return Ok(());
+        }
         if self.sharing.fail(share_id) {
             tracing::warn!(
                 target: "omarchy_quickshare::protocol",
@@ -171,9 +172,7 @@ impl Daemon {
                 Some("timed_out"),
                 Some(recovery_guidance("timed_out")),
             );
-            if let Some(network) = &self.network {
-                network.cancel_transfer(share_id);
-            }
+            self.persist_operations()?;
             notify::notify(NotifyKind::Error);
         }
         self.outbound.finish(share_id);
@@ -362,8 +361,10 @@ pub fn run(socket_path: &Path) -> io::Result<()> {
     let config = Config::load()?;
     fs::create_dir_all(&config.receive_directory)?;
     let socket = ControlSocket::bind(socket_path)?;
+    let journal = super::journal::Journal::open()?;
     let network = NetworkWorker::start(config.clone())?;
     let mut endpoint = Daemon::with_network_worker(network);
+    endpoint.attach_journal(journal)?;
     endpoint.config_watch = Some(config_watch);
     endpoint.install_config(config);
     tracing::info!(phase = "ready", "daemon ready");
@@ -382,7 +383,9 @@ pub fn run_simulated(socket_path: &Path) -> io::Result<()> {
     let config_watch = super::preferences::ConfigWatch::new()?;
     let config = Config::load()?;
     let socket = ControlSocket::bind(socket_path)?;
+    let journal = super::journal::Journal::open()?;
     let mut endpoint = Daemon::simulated();
+    endpoint.attach_journal(journal)?;
     endpoint.config_watch = Some(config_watch);
     endpoint.install_config(config);
     endpoint.serve_until(&socket.listener, || false)

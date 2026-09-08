@@ -15,6 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import build_native
 import deploy_native
 import lab_lifecycle
 import resource_budget
@@ -41,21 +42,24 @@ def _application(state: dict[str, Any], attempt: Path) -> dict[str, Any]:
     )
     loaded = checksum.split()[0]
     installed = guest_command(
-        state, 'sha256sum "$HOME/.local/bin/omarchy-quickshare"', attempt
+        state, 'sha256sum "$HOME/.local/bin/omarchy-quickshare-daemon"', attempt
     ).split()[0]
     if health != "available" or installed != loaded:
-        message = "Installed public CLI and running service identity disagree"
+        message = "Installed daemon and running service identity disagree"
         raise RuntimeError(message)
     owner = Path(state["directory"])
     deployments = []
     for path in (owner / "deployments").glob("*/deployment.json"):
         record = json.loads(path.read_text(encoding="utf-8"))
+        build = record.get("build", {})
         if (
             record.get("status") == "ready"
             and record.get("guestUuid") == state["uuid"]
             and record.get("loadedSha256") == loaded
-            and record.get("build", {}).get("sha256") == loaded
-            and record.get("build", {}).get("status") == "built"
+            and (build.get("status"), build.get("schemaVersion"))
+            == ("built", build_native.SCHEMA_VERSION)
+            and build.get("components", {}).get("daemon", {}).get("sha256")
+            == loaded
         ):
             deployments.append((record["finishedAt"], path, record))
     if not deployments:
@@ -334,11 +338,14 @@ def _exercise(
             report["selectedPeer"]["id"],
             guest_path,
         )
-        match = re.fullmatch(r"Share ([0-9]+) queued\.\s*", output)
+        match = re.fullmatch(
+            r"Share ([0-9]+) queued\.\nrequest_id=([^\r\n]+)\s*", output
+        )
         if not match:
             message = "Public send did not report its queued share identifier"
             raise RuntimeError(message)
         report["shareId"] = match[1]
+        report["requestId"] = match[2]
         vm_control.save(attempt / "result.json", report)
         report["action"] = "observe public and independent receiver completion"
         _completion(state, attempt, report, baseline, received)

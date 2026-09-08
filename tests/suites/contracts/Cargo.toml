@@ -9,6 +9,8 @@ publish = false
 
 [dev-dependencies]
 omarchy-quickshare = { path = "../../../crates/app" }
+omarchy-quickshare-cli = { path = "../../../crates/cli" }
+quickshare-control = { path = "../../../crates/core/control" }
 quickshare-test-support = { path = "../../support" }
 quickshare-sharing = { path = "../../../crates/core/sharing" }
 serde_json.workspace = true

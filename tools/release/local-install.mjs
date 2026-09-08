@@ -13,17 +13,22 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { run } from "../gates/lib/process.mjs";
+import { buildLockedBinaries } from "./source-build.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const EXECUTABLE_MODE = 0o755;
 const SERVICE_NAME = "omarchy-quickshare.service";
-const SERVICE_COMMAND_PATTERN = /^ExecStart=.* daemon$/mu;
+const SERVICE_COMMAND_PATTERN =
+  /^ExecStart=%h\/\.local\/bin\/omarchy-quickshare-daemon$/mu;
 
 function installationPaths(root, homeDirectory) {
-  const binaryName = "omarchy-quickshare";
   return {
-    binarySource: join(root, "target", "release", binaryName),
-    binaryTarget: join(homeDirectory, ".local", "bin", binaryName),
+    binaries: ["omarchy-quickshare", "omarchy-quickshare-daemon"].map(
+      (name) => ({
+        source: join(root, "target", "release", name),
+        target: join(homeDirectory, ".local", "bin", name),
+      }),
+    ),
     configSource: join(root, "packaging", "systemd", "omarchy-quickshare.toml"),
     configTarget: join(
       homeDirectory,
@@ -77,18 +82,17 @@ export function installLocal({
   simulated = false,
 } = {}) {
   const paths = installationPaths(root, homeDirectory);
-  const replacing = existsSync(paths.binaryTarget);
-  runCommand(
-    "cargo",
-    ["build", "--release", "--locked", "--package", "omarchy-quickshare"],
-    { cwd: root },
-  );
-  mkdirSync(dirname(paths.binaryTarget), { recursive: true });
+  const replacing = paths.binaries.some(({ target }) => existsSync(target));
+  buildLockedBinaries({ root, runCommand });
   mkdirSync(dirname(paths.serviceTarget), { recursive: true });
-  const stagedBinary = `${paths.binaryTarget}.installing`;
-  copyFileSync(paths.binarySource, stagedBinary);
-  chmodSync(stagedBinary, EXECUTABLE_MODE);
-  renameSync(stagedBinary, paths.binaryTarget);
+  for (const { source, target } of paths.binaries) {
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(source, `${target}.installing`);
+    chmodSync(`${target}.installing`, EXECUTABLE_MODE);
+  }
+  for (const { target } of paths.binaries) {
+    renameSync(`${target}.installing`, target);
+  }
   installService(paths, simulated);
   installConfig(paths);
   let action = "start";
@@ -108,7 +112,9 @@ export function uninstallLocal({
   const paths = installationPaths(root, homeDirectory);
   runCommand("systemctl", ["--user", "stop", SERVICE_NAME]);
   runCommand("systemctl", ["--user", "disable", SERVICE_NAME]);
-  unlinkIfExists(paths.binaryTarget);
+  for (const { target } of paths.binaries) {
+    unlinkIfExists(target);
+  }
   unlinkIfExists(paths.serviceTarget);
   runCommand("systemctl", ["--user", "daemon-reload"]);
 }

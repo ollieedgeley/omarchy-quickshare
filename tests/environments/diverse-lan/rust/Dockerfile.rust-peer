@@ -7,13 +7,15 @@ WORKDIR /workspace
 COPY . ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/workspace/target,sharing=locked \
-    cargo build --locked --release --package omarchy-quickshare \
-    && cp target/release/omarchy-quickshare /usr/local/bin/omarchy-quickshare
+    cargo build --locked --release \
+      --package omarchy-quickshare --package omarchy-quickshare-cli \
+    && cp target/release/omarchy-quickshare \
+      target/release/omarchy-quickshare-daemon /usr/local/bin/
 
 FROM ${RUNTIME_IMAGE}@sha256:${RUNTIME_ID} AS runtime
 RUN groupadd --system quickshare \
     && useradd --system --gid quickshare --create-home quickshare
 COPY --from=builder /usr/local/bin/omarchy-quickshare \
-  /usr/local/bin/omarchy-quickshare
+  /usr/local/bin/omarchy-quickshare-daemon /usr/local/bin/
 USER quickshare
 ENTRYPOINT ["/usr/local/bin/omarchy-quickshare"]

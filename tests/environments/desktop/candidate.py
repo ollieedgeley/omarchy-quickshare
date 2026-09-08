@@ -14,11 +14,13 @@ from pathlib import Path
 from typing import Any
 
 import build_native
+import candidate_contract
 import deploy_native
 import deploy_panel
 import vm_control
 
 CANDIDATES = vm_control.CACHE / "candidates"
+SCHEMA_VERSION = 2
 PACKAGE = """
 import { createArchPackage } from './tools/release/arch-package.mjs';
 import { run } from './tools/gates/lib/process.mjs';
@@ -29,6 +31,10 @@ console.log(JSON.stringify(createArchPackage(options)));
 EXPORT = """
 import { createPluginRepository } from './tools/release/plugin-export.mjs';
 createPluginRepository(JSON.parse(process.argv[1]));
+"""
+PLUGIN_INVENTORY = """
+import { PLUGIN_FILES } from './tools/release/plugin-export.mjs';
+console.log(JSON.stringify(PLUGIN_FILES));
 """
 
 
@@ -74,25 +80,169 @@ def command(args: list[str | Path], directory: Path, log: Path) -> str:
 
 
 def inventory(directory: Path) -> dict[str, str]:
-    """Return sha256 map of regular non-.git files under directory."""
-    return {
-        path.name: build_native.digest(path)
-        for path in sorted(directory.iterdir())
-        if path.name != ".git"
-    }
+    """Return regular-file hashes.
+
+    Raises:
+        RuntimeError: A plugin entry is not a regular file.
+    """
+    files = {}
+    for path in sorted(directory.iterdir()):
+        if path.name == ".git":
+            continue
+        if path.is_symlink() or not path.is_file():
+            message = f"Plugin input must be a regular file: {path}"
+            raise RuntimeError(message)
+        files[path.name] = build_native.digest(path)
+    return files
 
 
-def _matching_version(metadata: dict[str, Any], version: str) -> None:
-    package_id = metadata["cargoArtifact"]["packageId"]
-    if not package_id.endswith(f"#{build_native.NAME}@{version}"):
-        message = (
-            f"Package version {version} differs from the selected native "
-            f"build identity {package_id}; select a matching build"
+def _plugin_git(source: Path, files: dict[str, str], log: Path) -> str:
+    expected = json.loads(
+        command(
+            ["node", "--input-type=module", "-e", PLUGIN_INVENTORY],
+            vm_control.ROOT,
+            log,
         )
+    )
+    if set(files) != set(expected):
+        message = "Selected plugin differs from the closed export inventory"
         raise RuntimeError(message)
+    root = command(["git", "rev-parse", "--show-toplevel"], source, log)
+    if Path(root).resolve() != source or command(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        source,
+        log,
+    ):
+        message = "Selected plugin must be a clean standalone Git repository"
+        raise RuntimeError(message)
+    tree = command(["git", "ls-tree", "-r", "HEAD"], source, log)
+    committed = {}
+    for row in tree.splitlines():
+        entry, name = row.split("\t", 1)
+        mode, kind, digest = entry.split()
+        if mode not in {"100644", "100755"} or kind != "blob":
+            message = "Selected plugin commit contains non-regular entries"
+            raise RuntimeError(message)
+        committed[name] = digest
+    names = sorted(files)
+    actual = command(
+        ["git", "hash-object", "--no-filters", "--", *names], source, log
+    ).splitlines()
+    if committed != dict(zip(names, actual, strict=True)):
+        message = "Selected plugin files differ from their Git commit"
+        raise RuntimeError(message)
+    return command(["git", "rev-parse", "HEAD"], source, log)
 
 
-def build(selected: Path | None) -> None:  # ruff: ignore[too-many-branches,too-many-statements,too-many-locals] - One retained report spans source identities, package creation and plugin export.
+def _copy_plugin(
+    source: Path, report: dict[str, Any], log: Path
+) -> tuple[dict[str, str], str, bool]:
+    repository = Path(report["directory"]) / "plugin"
+    if (
+        source.is_symlink()
+        or not source.is_dir()
+        or (source / ".git").is_symlink()
+    ):
+        message = "Selected plugin must be a regular repository directory"
+        raise RuntimeError(message)
+    source = source.resolve(strict=True)
+    files = inventory(source)
+    commit = _plugin_git(source, files, log)
+    metadata = report["nativeBuild"]["metadata"]
+    selected = metadata["plugin"]
+    if (
+        Path(selected["directory"]).resolve() != source
+        or selected["hashes"] != files
+        or selected["commit"] != commit
+    ):
+        message = "Selected plugin differs from the native build provenance"
+        raise RuntimeError(message)
+    release = json.loads((source / "release.json").read_text(encoding="utf-8"))
+    native = release["nativeArtifact"]
+    components = {
+        role: {"file": item["file"], "sha256": item["sha256"]}
+        for role, item in metadata["components"].items()
+    }
+    if (
+        release["sourceCommit"] != metadata["sourceCommit"]
+        or native["version"] != report["package"]["version"]
+        or native["components"] != components
+    ):
+        message = "Selected plugin release does not match the native build"
+        raise RuntimeError(message)
+    candidate_contract.matching_protocol(
+        metadata["controlProtocol"], release["controlProtocol"]
+    )
+    command(
+        ["git", "clone", "--no-local", "--", source, repository],
+        vm_control.ROOT,
+        log,
+    )
+    if (
+        inventory(repository) != files
+        or _plugin_git(repository, files, log) != commit
+    ):
+        message = "Selected plugin changed during candidate copy"
+        raise RuntimeError(message)
+    return files, release["sourceCommit"], True
+
+
+def _export_plugin(
+    report: dict[str, Any], log: Path
+) -> tuple[dict[str, str], str, bool]:
+    source = deploy_panel.SOURCE
+    repository = Path(report["directory"]) / "plugin"
+    before = {
+        p.name: build_native.digest(p)
+        for p in source.iterdir()
+        if p.is_file() and not p.is_symlink()
+    }
+    command(
+        [
+            "node",
+            "--input-type=module",
+            "-e",
+            EXPORT,
+            json.dumps({
+                "destination": str(repository),
+                "source": str(source),
+                "sourceCommit": report["sourceHead"],
+                "artifacts": {"nativeVersion": report["package"]["version"]},
+            }),
+        ],
+        vm_control.ROOT,
+        log,
+    )
+    files = inventory(repository)
+    source_files = {name: build_native.digest(source / name) for name in files}
+    if any(source_files[name] != before.get(name) for name in files):
+        message = "Plugin sources changed during export"
+        raise RuntimeError(message)
+    if any(
+        files[name] != source_files[name]
+        for name in files
+        if name != "release.json"
+    ):
+        message = "Plugin export differs from selected source files"
+        raise RuntimeError(message)
+    exact = not bool(
+        command(
+            [
+                "git",
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--",
+                source,
+            ],
+            vm_control.ROOT,
+            log,
+        )
+    )
+    return source_files, report["sourceHead"], exact
+
+
+def build(selected: Path | None, plugin: Path | None = None) -> None:  # ruff: ignore[too-many-branches,too-many-statements,too-many-locals] - One retained report spans source identities, package creation and plugin export.
     """Build candidate package+plugin bundle; retain evidence on failure.
 
     Raises:
@@ -102,7 +252,7 @@ def build(selected: Path | None) -> None:  # ruff: ignore[too-many-branches,too-
     attempt = CANDIDATES / str(uuid.uuid4())
     attempt.mkdir(parents=True)
     report = {
-        "schemaVersion": 1,
+        "schemaVersion": SCHEMA_VERSION,
         "candidateId": attempt.name,
         "purpose": "local-verification-not-published-release",
         "startedAt": now(),
@@ -111,23 +261,47 @@ def build(selected: Path | None) -> None:  # ruff: ignore[too-many-branches,too-
     }
     log = attempt / "build.log"
     try:  # ruff: ignore[too-many-statements-in-try-clause] - Preserve one report across independent preparation/export steps for failure retention
-        artifact, metadata = deploy_native._artifact(selected)  # ruff: ignore[private-member-access] - Internal artifact identity helper
+        artifact, metadata = deploy_native._artifact(selected, component="all")  # ruff: ignore[private-member-access] - Internal artifact identity helper
         report["nativeBuild"] = {
             "artifact": str(artifact),
             "metadata": metadata,
         }
-        report["sourceHead"] = command(
-            ["git", "rev-parse", "HEAD"], vm_control.ROOT, log
+        if plugin:
+            for path in [
+                "LICENSE",
+                "packaging/systemd/omarchy-quickshare.toml",
+                "crates/app/Cargo.toml",
+                "crates/cli/Cargo.toml",
+            ]:
+                if (
+                    build_native.digest(vm_control.ROOT / path)
+                    != metadata["source"]["inputs"][path]
+                ):
+                    message = (
+                        f"Packaging input differs from native snapshot: {path}"
+                    )
+                    raise RuntimeError(message)  # ruff: ignore[raise-within-try] - Retain exact failure evidence.
+        report["sourceHead"] = (
+            metadata["sourceCommit"]
+            if plugin
+            else command(["git", "rev-parse", "HEAD"], vm_control.ROOT, log)
         )
-        report["worktreeStatus"] = command(
-            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-            vm_control.ROOT,
-            log,
+        report["worktreeStatus"] = (
+            ""
+            if plugin
+            else command(
+                ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+                vm_control.ROOT,
+                log,
+            )
         )
         inputs = attempt / "native-inputs"
         inputs.mkdir()
         sources = {
-            build_native.NAME: artifact / build_native.NAME,
+            **{
+                component["file"]: artifact / component["file"]
+                for component in metadata["components"].values()
+            },
             build_native.UNIT.name: artifact / build_native.UNIT.name,
             build_native.NAME + ".toml": vm_control.ROOT
             / "packaging/systemd/omarchy-quickshare.toml",
@@ -147,18 +321,7 @@ def build(selected: Path | None) -> None:  # ruff: ignore[too-many-branches,too-
                 "source": str(source),
                 "sha256": digest,
             }
-        if (
-            report["nativeInputs"][build_native.NAME]["sha256"]
-            != metadata["sha256"]
-        ):
-            message = "Native artifact changed during candidate creation"
-            raise RuntimeError(message)  # ruff: ignore[raise-within-try] - Retain exact failure evidence
-        if (
-            report["nativeInputs"][build_native.UNIT.name]["sha256"]
-            != metadata["unitSha256"]
-        ):
-            message = "Native unit changed during candidate creation"
-            raise RuntimeError(message)  # ruff: ignore[raise-within-try] - Retain exact failure evidence
+        candidate_contract.matching_inputs(report)
         package = json.loads(
             command(
                 [
@@ -176,7 +339,7 @@ def build(selected: Path | None) -> None:  # ruff: ignore[too-many-branches,too-
                 log,
             )
         )
-        _matching_version(metadata, package["version"])
+        candidate_contract.matching_version(metadata, package["version"])
         package_path = Path(package["artifact"])
         pkginfo = command(
             ["tar", "--zstd", "-xOf", package_path, ".PKGINFO"],
@@ -200,47 +363,22 @@ def build(selected: Path | None) -> None:  # ruff: ignore[too-many-branches,too-
                 attempt / "arch" / build_native.UNIT.name
             ),
         }
-        # The exporter alone owns its closed inventory. Hash source files before
-        # invoking it, then select only names it actually exported.
-        source = deploy_panel.SOURCE
-        before = {
-            p.name: build_native.digest(p)
-            for p in source.iterdir()
-            if p.is_file() and not p.is_symlink()
-        }
+        source = plugin.absolute() if plugin else deploy_panel.SOURCE
         repository = attempt / "plugin"
-        command(
-            [
-                "node",
-                "--input-type=module",
-                "-e",
-                EXPORT,
-                json.dumps({
-                    "destination": str(repository),
-                    "source": str(source),
-                    "sourceCommit": report["sourceHead"],
-                    "artifacts": {"nativeVersion": package["version"]},
-                }),
-            ],
-            vm_control.ROOT,
-            log,
+        source_files, source_head, exact = (
+            _copy_plugin(source, report, log)
+            if plugin
+            else _export_plugin(report, log)
         )
         files = inventory(repository)
-        source_files = {
-            name: build_native.digest(source / name) for name in files
-        }
-        if any(source_files[name] != before.get(name) for name in files):
-            message = "Plugin sources changed during export"
-            raise RuntimeError(message)  # ruff: ignore[raise-within-try] - Retain exact failure evidence
-        if any(
-            files[name] != source_files[name]
-            for name in files
-            if name != "release.json"
-        ):
-            message = "Plugin export differs from selected source files"
-            raise RuntimeError(message)  # ruff: ignore[raise-within-try] - Retain exact failure evidence
         manifest = json.loads(
             (repository / "manifest.json").read_text(encoding="utf-8")
+        )
+        compatibility = json.loads(
+            (repository / "release.json").read_text(encoding="utf-8")
+        )["controlProtocol"]
+        candidate_contract.matching_protocol(
+            metadata["controlProtocol"], compatibility
         )
         entry = manifest["entryPoints"]["barWidget"]
         if deploy_panel.STAMP not in (repository / entry).read_text(
@@ -254,24 +392,12 @@ def build(selected: Path | None) -> None:  # ruff: ignore[too-many-branches,too-
         report["plugin"] = {
             "id": manifest["id"],
             "entryPoint": entry,
+            "controlProtocol": compatibility,
             "revision": "unversioned",
             "source": str(source),
-            "sourceHead": report["sourceHead"],
+            "sourceHead": source_head,
             "sourceFiles": source_files,
-            "sourceCommitIsExact": not bool(
-                command(
-                    [
-                        "git",
-                        "status",
-                        "--porcelain=v1",
-                        "--untracked-files=all",
-                        "--",
-                        source,
-                    ],
-                    vm_control.ROOT,
-                    log,
-                )
-            ),
+            "sourceCommitIsExact": exact,
             "repository": str(repository),
             "commit": commit,
             "files": files,
@@ -302,17 +428,32 @@ def load(directory: Path) -> dict[str, Any]:
     report = json.loads(
         (directory / "candidate.json").read_text(encoding="utf-8")
     )
-    if report.get("schemaVersion") != 1 or report.get("status") != "built":
+    if (
+        report.get("schemaVersion") != SCHEMA_VERSION
+        or report.get("status") != "built"
+    ):
         message = "Candidate has no successful supported build manifest"
         raise RuntimeError(message)
+    metadata = report["nativeBuild"]["metadata"]
+    candidate_contract.matching_version(metadata, report["package"]["version"])
+    candidate_contract.matching_inputs(report)
+    candidate_contract.matching_protocol(
+        metadata["controlProtocol"], report["plugin"]["controlProtocol"]
+    )
     for path, expected in [
         (report["package"]["path"], report["package"]["sha256"]),
         (report["plugin"]["bundle"], report["plugin"]["bundleSha256"]),
+        *[
+            (directory / "native-inputs" / name, item["sha256"])
+            for name, item in report["nativeInputs"].items()
+        ],
     ]:
         selected = Path(path)
-        if selected.is_symlink() or not selected.resolve(
-            strict=True
-        ).is_relative_to(directory):
+        if (
+            selected.is_symlink()
+            or not selected.is_file()
+            or not selected.resolve(strict=True).is_relative_to(directory)
+        ):
             message = "Candidate artifact escapes its private directory"
             raise RuntimeError(message)
         if build_native.digest(selected) != expected:
@@ -330,6 +471,11 @@ def main() -> None:
         type=Path,
         help="Selected native build; default latest successful build",
     )
+    parser.add_argument(
+        "--plugin",
+        type=Path,
+        help="Exact exported plugin Git repository from the native build",
+    )
     options = parser.parse_args()
     build_native.BUILDS.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(
@@ -339,7 +485,7 @@ def main() -> None:
     )
     with os.fdopen(descriptor, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        build(options.artifact)
+        build(options.artifact, options.plugin)
 
 
 if __name__ == "__main__":

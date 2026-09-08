@@ -85,7 +85,7 @@ const FAMILIES = {
     ),
   ],
   oracleReference: family(["test-oracle-reference"], ORACLE_PREPARE),
-  pluginCapture: family(["test-plugin-capture"], ["plugin-capture-prepare"]),
+  pluginCapture: family(["test-plugin-capture"], ["native-debug-prepare"]),
   proxy: family(
     ["test-proxy-toxiproxy"],
     [...SOURCE_PREPARE, "proxy-provision"],
@@ -323,7 +323,7 @@ function reconcileTestPaths(gates, changedPaths, files) {
 function fixtureRustInputs(paths, files) {
   const owners = [
     [
-      "tests/fixtures/control/v6",
+      "tests/fixtures/control/v7",
       [
         "crates/app/tests/daemon_process/process_contract.rs",
         "tests/suites/contracts/tests/suite/control_contract.rs",

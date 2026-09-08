@@ -172,6 +172,17 @@ def stage(job: dict[str, Any], name: str, command: list[str]) -> int:
                 env={
                     **os.environ,
                     "DESKTOP_LAB": Path(job["ownerDirectory"]).name,
+                    **(
+                        {
+                            "DESKTOP_SCENARIO_INSTALLATION": str(
+                                Path(job["installationDirectory"])
+                                / "installation.json"
+                            ),
+                            "DESKTOP_SCENARIO_PYTHON": sys.executable,
+                        }
+                        if name == "scenario"
+                        else {}
+                    ),
                 },
             )
             identity = process(child.pid)
@@ -333,10 +344,19 @@ def run(options: argparse.Namespace) -> int:
                 (
                     "scenario",
                     [
-                        sys.executable,
-                        str(SOURCE / "ui_scenario.py"),
-                        "--installation",
-                        str(installation),
+                        "node",
+                        str(
+                            SOURCE.parents[2] / "node_modules/vitest/vitest.mjs"
+                        ),
+                        "run",
+                        "--root",
+                        str(SOURCE.parents[2]),
+                        "--config",
+                        str(SOURCE.parents[2] / "vitest.process.config.mjs"),
+                        str(
+                            SOURCE.parents[2]
+                            / "tests/scenarios/desktop.e2e.mjs"
+                        ),
                     ],
                 ),
             ]

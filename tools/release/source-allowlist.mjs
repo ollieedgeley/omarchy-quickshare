@@ -46,15 +46,21 @@ export function sparseCheckoutPatterns(allowlist = loadAllowlist()) {
 }
 
 export function readAppVersion(root = ROOT) {
-  const manifest = readFileSync(
-    join(root, "crates", "app", "Cargo.toml"),
-    "utf8",
-  );
-  const match = manifest.match(APP_VERSION_PATTERN);
-  if (!match) {
-    throw new Error("app package version is missing");
+  const versions = ["app", "cli"].map((component) => {
+    const manifest = readFileSync(
+      join(root, "crates", component, "Cargo.toml"),
+      "utf8",
+    );
+    const match = manifest.match(APP_VERSION_PATTERN);
+    if (!match) {
+      throw new Error(`${component} package version is missing`);
+    }
+    return match.groups.version;
+  });
+  if (versions[0] !== versions[1]) {
+    throw new Error("CLI and daemon package versions differ");
   }
-  return match.groups.version;
+  return versions[0];
 }
 
 function denied(relativePath) {

@@ -1,4 +1,4 @@
-//! Command-line and daemon composition for Omarchy Quick Share.
+//! Daemon composition for Omarchy Quick Share.
 
 #![forbid(unsafe_code)]
 #![expect(
@@ -8,8 +8,6 @@
     clippy::default_numeric_fallback,
     clippy::doc_markdown,
     clippy::double_must_use,
-    clippy::exhaustive_structs,
-    clippy::format_push_string,
     clippy::indexing_slicing,
     clippy::integer_division,
     clippy::iter_over_hash_type,
@@ -20,7 +18,6 @@
     clippy::match_same_arms,
     clippy::missing_const_for_fn,
     clippy::missing_inline_in_public_items,
-    clippy::module_name_repetitions,
     clippy::multiple_crate_versions,
     clippy::needless_pass_by_value,
     clippy::or_fun_call,
@@ -32,12 +29,9 @@
     clippy::shadow_reuse,
     clippy::single_call_fn,
     clippy::single_match_else,
-    clippy::string_slice,
     clippy::too_many_arguments,
     clippy::too_many_lines,
-    clippy::unnecessary_wraps,
     clippy::unused_trait_names,
-    clippy::use_debug,
     clippy::wildcard_enum_match_arm,
     reason = "Composition keeps rustfmt visibility and protocol grouping"
 )]
@@ -73,16 +67,12 @@ extern crate alloc;
 
 /// Temporary ZIP archives for folder shares.
 mod archive;
-/// Command-line dispatch for the local endpoint.
-mod cli;
-/// Strict user settings for the local endpoint.
-pub mod config;
 /// Local endpoint lifecycle and queue ownership.
 pub mod daemon;
 
 #[cfg(test)]
 use prost as _;
 
+use clap as _;
 use quickshare_network as _;
-
-pub use cli::{run, run_from_environment};
+use tracing_subscriber as _;

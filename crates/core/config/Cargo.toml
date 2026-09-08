@@ -1,0 +1,17 @@
+[package]
+name = "quickshare-config"
+version = "0.0.0"
+description = "Persisted endpoint settings for Omarchy Quick Share"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+test = false
+
+[dependencies]
+toml_edit.workspace = true
+
+[lints]
+workspace = true

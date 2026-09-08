@@ -1,10 +1,13 @@
 //! Local endpoint lifecycle and outbound queue ownership.
 
+mod control;
+mod journal;
 mod lifecycle;
 mod media;
 mod network;
 mod notify;
 mod observations;
+mod operations;
 mod outbound;
 mod preferences;
 mod production;
@@ -13,15 +16,13 @@ mod visibility;
 pub use self::lifecycle::{run, run_simulated};
 
 use core::time::Duration;
-use std::io::{self, BufReader};
+use std::io;
 use std::os::unix::net::UnixListener;
 use std::thread;
 
-use quickshare_control::PROTOCOL_VERSION;
-use quickshare_control::codec::{read_request, write_response};
-use quickshare_control::request::{Envelope as RequestEnvelope, Request};
+use quickshare_control::request::Request;
 use quickshare_control::response::{
-    Envelope as ResponseEnvelope, PreferenceStatus, Response,
+    Envelope as ResponseEnvelope, PreferenceStatus,
 };
 use quickshare_sharing::{Attachment, Coordinator};
 
@@ -32,7 +33,7 @@ use self::outbound::OutboundState;
 #[derive(Debug, Default)]
 pub struct Daemon {
     /// Persisted user settings applied to this endpoint.
-    config: crate::config::Config,
+    config: quickshare_config::Config,
     /// Parent-directory notifications for live user edits.
     config_watch: Option<preferences::ConfigWatch>,
     /// When the current outbound search started.
@@ -43,8 +44,8 @@ pub struct Daemon {
     outbound: OutboundState,
     /// Durable, active, and failed preference outcomes.
     preferences: PreferenceStatus,
-    /// Outbound shares accepted from local clients.
-    queued: Vec<RequestEnvelope>,
+    /// Bounded operation identities and durable outcomes.
+    journal: journal::Journal,
     /// User-visible share lifecycle state.
     sharing: Coordinator,
     /// Whether deterministic peer events are accepted.
@@ -120,13 +121,13 @@ impl Daemon {
     #[inline]
     pub fn new() -> Self {
         Self {
-            config: crate::config::Config::default(),
+            config: quickshare_config::Config::default(),
             config_watch: None,
             discovery_started_at: None,
             network: None,
             outbound: OutboundState::default(),
             preferences: PreferenceStatus::default(),
-            queued: Vec::new(),
+            journal: journal::Journal::default(),
             sharing: Coordinator::new(),
             simulated: false,
             timeouts: lifecycle::OperationTimeouts::default(),
@@ -159,39 +160,7 @@ impl Daemon {
             phase = "waiting_for_peer",
             "share phase"
         );
-        self.sharing.start_discovery();
-        tracing::info!(phase = "searching", "discovery started");
-        if let Some(network) = &self.network
-            && network.discover().is_err()
-        {
-            tracing::error!(stage = "discover", "daemon cannot continue");
-        }
         share_id
-    }
-    fn queued_response(
-        &mut self,
-        share_id: u64,
-        peer_id: Option<&str>,
-    ) -> ResponseEnvelope {
-        let selected = if let Some(peer_id) = peer_id {
-            self.select_peer(share_id, peer_id)
-        } else {
-            let _started = self.start_pinned_outbound(share_id);
-            true
-        };
-        if selected {
-            return ResponseEnvelope::queued(share_id);
-        }
-        let _cancelled = self.sharing.cancel(share_id);
-        self.outbound.finish(share_id);
-        ResponseEnvelope::not_found()
-    }
-
-    /// Returns the number of outbound shares owned by the endpoint.
-    #[must_use]
-    #[inline]
-    pub const fn queued_count(&self) -> usize {
-        self.queued.len()
     }
 
     #[expect(
@@ -199,7 +168,7 @@ impl Daemon {
         reason = "Borrowed requests retain submitted payload ownership"
     )]
     /// Applies one validated command to endpoint state.
-    fn response_for(
+    fn apply_request(
         &mut self,
         request: &Request,
     ) -> io::Result<ResponseEnvelope> {
@@ -217,28 +186,9 @@ impl Daemon {
             Request::Snapshot => Ok(ResponseEnvelope::snapshot(
                 self.sharing.snapshot(),
                 &self.preferences,
+                self.journal.records(),
             )),
             Request::Status => Ok(ResponseEnvelope::ready()),
-            Request::SubmitFile { path, peer_id } => {
-                let share_id = self.queue_file(path, peer_id.as_deref())?;
-                Ok(self.queued_response(share_id, peer_id.as_deref()))
-            }
-            Request::SubmitText { peer_id, text } => {
-                let share_id = self.queue_attachment_for(
-                    Attachment::text(text),
-                    peer_id.is_some(),
-                );
-                self.outbound.remember_text(share_id, text.clone());
-                Ok(self.queued_response(share_id, peer_id.as_deref()))
-            }
-            Request::SubmitUrl { peer_id, url } => {
-                let share_id = self.queue_attachment_for(
-                    Attachment::url(url),
-                    peer_id.is_some(),
-                );
-                self.outbound.remember_url(share_id, url.clone());
-                Ok(self.queued_response(share_id, peer_id.as_deref()))
-            }
             Request::SimulateFail { .. }
             | Request::SimulateIncomingFile { .. }
             | Request::SimulateIncomingText { .. }
@@ -253,32 +203,25 @@ impl Daemon {
         }
     }
 
-    /// Accepts and queues the next local control request.
+    /// Serves one connection while continuing network and timeout processing.
     ///
     /// # Errors
     ///
-    /// Returns an error when the listener or endpoint request handling fails.
+    /// Returns an error when accepting a connection or servicing endpoint
+    /// state fails.
     #[inline]
     pub fn serve_next(&mut self, listener: &UnixListener) -> io::Result<()> {
-        self.apply_network_events()?;
-        self.apply_timeouts()?;
-        let (mut stream, _address) = listener.accept()?;
-        let Ok(request) = read_request(&mut BufReader::new(&mut stream)) else {
-            return Ok(());
-        };
-        if request.version() != PROTOCOL_VERSION {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "client uses an unsupported control protocol",
-            ));
+        let (stream, _address) = listener.accept()?;
+        let mut pending = control::Connection::new(stream)?;
+        loop {
+            self.apply_network_events()?;
+            self.apply_timeouts()?;
+            self.persist_operations()?;
+            if pending.advance(self)? {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(5));
         }
-        let response = self.response_for(request.request())?;
-        if matches!(response.response(), Response::Queued { .. }) {
-            self.queued.push(request);
-        }
-        // A disconnected client must not stop service for other clients.
-        let _delivery_result = write_response(&mut stream, &response);
-        Ok(())
     }
 
     /// Serves control clients until the owning process requests shutdown.
@@ -296,22 +239,22 @@ impl Daemon {
         Stopped: FnMut() -> bool,
     {
         listener.set_nonblocking(true)?;
+        let mut pending = Vec::new();
         while !stopped() {
+            self.apply_network_events()?;
             self.apply_timeouts()?;
             self.reload_preferences()?;
-            match self.serve_next(listener) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(5));
-                }
-                Err(error) => {
-                    tracing::error!(
-                        error_class = "io",
-                        "daemon cannot continue"
-                    );
-                    return Err(error);
+            self.persist_operations()?;
+            control::accept_pending(listener, &mut pending)?;
+            let mut index = 0;
+            while index < pending.len() {
+                if pending[index].advance(self)? {
+                    let _finished = pending.swap_remove(index);
+                } else {
+                    index += 1;
                 }
             }
+            thread::sleep(Duration::from_millis(5));
         }
         Ok(())
     }
@@ -345,7 +288,18 @@ impl Daemon {
                 action_response(accepted)
             }
             Request::Cancel { share_id } => {
-                if self.sharing.cancel(*share_id) {
+                let active =
+                    self.sharing.snapshot().active_share().is_some_and(
+                        |share| {
+                            share.id().get() == *share_id
+                                && !operations::terminal(share.phase())
+                        },
+                    );
+                let cancellable = active
+                    && self.network.as_ref().is_none_or(|network| {
+                        network.cancel_transfer(*share_id)
+                    });
+                if cancellable && self.sharing.cancel(*share_id) {
                     if let Some(pending) = self.pending_consent.as_ref()
                         && pending.share_id() == Some(*share_id)
                     {
@@ -360,9 +314,6 @@ impl Daemon {
                         phase = "cancelled",
                         "share phase"
                     );
-                    if let Some(network) = &self.network {
-                        network.cancel_transfer(*share_id);
-                    }
                     self.outbound.finish(*share_id);
                     ResponseEnvelope::cancelled()
                 } else {
@@ -370,7 +321,8 @@ impl Daemon {
                 }
             }
             Request::Dismiss { share_id } => {
-                let dismissed = self.sharing.dismiss(*share_id);
+                let dismissed = self.journal.dismiss(*share_id)?;
+                let _cleared = self.sharing.dismiss(*share_id);
                 if dismissed {
                     self.outbound.finish(*share_id);
                 }

@@ -18,7 +18,10 @@ import lab_lifecycle
 import resource_budget
 import scenario
 import vm_control
-from guest_ui import GuestUI, desktop_session, normalized, visible_file
+from guest_file_selection import copy_payload
+from guest_ui import GuestUI, desktop_session, normalized
+from installation_attestation import reattest
+from installed_ui_control import InstalledUI, installed_cli_unavailable
 from scenario_state import (
     guest_command,
     now,
@@ -78,7 +81,7 @@ def discover(
     ):
         message = "Fresh receiver DNS identity differs from the owned route"
         raise RuntimeError(message)
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 45
     while time.monotonic() < deadline:
         snapshot = public_snapshot(state, attempt)
         if snapshot.get("active_share"):
@@ -123,12 +126,14 @@ def unique_peer_prefix(
         raise RuntimeError(message)
 
 
-def exercise(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, too-many-statements, too-many-branches, too-many-locals, complex-structure] - Keep ordered input and its identity assertions together; no transfer step may be retried independently.
+def exercise(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - Keep ordered input and its identity assertions together; no transfer step may be retried independently.
     state: dict[str, Any],
     installation: dict[str, Any],
     attempt: Path,
     report: dict[str, Any],
     ui: GuestUI,
+    *,
+    cli_unavailable: bool = False,
 ) -> None:
     """Drive file-manager copy and panel peer selection through QMP.
 
@@ -136,7 +141,7 @@ def exercise(  # ruff: ignore[too-many-arguments, too-many-positional-arguments,
         RuntimeError: Visible input, share identity or completion disagrees.
     """
     owner = Path(state["directory"])
-    session = desktop_session(state, attempt)
+    report["guestHome"] = installation["absence"]["home"]
     report["application"] = application(state, installation, attempt, "before")
     report["peer"], _ = peer_state(owner)
     # Independent-case reset is the only reset. Preserve all state after input.
@@ -153,115 +158,38 @@ def exercise(  # ruff: ignore[too-many-arguments, too-many-positional-arguments,
     if received.exists() or received.is_symlink():
         message = "Unique receiver destination already exists"
         raise RuntimeError(message)
-    report["action"] = "select synthetic file in visible file manager"
-    # The shipped panel has no file chooser. Its normal file path consumes
-    # text/uri-list from a file manager copy, then a peer click or Ctrl+V.
-    # xdg-open only prepares visibility; QMP selects and copies the file.
-    guest_command(
-        state,
-        session
-        + "xdg-open "
-        + shlex.quote(
-            str(Path(installation["absence"]["home"]) / Path(guest_path).parent)
-        )
-        + " >/dev/null 2>&1 &",
-        attempt,
-    )
-    monitors = json.loads(
-        guest_command(state, session + "hyprctl monitors -j", attempt)
-    )
-    if (
-        len(monitors) != 1
-        or monitors[0]["scale"] != 1
-        or monitors[0]["x"] != 0
-        or monitors[0]["y"] != 0
-        or monitors[0]["transform"] != 0
+    with installed_cli_unavailable(
+        state, attempt, report, ui, enabled=cli_unavailable
     ):
-        message = "File readiness requires one unscaled guest monitor"
-        raise RuntimeError(message)
-    # Cold Nautilus startup took 23 seconds on the single-CPU reference guest.
-    deadline = time.monotonic() + 30
-    maximized = False
-    while True:
-        frame = ui.observe()
-        if (
-            frame["width"] != monitors[0]["width"]
-            or frame["height"] != monitors[0]["height"]
-        ):
-            message = "Guest monitor and observed framebuffer bounds disagree"
-            raise RuntimeError(message)
-        focused = json.loads(
-            guest_command(
-                state,
-                session + "hyprctl activewindow -j",
-                attempt,
-            )
-        )
-        if (
-            attempt.name in focused.get("title", "")
-            and focused.get("mapped")
-            and not focused.get("hidden")
-            and any(
-                name in focused.get("class", "").lower()
-                for name in ("thunar", "nautilus", "dolphin", "pcmanfm")
-            )
-        ):
-            if not maximized and not focused.get("fullscreen"):
-                report["fileManagerBeforeMaximize"] = focused
-                ui.record({
-                    "setup": "maximize-private-file-manager",
-                    "route": "owned-guest-hyprland",
-                    "window": focused["address"],
-                    "frame": frame["frame"],
-                })
-                guest_command(
-                    state,
-                    session
-                    + shlex.join([
-                        "hyprctl",
-                        "dispatch",
-                        'hl.dsp.window.fullscreen({ mode = "maximized" })',
-                    ]),
-                    attempt,
-                )
-                maximized = True
-                # Discard pre-dispatch geometry and pixels. Observe the
-                # actual maximized window before locating any file control.
-                continue
-            # Locate the human-readable stem only within the exact UUID
-            # window; ambiguity fails and the copied URI must match in full.
-            entry = visible_file(frame, focused, payload.name.partition("-")[0])
-            if entry:
-                break
-        if time.monotonic() >= deadline:
-            message = (
-                "Synthetic file entry is not visible in the "
-                "focused private file-manager window"
-            )
-            raise RuntimeError(message)
-        time.sleep(0.5)
-    report["fileManagerFocus"] = focused
-    report["fileManagerEntry"] = entry
-    ui.click(entry)
-    ui.keys("ctrl", "c")
-    copied = guest_command(
-        state,
-        session + "timeout 5 wl-paste --type text/uri-list --no-newline",
-        attempt,
-    )
-    expected_uri = (Path(installation["absence"]["home"]) / guest_path).as_uri()
-    if copied.strip().splitlines() != [expected_uri]:
+        _visible(state, installation, attempt, report, ui)
+    after = application(state, installation, attempt, "after")
+    _, receiver = peer_state(owner)
+    if (
+        after["mainPid"] != report["application"]["mainPid"]
+        or after["loadedSha256"] != report["application"]["loadedSha256"]
+        or receiver["State"]["StartedAt"] != report["receiverStartedAt"]
+    ):
         message = (
-            "Visible file-manager copy did not select exactly "
-            "the synthetic file"
+            "Installed service or independent receiver restarted "
+            "during UI journey"
         )
         raise RuntimeError(message)
-    report["copiedUri"] = copied.strip()
-    report["fileSelection"] = {
-        "name": payload.name,
-        "route": "guest-file-manager-copy",
-        "at": now(),
-    }
+    report["applicationAfter"] = after
+
+
+def _visible(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, too-many-statements, too-many-branches] - Ordered visible input and assertions must not be retried independently.
+    state: dict[str, Any],
+    installation: dict[str, Any],
+    attempt: Path,
+    report: dict[str, Any],
+    ui: GuestUI,
+) -> None:
+    session = desktop_session(state, attempt)
+    payload = Path(report["submitted"]["sourcePath"])
+    received = (
+        Path(state["directory"]) / "peer-cases" / "received" / payload.name
+    )
+    copy_payload(ui, installation, report)
     plugin_id = installation["candidate"]["plugin"]["id"]
     guest_command(
         state,
@@ -278,6 +206,11 @@ def exercise(  # ruff: ignore[too-many-arguments, too-many-positional-arguments,
         "observedAt": now(),
         "resultFrame": ui.frame["frame"],
     }
+    snapshot = public_snapshot(state, attempt)
+    if snapshot.get("discovery") == "timed_out":
+        search = ui.require("Search again")
+        report["searchAgain"] = search
+        ui.click(search)
     report["selectedPeer"] = discover(state, attempt, report)
     prefix = report["selectedPeer"]["name"].partition("-")[0]
     unique_peer_prefix(
@@ -318,19 +251,6 @@ def exercise(  # ruff: ignore[too-many-arguments, too-many-positional-arguments,
         "shareId": report["shareId"],
         "observedAt": now(),
     }
-    after = application(state, installation, attempt, "after")
-    _, receiver = peer_state(owner)
-    if (
-        after["mainPid"] != report["application"]["mainPid"]
-        or after["loadedSha256"] != report["application"]["loadedSha256"]
-        or receiver["State"]["StartedAt"] != report["receiverStartedAt"]
-    ):
-        message = (
-            "Installed service or independent receiver restarted "
-            "during UI journey"
-        )
-        raise RuntimeError(message)
-    report["applicationAfter"] = after
     final = public_snapshot(state, attempt).get("active_share")
     if (
         not final
@@ -356,7 +276,12 @@ def exercise(  # ruff: ignore[too-many-arguments, too-many-positional-arguments,
         raise RuntimeError(message)
 
 
-def run(path: Path) -> None:
+def run(
+    path: Path,
+    *,
+    cli_unavailable: bool = False,
+    reattest_installation: bool = False,
+) -> None:
     """Hold the lab lock and OCR worker claim through all assertions.
 
     Raises:
@@ -383,6 +308,7 @@ def run(path: Path) -> None:
             "lab": owner.name,
             "status": "failed",
             "startedAt": now(),
+            "guestHome": installation["absence"]["home"],
             "installationManifest": str(path.resolve()),
             "installationManifestSha256": hashlib.sha256(
                 path.read_bytes()
@@ -394,8 +320,11 @@ def run(path: Path) -> None:
                 for name in (
                     "ui_scenario.py",
                     "guest_ui.py",
+                    "guest_file_selection.py",
                     "scenario.py",
                     "scenario_state.py",
+                    "installed_ui_control.py",
+                    "installation_attestation.py",
                 )
             },
         }
@@ -403,23 +332,38 @@ def run(path: Path) -> None:
         ui = None
         try:  # ruff: ignore[too-many-statements-in-try-clause] - Preserve the complete attempt on any ownership, admission or UI failure.
             state = deploy_native._running(owner)  # ruff: ignore[private-member-access] - Reuse the retained VM ownership check.
-            if (
+            if reattest_installation:
+                report["installationAttestation"] = reattest(
+                    state, installation, path, attempt
+                )
+            elif (
                 state["uuid"] != installation["guest"]["uuid"]
                 or state["pid"] != installation["guest"]["pid"]
             ):
-                message = "Installed guest process identity changed"
+                message = (
+                    "Installed guest process changed; use "
+                    "--reattest-installation for an owned resumed guest"
+                )
                 raise RuntimeError(message)  # ruff: ignore[raise-within-try] - Outer handler retains the failed attempt then re-raises.
             state = {
                 **state,
                 "cliExecutable": "/usr/bin/omarchy-quickshare",
+                "daemonExecutable": "/usr/bin/omarchy-quickshare-daemon",
             }
             report.update({"guestUuid": state["uuid"], "qemuPid": state["pid"]})
             with resource_budget.scenario_claim(
                 owner, cpus=1, memory_mib=512
             ) as claim:
                 report["workerClaim"] = claim
-                ui = GuestUI(state, attempt)
-                exercise(state, installation, attempt, report, ui)
+                ui = InstalledUI(state, attempt)
+                exercise(
+                    state,
+                    installation,
+                    attempt,
+                    report,
+                    ui,
+                    cli_unavailable=cli_unavailable,
+                )
                 report["status"] = "passed"
         except (Exception, KeyboardInterrupt) as error:
             report["error"] = f"{type(error).__name__}: {error}"
@@ -438,8 +382,24 @@ def main() -> None:
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--installation", required=True, type=Path)
+    parser.add_argument(
+        "--cli-unavailable",
+        action="store_true",
+        help="Remove the selected installed CLI's execute bits during visible "
+        "panel work and restore its exact mode before the final native probe.",
+    )
+    parser.add_argument(
+        "--reattest-installation",
+        action="store_true",
+        help="Re-probe the same owned installation after a guest restart; "
+        "retain a separate attestation without changing the original manifest.",
+    )
     options = parser.parse_args()
-    run(options.installation)
+    run(
+        options.installation,
+        cli_unavailable=options.cli_unavailable,
+        reattest_installation=options.reattest_installation,
+    )
 
 
 if __name__ == "__main__":

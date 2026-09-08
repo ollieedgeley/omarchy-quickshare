@@ -1,9 +1,20 @@
 #[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::pattern_type_mismatch,
+    clippy::pub_with_shorthand,
+    reason = "Contract tests assert borrowed replies and fixtures; helpers remain parent-visible"
+)]
 mod tests {
     extern crate alloc;
 
     use alloc::sync::Arc;
+    use core::slice;
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use core::time::Duration;
     use std::env;
     use std::fs;
     use std::io::{self, BufReader};
@@ -13,24 +24,28 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process;
     use std::thread::{self, JoinHandle};
+    use std::time::Instant;
 
     use omarchy_quickshare::daemon::Daemon;
+    use quickshare_control::{
+        PROTOCOL_VERSION, client, codec, request, response,
+    };
+    use quickshare_sharing::DiscoveryState;
 
     const REQUEST_FIXTURE: &str = include_str!(
-        "../../../../fixtures/control/v6/submit-text-request.jsonl"
+        "../../../../fixtures/control/v7/submit-text-request.jsonl"
     );
     const RESPONSE_FIXTURE: &str = include_str!(
-        "../../../../fixtures/control/v6/submit-text-queued-response.jsonl"
+        "../../../../fixtures/control/v7/submit-text-queued-response.jsonl"
     );
     const URL_REQUEST_FIXTURE: &str = include_str!(
-        "../../../../fixtures/control/v6/submit-url-request.jsonl"
+        "../../../../fixtures/control/v7/submit-url-request.jsonl"
     );
     const STATUS_REQUEST_FIXTURE: &str =
-        include_str!("../../../../fixtures/control/v6/status-request.jsonl");
+        include_str!("../../../../fixtures/control/v7/status-request.jsonl");
     const STATUS_RESPONSE_FIXTURE: &str = include_str!(
-        "../../../../fixtures/control/v6/status-ready-response.jsonl"
+        "../../../../fixtures/control/v7/status-ready-response.jsonl"
     );
-    const EXPECTED_OUTPUT: &[u8] = b"Share 1 queued.\n";
     static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
     struct ControlDaemonFake {
@@ -162,6 +177,109 @@ mod tests {
         }
     }
 
+    #[test]
+    fn shared_client_snapshot_observes_changed_discovery() -> io::Result<()> {
+        let EndpointListenerFixture {
+            listener,
+            root,
+            socket,
+        } = EndpointListenerFixture::bind()?;
+        let worker = thread::spawn(move || {
+            let mut endpoint = Daemon::new();
+            endpoint.serve_next(&listener)?;
+            endpoint.serve_next(&listener)?;
+            io::Result::Ok(())
+        });
+
+        let changed =
+            client::exchange(&socket, &request::Envelope::discover())?;
+        let observed =
+            client::exchange(&socket, &request::Envelope::snapshot())?;
+        worker
+            .join()
+            .map_err(|_panic| io::Error::other("local endpoint panicked"))??;
+        fs::remove_dir_all(root)?;
+
+        assert!(matches!(changed.response(), response::Response::Applied));
+        let response::Response::Snapshot { snapshot, .. } = observed.response()
+        else {
+            panic!("expected full endpoint snapshot, got {observed:?}");
+        };
+        assert_eq!(snapshot.discovery(), DiscoveryState::Searching);
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One endpoint lifecycle proves rejection preserves work and does not consume an ID"
+    )]
+    fn active_submission_rejects_replacement_without_consuming_an_id()
+    -> io::Result<()> {
+        with_running_endpoint(|socket| {
+            let first = client::exchange(
+                socket,
+                &request::Envelope::submit_text("first", "accepted-first"),
+            )?;
+            let response::Response::Queued { operation } = first.response()
+            else {
+                panic!("expected queued operation: {first:?}");
+            };
+            assert_eq!(operation.id_string, "1");
+            assert_eq!(operation.request_id.as_deref(), Some("accepted-first"));
+            let rejected = client::exchange(
+                socket,
+                &request::Envelope::submit_text("replacement", "rejected-busy"),
+            )?;
+            assert!(matches!(
+                rejected.response(),
+                response::Response::Error {
+                    code: response::ErrorCode::Busy
+                }
+            ));
+            let observed =
+                client::exchange(socket, &request::Envelope::snapshot())?;
+            let response::Response::Snapshot {
+                snapshot,
+                operations,
+                ..
+            } = observed.response()
+            else {
+                panic!("expected snapshot: {observed:?}");
+            };
+            let active =
+                snapshot.active_share().expect("original remains active");
+            assert_eq!(active.id_string(), "1");
+            assert_eq!(
+                active.attachment(),
+                &quickshare_sharing::Attachment::text("first")
+            );
+            assert_eq!(operations.as_slice(), slice::from_ref(operation));
+            let cancelled =
+                client::exchange(socket, &request::Envelope::cancel(1))?;
+            assert!(matches!(
+                cancelled.response(),
+                response::Response::Cancelled
+            ));
+            let second = client::exchange(
+                socket,
+                &request::Envelope::submit_text("second", "accepted-second"),
+            )?;
+            let response::Response::Queued {
+                operation: second_operation,
+            } = second.response()
+            else {
+                panic!("expected second queued operation: {second:?}");
+            };
+            assert_eq!(second_operation.id_string, "2");
+            assert_eq!(
+                second_operation.request_id.as_deref(),
+                Some("accepted-second")
+            );
+            Ok(())
+        })
+    }
+
     #[expect(
         clippy::single_call_fn,
         reason = "The fake worker names its one external protocol interaction"
@@ -198,7 +316,7 @@ mod tests {
         let mut output = Vec::new();
         let arguments = vec![String::from("send"), String::from(value)];
 
-        let run_result = omarchy_quickshare::run(
+        let run_result = omarchy_quickshare_cli::run(
             &arguments,
             current_directory,
             fake.socket(),
@@ -214,8 +332,21 @@ mod tests {
         let Ok(request) = request_result else {
             return;
         };
-        assert_eq!(request, expected_request);
-        assert_eq!(output, EXPECTED_OUTPUT);
+        let actual: serde_json::Value =
+            serde_json::from_str(&request).expect("valid submitted envelope");
+        let mut expected: serde_json::Value =
+            serde_json::from_str(expected_request)
+                .expect("valid request fixture");
+        let request_id =
+            actual["request_id"].as_str().expect("submit request ID");
+        assert!(!request_id.is_empty());
+        assert!(request_id.len() <= 128);
+        expected["request_id"] = actual["request_id"].clone();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            output,
+            format!("Share 1 queued.\nrequest_id={request_id}\n").as_bytes()
+        );
     }
 
     #[test]
@@ -233,7 +364,7 @@ mod tests {
         let path = fixture.root.join(".").to_string_lossy().into_owned();
         let expected = format!(
             "{{\"request\":{{\"type\":\"submit_file\",\"path\":\"{path}\"}},\
-             \"version\":6}}\n"
+             \"version\":{PROTOCOL_VERSION}}}\n"
         );
         assert_submission_from(".", &fixture.root, &expected);
         let cleanup_result = fixture.cleanup();
@@ -255,7 +386,7 @@ mod tests {
         let path = fixture.path.to_string_lossy();
         let expected = format!(
             "{{\"request\":{{\"type\":\"submit_file\",\"path\":\"{path}\"}},\
-             \"version\":6}}\n"
+             \"version\":{PROTOCOL_VERSION}}}\n"
         );
         assert_submission_from("photo.jpg", &fixture.root, &expected);
         let cleanup_result = fixture.cleanup();
@@ -272,7 +403,7 @@ mod tests {
         let arguments = vec![String::from("health")];
         let mut output = Vec::new();
 
-        let result = omarchy_quickshare::run(
+        let result = omarchy_quickshare_cli::run(
             &arguments,
             Path::new("."),
             fake.socket(),
@@ -287,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn real_local_endpoint_owns_the_queued_share() {
+    fn real_local_endpoint_accepts_the_queued_share() {
         let fixture_result = LocalEndpointFixture::start();
         assert!(fixture_result.is_ok(), "failed to start local endpoint");
         let Ok(fixture) = fixture_result else {
@@ -297,7 +428,7 @@ mod tests {
         let arguments =
             vec![String::from("send"), String::from("hello from Omarchy")];
 
-        let run_result = omarchy_quickshare::run(
+        let run_result = omarchy_quickshare_cli::run(
             &arguments,
             Path::new("."),
             fixture.socket(),
@@ -307,15 +438,17 @@ mod tests {
         assert!(run_result.is_ok(), "submission failed: {run_result:?}");
         let endpoint_result = fixture.finish();
         assert!(endpoint_result.is_ok(), "local endpoint failed");
-        let Ok(endpoint) = endpoint_result else {
-            return;
-        };
-        assert_eq!(endpoint.queued_count(), 1);
-        assert_eq!(output, EXPECTED_OUTPUT);
+        let output_text = String::from_utf8(output).expect("UTF-8 CLI output");
+        let request_id = output_text
+            .strip_prefix("Share 1 queued.\nrequest_id=")
+            .and_then(|value| value.strip_suffix('\n'))
+            .expect("queued operation and request ID");
+        assert!(!request_id.is_empty());
+        assert!(request_id.len() <= 128);
     }
 
     #[test]
-    fn real_local_endpoint_reports_ready_without_queueing_a_share() {
+    fn real_local_endpoint_reports_ready() {
         let fixture_result = LocalEndpointFixture::start();
         assert!(fixture_result.is_ok(), "failed to start local endpoint");
         let Ok(fixture) = fixture_result else {
@@ -324,7 +457,7 @@ mod tests {
         let mut output = Vec::new();
         let arguments = vec![String::from("health")];
 
-        let run_result = omarchy_quickshare::run(
+        let run_result = omarchy_quickshare_cli::run(
             &arguments,
             Path::new("."),
             fixture.socket(),
@@ -334,10 +467,6 @@ mod tests {
         assert!(run_result.is_ok(), "runtime query failed: {run_result:?}");
         let endpoint_result = fixture.finish();
         assert!(endpoint_result.is_ok(), "local endpoint failed");
-        let Ok(endpoint) = endpoint_result else {
-            return;
-        };
-        assert_eq!(endpoint.queued_count(), 0);
         assert_eq!(output, b"available\n");
     }
 
@@ -366,6 +495,231 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn unsupported_version_is_rejected_without_stopping_daemon()
+    -> io::Result<()> {
+        let EndpointListenerFixture {
+            listener,
+            root,
+            socket,
+        } = EndpointListenerFixture::bind()?;
+        let stopped = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stopped);
+        let worker = thread::spawn(move || {
+            Daemon::new()
+                .serve_until(&listener, || worker_stop.load(Ordering::Relaxed))
+        });
+        let observed = (|| -> io::Result<(String, String)> {
+            let mut invalid = UnixStream::connect(&socket)?;
+            invalid.set_read_timeout(Some(Duration::from_secs(2)))?;
+            invalid.write_all(
+                b"{\"request\":{\"type\":\"status\"},\"version\":255}\n",
+            )?;
+            let mut rejection = String::new();
+            let _rejection_read =
+                BufReader::new(invalid).read_line(&mut rejection)?;
+            let mut valid = UnixStream::connect(&socket)?;
+            valid.set_read_timeout(Some(Duration::from_secs(2)))?;
+            valid.write_all(STATUS_REQUEST_FIXTURE.as_bytes())?;
+            let mut ready = String::new();
+            let _ready_read = BufReader::new(valid).read_line(&mut ready)?;
+            Ok((rejection, ready))
+        })();
+        stopped.store(true, Ordering::Relaxed);
+        let outcome = worker
+            .join()
+            .map_err(|_panic| io::Error::other("local endpoint panicked"))?;
+        fs::remove_dir_all(root)?;
+        let (rejection, ready) = observed?;
+        assert!(
+            rejection.contains("\"code\":\"unsupported_version\""),
+            "expected structured unsupported_version rejection, got {rejection:?}"
+        );
+        assert_eq!(ready, STATUS_RESPONSE_FIXTURE);
+        outcome
+    }
+
+    #[test]
+    fn partial_client_does_not_block_independent_status() -> io::Result<()> {
+        let EndpointListenerFixture {
+            listener,
+            root,
+            socket,
+        } = EndpointListenerFixture::bind()?;
+        let mut partial = UnixStream::connect(&socket)?;
+        partial.write_all(b"{\"request\":")?;
+        let stopped = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stopped);
+        let worker = thread::spawn(move || {
+            Daemon::new()
+                .serve_until(&listener, || worker_stop.load(Ordering::Relaxed))
+        });
+        let observed = (|| -> io::Result<String> {
+            let mut valid = UnixStream::connect(&socket)?;
+            valid.set_read_timeout(Some(Duration::from_secs(1)))?;
+            valid.write_all(STATUS_REQUEST_FIXTURE.as_bytes())?;
+            let mut ready = String::new();
+            let _read = BufReader::new(valid).read_line(&mut ready)?;
+            Ok(ready)
+        })();
+        stopped.store(true, Ordering::Relaxed);
+        drop(partial);
+        let outcome = worker
+            .join()
+            .map_err(|_panic| io::Error::other("local endpoint panicked"))?;
+        fs::remove_dir_all(root)?;
+        assert_eq!(observed?, STATUS_RESPONSE_FIXTURE);
+        outcome
+    }
+
+    #[test]
+    fn shared_client_deadline_is_not_extended_by_reply_fragments()
+    -> io::Result<()> {
+        let (stream, mut peer) = UnixStream::pair()?;
+        let worker = thread::spawn(move || -> io::Result<()> {
+            let mut request = String::new();
+            let _read =
+                BufReader::new(peer.try_clone()?).read_line(&mut request)?;
+            for _fragment in 0_u8..7 {
+                if peer.write_all(b" ").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_secs(1));
+            }
+            Ok(())
+        });
+        let start = Instant::now();
+        let result =
+            client::exchange_stream(stream, &request::Envelope::status());
+        let elapsed = start.elapsed();
+        worker
+            .join()
+            .map_err(|_panic| io::Error::other("peer panicked"))??;
+        let error = result.expect_err("trickled reply must time out");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(
+            elapsed < Duration::from_secs(6),
+            "deadline extended to {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn socket_codec_preserves_fragmented_and_coalesced_frames() -> io::Result<()>
+    {
+        let (stream, mut peer) = UnixStream::pair()?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        let worker = thread::spawn(move || -> io::Result<()> {
+            peer.write_all(b"{\"request\":{\"type\":\"sta")?;
+            thread::sleep(Duration::from_millis(10));
+            peer.write_all(format!("tus\"}},\"version\":{PROTOCOL_VERSION}}}\n{{\"request\":{{\"type\":\"snapshot\"}},\"version\":{PROTOCOL_VERSION}}}\n").as_bytes())
+        });
+        let mut reader = BufReader::new(stream);
+        let first = codec::read_request(&mut reader)?;
+        let second = codec::read_request(&mut reader)?;
+        worker
+            .join()
+            .map_err(|_panic| io::Error::other("peer panicked"))??;
+        assert!(matches!(first.request(), request::Request::Status));
+        assert!(matches!(second.request(), request::Request::Snapshot));
+        Ok(())
+    }
+
+    #[test]
+    fn daemon_accepts_exact_frame_limit_and_rejects_one_byte_more()
+    -> io::Result<()> {
+        with_running_endpoint(|socket| {
+            let mut frame =
+                STATUS_REQUEST_FIXTURE.trim_end().as_bytes().to_vec();
+            frame.resize(quickshare_control::MAX_MESSAGE_BYTES, b' ');
+            frame.push(b'\n');
+            assert_eq!(raw_reply(socket, &frame)?, STATUS_RESPONSE_FIXTURE);
+            frame.insert(frame.len() - 1, b' ');
+            let rejected = raw_reply(socket, &frame)?;
+            assert_error_code(&rejected, "message_too_large")?;
+            assert_eq!(
+                raw_reply(socket, STATUS_REQUEST_FIXTURE.as_bytes())?,
+                STATUS_RESPONSE_FIXTURE
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn malformed_and_truncated_frames_leave_daemon_ready() -> io::Result<()> {
+        with_running_endpoint(|socket| {
+            assert_error_code(
+                &raw_reply(socket, b"{broken\n")?,
+                "invalid_request",
+            )?;
+            assert_error_code(
+                &raw_reply(
+                    socket,
+                    format!("{{\"version\":{PROTOCOL_VERSION},\"request\":{{\"type\":\"unknown\"}}}}\n").as_bytes(),
+                )?,
+                "invalid_request",
+            )?;
+            assert_error_code(&raw_reply(socket,
+                format!("{{\"version\":{PROTOCOL_VERSION},\"request\":{{\"type\":\"status\"}},\"extra\":true}}\n").as_bytes())?,
+                "invalid_request")?;
+            let mut truncated = UnixStream::connect(socket)?;
+            truncated.set_read_timeout(Some(Duration::from_secs(2)))?;
+            truncated
+                .write_all(STATUS_REQUEST_FIXTURE.trim_end().as_bytes())?;
+            truncated.shutdown(Shutdown::Write)?;
+            let mut reply = String::new();
+            let _read = BufReader::new(truncated).read_line(&mut reply)?;
+            assert_error_code(&reply, "invalid_request")?;
+            assert_eq!(
+                raw_reply(socket, STATUS_REQUEST_FIXTURE.as_bytes())?,
+                STATUS_RESPONSE_FIXTURE
+            );
+            Ok(())
+        })
+    }
+
+    pub(super) fn raw_reply(socket: &Path, frame: &[u8]) -> io::Result<String> {
+        let mut stream = UnixStream::connect(socket)?;
+        stream.set_read_timeout(Some(Duration::from_secs(7)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+        stream.write_all(frame)?;
+        let mut response = String::new();
+        let _read = BufReader::new(stream).read_line(&mut response)?;
+        Ok(response)
+    }
+
+    pub(super) fn assert_error_code(frame: &str, code: &str) -> io::Result<()> {
+        let response: serde_json::Value = serde_json::from_str(frame)?;
+        assert_eq!(response["version"], PROTOCOL_VERSION);
+        assert_eq!(response["response"]["type"], "error");
+        assert_eq!(response["response"]["code"], code);
+        Ok(())
+    }
+
+    pub(super) fn with_running_endpoint(
+        observe: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let EndpointListenerFixture {
+            listener,
+            root,
+            socket,
+        } = EndpointListenerFixture::bind()?;
+        let stopped = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stopped);
+        let worker = thread::spawn(move || {
+            Daemon::new()
+                .serve_until(&listener, || worker_stop.load(Ordering::Relaxed))
+        });
+        let observation = observe(&socket);
+        stopped.store(true, Ordering::Relaxed);
+        let outcome = worker
+            .join()
+            .map_err(|_panic| io::Error::other("local endpoint panicked"))?;
+        fs::remove_dir_all(root)?;
+        observation?;
+        outcome
+    }
+
     fn assert_endpoint_remains_ready(fixture: EndpointListenerFixture) {
         let EndpointListenerFixture {
             listener,
@@ -382,7 +736,7 @@ mod tests {
 
         for _request in 0_usize..2_usize {
             let mut output = Vec::new();
-            let result = omarchy_quickshare::run(
+            let result = omarchy_quickshare_cli::run(
                 &[String::from("health")],
                 Path::new("."),
                 &socket,
@@ -405,3 +759,7 @@ mod tests {
         assert!(cleanup_result.is_ok(), "failed to clean endpoint fixture");
     }
 }
+
+#[cfg(test)]
+#[path = "control_contract/framing.rs"]
+mod framing;

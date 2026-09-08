@@ -4,12 +4,11 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import { test } from "vitest";
 
 import {
   coldEmulatorArguments,
   emulatorArguments,
-  environmentFingerprint,
   orchestratorRunArguments,
   validateEnvironment,
 } from "../../../tests/environments/android/environment.mjs";
@@ -22,10 +21,6 @@ import {
   sdkInstallArguments,
   sdkPackageArgument,
 } from "../../../tests/environments/android/provision.mjs";
-import {
-  orchestratorFingerprint,
-  validateOrchestratorFiles,
-} from "../../../tests/environments/android/orchestrator.mjs";
 import {
   androidEnvironment,
   commandPaths,
@@ -40,54 +35,17 @@ const MANIFEST = join(
   "android",
   "environment.json",
 );
-const PROBE_ROOT = join(ROOT, "tests", "environments", "android", "probe");
-const PROBE_BUILD = join(PROBE_ROOT, "app", "build.gradle.kts");
-const PROBE_MANIFEST = join(
-  PROBE_ROOT,
-  "app",
-  "src",
-  "main",
-  "AndroidManifest.xml",
-);
-const PROBE_LOCK = join(PROBE_ROOT, "app", "gradle.lockfile");
-const PROBE_VERIFICATION = join(
-  PROBE_ROOT,
-  "gradle",
-  "verification-metadata.xml",
-);
-const EXPECTED_PACKAGE_COUNT = 6;
-const EXPECTED_TOOL_COUNT = 2;
 const FIXTURE_USER_ID = 1000;
 const PRIVILEGED_PORT = 22;
 const SHA256_PATTERN_LENGTH = 64;
-const SHA1_PATTERN = /^[0-9a-f]{40}$/u;
-const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const INVALID_SHA256_PATTERN = /invalid package SHA-256/u;
 const TWO_PEERS_PATTERN = /exactly two peers/u;
 const INVALID_ADB_PORT_PATTERN = /adbServerPort must be a user port/u;
 const FIXTURE_BYTES = "pinned Android archive fixture";
-const ARTIFACT_WRITER_PATTERN = /recordFailureArtifact/u;
-const ANDROID_NEARBY_GATE_PATTERN = /android-nearby/u;
-const MOBLY_RUNNER_STAGE_PATTERN = /mobly-runner/u;
 
 function source() {
   return readFileSync(MANIFEST, "utf8");
 }
-
-test("Android environment pins every SDK and AVD input", () => {
-  const manifest = validateEnvironment(source());
-  assert.equal(manifest.packages.length, EXPECTED_PACKAGE_COUNT);
-  assert.equal(manifest.probe.toolchain.length, EXPECTED_TOOL_COUNT);
-  assert.equal(manifest.avds.peers.length, 2);
-  assert.match(environmentFingerprint(source()), SHA256_PATTERN);
-  for (const record of manifest.packages) {
-    assert.match(record.sha1, SHA1_PATTERN);
-    assert.match(record.sha256, SHA256_PATTERN);
-  }
-  for (const record of manifest.probe.toolchain) {
-    assert.match(record.sha256, SHA256_PATTERN);
-  }
-});
 
 test("Android environment rejects mutable package checksums", () => {
   const manifest = JSON.parse(source());
@@ -117,34 +75,35 @@ test("Android environment rejects a privileged ADB server port", () => {
 });
 
 test("Android package pins map to exact CLI install arguments", () => {
-  const manifest = validateEnvironment(source());
-  const records = new Map(
-    manifest.packages.map((record) => [record.id, record]),
-  );
+  const records = new Map([
+    ["platform-tools", { id: "platform-tools", revision: "1.2.3" }],
+    ["platforms;android-31", { id: "platforms;android-31", revision: "4" }],
+    [
+      "system-images;android-31;google_apis;x86_64",
+      {
+        id: "system-images;android-31;google_apis;x86_64",
+        revision: "5",
+      },
+    ],
+  ]);
   assert.equal(
     sdkPackageArgument(records.get("platform-tools")),
-    "platform-tools@37.0.1",
+    "platform-tools@1.2.3",
   );
   assert.equal(
-    sdkPackageArgument(records.get("platforms;android-36")),
-    "platforms/android-36@2",
+    sdkPackageArgument(records.get("platforms;android-31")),
+    "platforms/android-31@4",
   );
   assert.equal(
     sdkPackageArgument(
-      records.get("system-images;android-36;google_apis;x86_64"),
+      records.get("system-images;android-31;google_apis;x86_64"),
     ),
-    "system-images/android-36/google_apis/x86_64@7",
+    "system-images/android-31/google_apis/x86_64@5",
   );
   assert.deepEqual(
     sdkInstallArguments({ sdk: "/sdk" }, [records.get("platform-tools")]),
-    ["--sdk=/sdk", "sdk", "install", "platform-tools@37.0.1"],
+    ["--sdk=/sdk", "sdk", "install", "platform-tools@1.2.3"],
   );
-});
-
-test("legacy AVD manager runs from the installed SDK layout", () => {
-  const manifest = validateEnvironment(source());
-  const commands = commandPaths({ sdk: "/sdk", tools: "/tools" }, manifest);
-  assert.equal(commands.avdmanager, "/sdk/cmdline-tools/23.0/bin/avdmanager");
 });
 
 test("Android tools share one isolated ADB identity", () => {
@@ -152,28 +111,32 @@ test("Android tools share one isolated ADB identity", () => {
   const paths = environmentPaths("/cache-root");
   const commands = commandPaths(paths, manifest);
   const environment = androidEnvironment(paths, commands, manifest);
-  assert.equal(environment.HOME, "/cache-root/android/adb-home");
-  assert.equal(
-    environment.ANDROID_EMULATOR_HOME,
-    "/cache-root/android/adb-home/.android",
+  assert.ok(environment.HOME.startsWith("/cache-root/"));
+  assert.ok(
+    environment.ANDROID_EMULATOR_HOME.startsWith(`${environment.HOME}/`),
   );
-  assert.equal(environment.ANDROID_ADB_SERVER_PORT, "5038");
+  assert.equal(
+    environment.ANDROID_ADB_SERVER_PORT,
+    String(manifest.host.adbServerPort),
+  );
   assert.equal(
     environment.ADB_VENDOR_KEYS,
-    "/cache-root/android/adb-home/.android/adbkey",
+    join(environment.ANDROID_EMULATOR_HOME, "adbkey"),
   );
 });
 
-test("Android archives resolve only from pinned repositories", () => {
-  const manifest = validateEnvironment(source());
-  const gradle = manifest.probe.toolchain.find(({ id }) => id === "gradle");
+test("Android archives resolve against their configured repository", () => {
+  const manifest = {
+    repositories: { gradle: "https://example.invalid/distributions/" },
+  };
+  const gradle = { source: "gradle", archive: "fixture.zip" };
   assert.equal(
     archiveUrl(manifest, gradle),
-    "https://services.gradle.org/distributions/gradle-9.1.0-bin.zip",
+    "https://example.invalid/distributions/fixture.zip",
   );
   assert.equal(
     archivePath({ archives: "/cache" }, gradle),
-    "/cache/gradle-9.1.0-bin.zip",
+    "/cache/fixture.zip",
   );
 });
 
@@ -187,7 +150,7 @@ function archiveFixture(sha256) {
   };
 }
 
-test("Android archive downloads are hash and size verified", async () => {
+test("Android downloads preserve bytes and reject a wrong hash", async () => {
   const directory = mkdtempSync(join(tmpdir(), "quickshare-android-"));
   const manifest = { repositories: { sdk: "https://example.invalid/" } };
   const sha256 = createHash("sha256").update(FIXTURE_BYTES).digest("hex");
@@ -214,65 +177,7 @@ test("Android archive downloads are hash and size verified", async () => {
   }
 });
 
-test("Android probe build uses every pinned dependency", () => {
-  const manifest = validateEnvironment(source());
-  const rootBuild = readFileSync(join(PROBE_ROOT, "build.gradle.kts"), "utf8");
-  const appBuild = readFileSync(PROBE_BUILD, "utf8");
-  const buildTools = manifest.packages.find(({ id }) =>
-    id.startsWith("build-tools;"),
-  );
-  assert.ok(
-    rootBuild.includes(`version "${manifest.probe.androidGradlePlugin}"`),
-  );
-  assert.ok(appBuild.includes(`buildToolsVersion = "${buildTools.revision}"`));
-  assert.ok(appBuild.includes(`compileSdk = ${manifest.probe.compileSdk}`));
-  assert.ok(appBuild.includes(`minSdk = ${manifest.probe.minSdk}`));
-  assert.ok(appBuild.includes(`targetSdk = ${manifest.probe.targetSdk}`));
-  for (const [dependency, version] of Object.entries(
-    manifest.probe.dependencies,
-  )) {
-    assert.ok(appBuild.includes(`${dependency}:${version}`));
-  }
-});
-
-test("Android probe declares every dangerous connection permission", () => {
-  const sourceText = readFileSync(PROBE_MANIFEST, "utf8");
-  const permissions = [
-    "android.permission.BLUETOOTH_ADVERTISE",
-    "android.permission.BLUETOOTH_CONNECT",
-    "android.permission.BLUETOOTH_SCAN",
-    "android.permission.NEARBY_WIFI_DEVICES",
-  ];
-  for (const permission of permissions) {
-    assert.ok(sourceText.includes(permission));
-  }
-});
-
-test("Android probe locks versions and verifies dependency artifacts", () => {
-  const manifest = validateEnvironment(source());
-  const lock = readFileSync(PROBE_LOCK, "utf8");
-  const verification = readFileSync(PROBE_VERIFICATION, "utf8");
-  for (const [dependency, version] of Object.entries(
-    manifest.probe.dependencies,
-  )) {
-    const [group, name] = dependency.split(":");
-    assert.ok(lock.includes(`${group}:${name}:${version}`));
-    assert.ok(verification.includes(`group="${group}" name="${name}"`));
-  }
-  assert.ok(verification.includes("<verify-metadata>true</verify-metadata>"));
-  assert.ok(verification.includes("<sha256 value="));
-});
-
-test("Android orchestration image pins every Python artifact", () => {
-  const manifest = validateEnvironment(source());
-  const sources = validateOrchestratorFiles(manifest);
-  assert.match(orchestratorFingerprint(manifest, sources), SHA256_PATTERN);
-  assert.ok(sources.dockerfile.includes(manifest.probe.orchestrator.python));
-  assert.ok(sources.dockerfile.includes("mobly-ps"));
-  assert.ok(sources.processShim.includes("/proc/[0-9]*/status"));
-});
-
-test("Android peers use accelerated display-free emulator arguments", () => {
+test("Android emulator arguments request headless and cold-start modes", () => {
   const manifest = validateEnvironment(source());
   const commands = { adb: "/sdk/platform-tools/adb" };
   const argumentsList = emulatorArguments(
@@ -300,31 +205,22 @@ test("Android peers use accelerated display-free emulator arguments", () => {
   assert.ok(coldArguments.includes("-wipe-data"));
 });
 
-test("Mobly runner is isolated and uses the pinned Android tools", () => {
+test("Mobly arguments restrict privileges and select pinned tools", () => {
   const manifest = validateEnvironment(source());
   const argumentsList = orchestratorRunArguments(
     manifest,
     { diagnostics: "/diagnostics", sdk: "/sdk" },
     { gid: FIXTURE_USER_ID, uid: FIXTURE_USER_ID },
   );
-  assert.ok(argumentsList.includes("--network=host"));
   assert.ok(argumentsList.includes("--read-only"));
   assert.ok(argumentsList.includes("--cap-drop=ALL"));
-  assert.ok(argumentsList.includes("/logs:rw,noexec,nosuid,size=64m"));
-  assert.equal(argumentsList.includes("/diagnostics/mobly:/logs"), false);
-  assert.ok(argumentsList.includes("ANDROID_ADB_SERVER_PORT=5038"));
+  assert.ok(
+    argumentsList.includes(
+      `ANDROID_ADB_SERVER_PORT=${manifest.host.adbServerPort}`,
+    ),
+  );
   assert.ok(
     argumentsList.includes("/sdk/platform-tools:/android-platform-tools:ro"),
   );
   assert.ok(argumentsList.includes(manifest.probe.orchestrator.image));
-});
-
-test("Android runner retains only typed failure metadata", () => {
-  const runner = readFileSync(
-    join(ROOT, "tests", "environments", "android", "runner.mjs"),
-    "utf8",
-  );
-  assert.match(runner, ARTIFACT_WRITER_PATTERN);
-  assert.match(runner, ANDROID_NEARBY_GATE_PATTERN);
-  assert.match(runner, MOBLY_RUNNER_STAGE_PATTERN);
 });

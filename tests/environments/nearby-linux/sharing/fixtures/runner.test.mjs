@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import {
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -9,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 
 import {
   assertCurrentFingerprint,
@@ -21,14 +20,10 @@ import {
 import { contextFingerprint } from "../../context.mjs";
 
 const SOURCE_REVISION = "6887b0983200c6c8c29e614ea2633d13bf18315d";
-const DIRECTORY = new URL(".", import.meta.url);
 const MANIFEST_TEST =
   "Sharing fixture manifest records exact bytes and pinned provenance";
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const DIFFERENCE_PATTERN = /outgoing\/introductions\/file\.bin differs/u;
-const WIRE_PROTO_PATTERN = /wire_format_cc_proto/u;
-const OUTBOUND_FILE_PATTERN = /OutgoingShareSession/u;
-const INBOUND_APK_PATTERN = /IntroductionFrame Apk/u;
 const DIRECTORY_DIFFERENCE_PATTERN = /fixture directory contents differ/u;
 const STALE_IMAGE_PATTERN = /Nearby Linux image is stale/u;
 const FINGERPRINT_LENGTH = 64;
@@ -153,7 +148,7 @@ test("Sharing fixture generation rejects a stale peer image", () => {
   );
 });
 
-test("Sharing fixture generation drops privileges and external access", () => {
+test("Sharing generator arguments restrict privileges and access", () => {
   const argumentsList = generatorArguments("/tmp/fixture-case");
   for (const value of [
     "--cap-drop=ALL",
@@ -166,22 +161,6 @@ test("Sharing fixture generation drops privileges and external access", () => {
     assert.ok(argumentsList.includes(value));
   }
   assert.ok(argumentsList.includes("/tmp/fixture-case:/fixtures"));
-});
-
-test("Sharing fixture generator is a sealed Nearby Linux image input", () => {
-  const generator = new URL(
-    "../../../../../tools/oracle/sharing-fixtures/",
-    DIRECTORY,
-  );
-  const build = readFileSync(new URL("BUILD.bazel", generator), "utf8");
-  const source = readFileSync(
-    new URL("sharing_fixture_generator.cc", generator),
-    "utf8",
-  );
-  assert.ok(existsSync(generator));
-  assert.match(build, WIRE_PROTO_PATTERN);
-  assert.match(source, OUTBOUND_FILE_PATTERN);
-  assert.match(source, INBOUND_APK_PATTERN);
 });
 
 test("Sharing fixture generator changes the sealed context fingerprint", () => {

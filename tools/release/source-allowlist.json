@@ -11,6 +11,8 @@
   ],
   "trees": [
     "crates/app",
+    "crates/cli",
+    "crates/core/config",
     "crates/core/connections",
     "crates/core/control",
     "crates/core/crypto",

@@ -5,6 +5,8 @@ const PRIVATE_DIRECTORY_MODE = 0o700;
 
 export function headlessEnvironment(root, overrides = {}) {
   const runtime = join(root, "runtime");
+  const state = join(root, "state");
+  mkdirSync(state, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
   mkdirSync(runtime, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
   return {
     ...process.env,
@@ -18,6 +20,7 @@ export function headlessEnvironment(root, overrides = {}) {
     XDG_CONFIG_HOME: join(root, "config"),
     XDG_DATA_HOME: join(root, "data"),
     XDG_RUNTIME_DIR: runtime,
+    XDG_STATE_HOME: state,
   };
 }
 

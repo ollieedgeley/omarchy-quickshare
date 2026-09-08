@@ -1,4 +1,6 @@
-use super::super::{Fixture, RETRY_DELAY, command, fixture_root, snapshot};
+use super::super::{
+    Fixture, RETRY_DELAY, command, daemon_command, fixture_root, snapshot,
+};
 use core::time::Duration;
 use quickshare_sharing::{Phase, SharingSession};
 use std::env;
@@ -327,7 +329,7 @@ fn run_daemon_scenario(
     let reserved = TcpListener::bind("127.0.0.1:0")?;
     let port = reserved.local_addr()?.port();
     drop(reserved);
-    let child = command(&root, &["daemon"])
+    let child = daemon_command(&root, &[])
         .env(
             "DBUS_SYSTEM_BUS_ADDRESS",
             format!("unix:path={}/missing-bus", root.display()),

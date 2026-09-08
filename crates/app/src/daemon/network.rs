@@ -17,9 +17,9 @@ mod worker;
 mod tests;
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, Ordering};
 use std::io;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 
 use self::worker::run_worker;
@@ -30,7 +30,7 @@ use super::outbound::OutboundTransfer;
 #[cfg(test)]
 use super::visibility::Resources;
 use super::visibility::{PendingConsent, Visibility};
-use crate::config::Config;
+use quickshare_config::Config;
 use quickshare_network::DnsSd;
 
 /// Commands sent from the local-control owner to the network worker.
@@ -172,32 +172,49 @@ pub(super) enum NetworkEvent {
     },
 }
 
-/// Lock-free cancellation signal shared with active transfer I/O.
+/// Cancellation and irreversible transfer completion share one owner.
 #[derive(Clone, Debug, Default)]
 struct TransferCancellation {
-    /// Stable identifier of the share requested for cancellation.
-    share_id: Arc<AtomicU64>,
+    state: Arc<Mutex<TransferTerminal>>,
+}
+
+#[derive(Debug, Default)]
+struct TransferTerminal {
+    // The worker runs transfers serially with monotonically allocated IDs.
+    // Watermarks retain queued cancellations without an unbounded ID set.
+    cancelled: Option<u64>,
+    finished: Option<u64>,
 }
 
 impl TransferCancellation {
-    /// Marks one share for cancellation.
-    fn cancel(&self, share_id: u64) {
-        self.share_id.store(share_id, Ordering::Release);
+    /// Returns false once this transfer has already finalized its outcome.
+    fn cancel(&self, share_id: u64) -> bool {
+        let mut state =
+            self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.finished.is_some_and(|finished| share_id <= finished) {
+            return false;
+        }
+        state.cancelled = Some(state.cancelled.unwrap_or(0).max(share_id));
+        true
     }
 
-    /// Clears one completed share without overwriting a newer cancellation.
-    fn finish(&self, share_id: u64) {
-        let _result = self.share_id.compare_exchange(
-            share_id,
-            0,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
+    /// Serializes cancellation with final publication, including file commit.
+    fn finish<T>(&self, share_id: u64, finalize: impl FnOnce(bool) -> T) -> T {
+        let mut state =
+            self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let cancelled = state.cancelled.is_some_and(|id| share_id <= id)
+            && state.finished.is_none_or(|id| share_id > id);
+        let result = finalize(cancelled);
+        state.finished = Some(state.finished.unwrap_or(0).max(share_id));
+        result
     }
 
-    /// Reports whether this share owns the current cancellation request.
     fn is_cancelled(&self, share_id: u64) -> bool {
-        self.share_id.load(Ordering::Acquire) == share_id
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .cancelled
+            .is_some_and(|id| share_id <= id)
     }
 }
 
@@ -217,7 +234,7 @@ fn emit_progress(
 /// A background worker that owns Linux network adapters for the daemon.
 #[derive(Debug)]
 pub(super) struct NetworkWorker {
-    /// Lock-free cancellation observed between encrypted transfer frames.
+    /// Cancellation serialized with the irreversible terminal boundary.
     cancellation: TransferCancellation,
     /// Commands accepted from the control-loop owner.
     commands: Option<Sender<NetworkCommand>>,
@@ -235,9 +252,9 @@ pub(super) struct NetworkWorker {
     reason = "Worker commands are grouped before event polling and startup"
 )]
 impl NetworkWorker {
-    /// Requests cancellation at the next encrypted transfer-frame boundary.
-    pub(super) fn cancel_transfer(&self, share_id: u64) {
-        self.cancellation.cancel(share_id);
+    /// Requests cancellation unless the transfer has already finalized.
+    pub(super) fn cancel_transfer(&self, share_id: u64) -> bool {
+        self.cancellation.cancel(share_id)
     }
 
     /// Queues preferences without replacing the worker or active transfer.

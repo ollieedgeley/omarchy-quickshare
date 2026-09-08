@@ -53,6 +53,7 @@ services:
       XDG_CONFIG_HOME: /cases/config
       XDG_DOWNLOAD_DIR: /cases/received
       XDG_RUNTIME_DIR: /run/quickshare
+      XDG_STATE_HOME: /cases/state
     hostname: Omarchy-Rust
     entrypoint: [/bin/sleep]
     read_only: true

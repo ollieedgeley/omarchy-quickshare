@@ -1,6 +1,8 @@
 [workspace]
 members = [
   "crates/app",
+  "crates/cli",
+  "crates/core/config",
   "crates/core/connections",
   "crates/core/control",
   "crates/core/crypto",
@@ -11,10 +13,11 @@ members = [
   "crates/platform/storage",
   "tests/suites/contracts",
   "tests/support",
-  "tools/gates",
 ]
 default-members = [
   "crates/app",
+  "crates/cli",
+  "crates/core/config",
   "crates/core/connections",
   "crates/core/control",
   "crates/core/crypto",
@@ -25,7 +28,6 @@ default-members = [
   "crates/platform/storage",
   "tests/suites/contracts",
   "tests/support",
-  "tools/gates",
 ]
 resolver = "3"
 

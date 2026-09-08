@@ -368,7 +368,7 @@ function runTests(scope) {
   } else if (scope === "tooling") {
     for (const testPath of selection.nodeTestPaths) {
       recordedStep(staged, {
-        args: ["--test", testPath],
+        args: [tool("vitest"), "run", testPath],
         command: process.execPath,
         env: testEnvironment(),
         id: testPath,

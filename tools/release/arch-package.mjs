@@ -23,10 +23,11 @@ const BINARY_NAME = "omarchy-quickshare";
 const EXECUTABLE_MODE = 0o755;
 const PKGREL = 1;
 const MILLISECONDS_PER_SECOND = 1000;
-const PACKAGE_EXEC = "ExecStart=/usr/bin/omarchy-quickshare daemon";
+const PACKAGE_EXEC = "ExecStart=/usr/bin/omarchy-quickshare-daemon";
 const EXEC_START_PATTERN = /^ExecStart=.*$/mu;
 const FILES = [
   BINARY_NAME,
+  `${BINARY_NAME}-daemon`,
   `${BINARY_NAME}.service`,
   `${BINARY_NAME}.toml`,
   "LICENSE",
@@ -54,6 +55,7 @@ function stageSources(nativeDirectory, destination) {
     copyFileSync(join(nativeDirectory, file), join(destination, file));
   }
   chmodSync(join(destination, BINARY_NAME), EXECUTABLE_MODE);
+  chmodSync(join(destination, `${BINARY_NAME}-daemon`), EXECUTABLE_MODE);
   const unitPath = join(destination, `${BINARY_NAME}.service`);
   writeFileSync(unitPath, renderPackageUnit(readFileSync(unitPath, "utf8")));
 }
@@ -105,10 +107,9 @@ function writePackageTree(destination) {
   mkdirSync(join(pkgdir, "usr", "share", "licenses", BINARY_NAME), {
     recursive: true,
   });
-  copyFileSync(
-    join(destination, BINARY_NAME),
-    join(pkgdir, "usr", "bin", BINARY_NAME),
-  );
+  for (const file of [BINARY_NAME, `${BINARY_NAME}-daemon`]) {
+    copyFileSync(join(destination, file), join(pkgdir, "usr", "bin", file));
+  }
   copyFileSync(
     join(destination, `${BINARY_NAME}.service`),
     join(pkgdir, "usr", "lib", "systemd", "user", `${BINARY_NAME}.service`),

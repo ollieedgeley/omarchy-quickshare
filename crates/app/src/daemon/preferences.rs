@@ -13,7 +13,7 @@ use quickshare_control::response::{
 };
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 
-use crate::config::{Config, config_path};
+use quickshare_config::{Config, config_path};
 
 /// Checks queued directory events without rereading an unchanged document.
 #[derive(Debug)]

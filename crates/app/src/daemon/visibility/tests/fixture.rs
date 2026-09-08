@@ -13,11 +13,11 @@ use quickshare_control::request::Envelope as Command;
 use quickshare_control::response::{Envelope, Response};
 use quickshare_sharing::{EndpointSnapshot, VisibilityState};
 
-use crate::config::Config;
 use crate::daemon::Daemon;
 use crate::daemon::network::{NetworkEvent, NetworkWorker};
 use crate::daemon::visibility::clock::Clock;
 use crate::daemon::visibility::{Resources, Visibility};
+use quickshare_config::Config;
 
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 

@@ -15,6 +15,7 @@ const KNIP_CONFIG = /(?:^|\/)(?:knip|package(?:-lock)?)\.json$/u;
 const PYTHON_EXT = /\.pyi?$/u;
 const CPP_EXT = /\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx)$/u;
 const CPP_SOURCE_EXT = /\.(?:c|cc|cpp|cxx)$/u;
+const CHECKSTYLE_EXT = /\.(?:rs|py|c|cc|cpp|h|hpp|java|qml|sh)$/u;
 const CLANG_TIDY_ROOT = "tools/oracle/connections-peer/";
 const EXCLUDED_DIRECTORIES = new Set([
   ".cache",
@@ -30,6 +31,9 @@ const EXCLUDED_DIRECTORIES = new Set([
 const VULTURE_VERSION = "2.16";
 const CARGO_MACHETE_VERSION = "0.9.2";
 const RUFF_VERSION = "0.16.5";
+const JAVA_VERSION = "21.0.12.1+1";
+const CHECKSTYLE_VERSION = "14.1.0";
+const LIZARD_VERSION = "1.24.0";
 const REQUIRED_PROTO_PATHS = [
   "connections/implementation/proto/offline_wire_formats.proto",
   "internal/proto/credential.proto",
@@ -60,10 +64,26 @@ export function duplicationScanPaths(paths, scope = "files") {
 }
 
 const FULL_ANALYZER_MODES = new Map([
-  ["--full-general", ["jscpd", "cargo-machete", "knip", "ruff", "vulture"]],
+  [
+    "--full-general",
+    [
+      "jscpd",
+      "cargo-machete",
+      "knip",
+      "ruff",
+      "vulture",
+      "checkstyle",
+      "lizard",
+    ],
+  ],
+  ["--full-language-style", ["checkstyle", "lizard"]],
   ["--full-clang-tidy", ["clang-tidy"]],
   ["--full-cppcheck", ["cppcheck"]],
 ]);
+
+function isLizardInput(path) {
+  return PYTHON_EXT.test(path) || CPP_EXT.test(path);
+}
 
 export function analyzersForPaths(paths, requestedAnalyzers) {
   if (!paths.length) {
@@ -83,6 +103,12 @@ export function analyzersForPaths(paths, requestedAnalyzers) {
   }
   if (paths.some((path) => CPP_EXT.test(path))) {
     tools.push("clang-tidy", "cppcheck");
+  }
+  if (paths.some(isLizardInput)) {
+    tools.push("lizard");
+  }
+  if (paths.some((path) => CHECKSTYLE_EXT.test(path))) {
+    tools.push("checkstyle");
   }
   if (!requestedAnalyzers) {
     return tools;
@@ -126,38 +152,27 @@ function executable(name, options) {
   const { nodeBin, toolRoot } = options;
   const overrides = {
     "cargo-machete": process.env.CARGO_MACHETE,
+    checkstyle: process.env.JAVA,
     "clang-tidy": process.env.CLANG_TIDY,
     cppcheck: process.env.CPPCHECK,
     jscpd: process.env.JSCPD,
     knip: process.env.KNIP,
+    lizard: process.env.LIZARD,
     ruff: process.env.RUFF,
     vulture: process.env.VULTURE,
   };
   if (overrides[name]) {
     return overrides[name];
   }
-  if (name === "cargo-machete") {
-    return join(
-      toolRoot,
-      ".cache",
-      "tools",
-      `cargo-machete-${CARGO_MACHETE_VERSION}`,
-      "bin",
-      "cargo-machete",
-    );
-  }
-  if (name === "ruff") {
-    return join(toolRoot, ".cache", "tools", `ruff-${RUFF_VERSION}`, "ruff");
-  }
-  if (name === "vulture") {
-    return join(
-      toolRoot,
-      ".cache",
-      "tools",
-      `vulture-${VULTURE_VERSION}`,
-      "bin",
-      "vulture",
-    );
+  const cached = {
+    "cargo-machete": `cargo-machete-${CARGO_MACHETE_VERSION}/bin/cargo-machete`,
+    checkstyle: `temurin-jre-${JAVA_VERSION}/bin/java`,
+    lizard: `lizard-${LIZARD_VERSION}/bin/lizard`,
+    ruff: `ruff-${RUFF_VERSION}/ruff`,
+    vulture: `vulture-${VULTURE_VERSION}/bin/vulture`,
+  };
+  if (cached[name]) {
+    return join(toolRoot, ".cache", "tools", cached[name]);
   }
   if (["jscpd", "knip"].includes(name)) {
     return join(nodeBin, name);
@@ -326,6 +341,37 @@ function runCargoMachete(tools, cargoPackages, cwd) {
   );
 }
 
+function runCheckstyle(tools, paths, options) {
+  const { cwd, toolRoot } = options;
+  if (!tools.checkstyle) {
+    return;
+  }
+  const eligiblePaths = paths.filter((path) => CHECKSTYLE_EXT.test(path));
+  const fileMax = { false: "500", true: "800" };
+  const jar = join(
+    toolRoot,
+    ".cache",
+    "tools",
+    `checkstyle-${CHECKSTYLE_VERSION}`,
+    "checkstyle.jar",
+  );
+  for (const [isTest, group] of Map.groupBy(eligiblePaths, isTestPath)) {
+    run(
+      tools.checkstyle,
+      [
+        "-Xmx256m",
+        `-Dfile.max=${fileMax[isTest]}`,
+        "-jar",
+        jar,
+        "-c",
+        "tools/gates/checkstyle.xml",
+        ...group.map((path) => resolve(cwd, path)),
+      ],
+      { cwd },
+    );
+  }
+}
+
 function runPython(tools, paths, cwd) {
   const pythonPaths = paths.filter((path) => PYTHON_EXT.test(path));
   if (!pythonPaths.length) {
@@ -338,6 +384,26 @@ function runPython(tools, paths, cwd) {
     run(tools.vulture, ["--min-confidence", "100", ...pythonPaths], { cwd });
   }
 }
+
+function runLizard(tools, paths, cwd) {
+  if (!tools.lizard) {
+    return;
+  }
+  const lizardPaths = paths.filter(isLizardInput);
+  if (lizardPaths.length) {
+    run(
+      tools.lizard,
+      [
+        "--length",
+        "50",
+        "--warnings_only",
+        ...lizardPaths.map((path) => resolve(cwd, path)),
+      ],
+      { cwd },
+    );
+  }
+}
+
 function runDuplication(tools, paths, options) {
   const duplicationPaths = duplicationScanPaths(paths, options.scope);
   if (tools.jscpd && duplicationPaths.length) {
@@ -378,6 +444,8 @@ export function runAnalysis(options) {
     });
   }
   runPython(tools, existingPaths, cwd);
+  runLizard(tools, existingPaths, cwd);
+  runCheckstyle(tools, existingPaths, { cwd, toolRoot });
   if (analyzers.includes("clang-tidy") || analyzers.includes("cppcheck")) {
     const testEnvironmentCache =
       process.env.TEST_ENV_CACHE ?? join(toolRoot, ".cache", "test-env");
@@ -399,17 +467,25 @@ const isDirectExecution =
   process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isDirectExecution) {
   const cwd = process.cwd();
-  const [mode] = process.argv.slice(2);
+  const [mode, ...paths] = process.argv.slice(2);
   const requestedAnalyzers = FULL_ANALYZER_MODES.get(mode);
   if (!requestedAnalyzers) {
     throw new Error(
-      "usage: analysis.mjs --full-general|--full-clang-tidy|--full-cppcheck",
+      "usage: analysis.mjs " +
+        "--full-general|--full-language-style|" +
+        "--full-clang-tidy|--full-cppcheck " +
+        "[FILE...]",
     );
+  }
+  let scope = "files";
+  if (!paths.length) {
+    paths.push(...listProjectFiles(cwd));
+    scope = "full";
   }
   runAnalysis({
     cwd,
-    paths: listProjectFiles(cwd),
+    paths,
     requestedAnalyzers,
-    scope: "full",
+    scope,
   });
 }

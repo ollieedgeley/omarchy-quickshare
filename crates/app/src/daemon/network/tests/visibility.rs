@@ -1,12 +1,12 @@
 use super::super::inbound::receive_share;
 use super::super::{NetworkCommand, NetworkEvent, TransferCancellation};
-use crate::config::Config;
 use crate::daemon::media::{
     PeerRoute, connect_route, initiate_bandwidth_upgrade, sharing_session,
 };
 use crate::daemon::visibility::Visibility;
 use crate::daemon::visibility::tests::Fixture;
 use core::time::Duration;
+use quickshare_config::Config;
 use quickshare_connections::Medium;
 use quickshare_control::request::Envelope as Command;
 use quickshare_control::response::Response;

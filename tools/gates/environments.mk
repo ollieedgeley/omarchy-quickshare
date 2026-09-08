@@ -10,7 +10,7 @@
 .PHONY: android-preflight android-bootstrap android-license android-provision
 .PHONY: android-orchestrator-provision
 .PHONY: android-seed android-up android-down test-android-nearby
-.PHONY: lint-live-bwu-kvm live-bwu-kvm-provision
+.PHONY: live-bwu-kvm-provision
 .PHONY: live-bwu-kvm-up live-bwu-kvm-down
 .PHONY: test-live-bwu-kvm
 
@@ -116,9 +116,6 @@ android-up: ## Boot both AVDs, wait for readiness, and install the probe.
 android-down: ## Stop both AVDs and report teardown time.
 	@node tests/environments/android/environment.mjs down
 
-lint-live-bwu-kvm: ## Check the isolated live-BWU KVM harness contracts.
-	@$(TIMEOUT) node --test \
-		tests/environments/live-bwu-kvm/contracts/*.test.mjs
 
 live-bwu-kvm-provision: ## Build the sealed Google-peer KVM image.
 	@node tests/environments/live-bwu-kvm/environment.mjs provision
@@ -135,5 +132,4 @@ test-live-bwu-kvm: ## Test LAN and Classic bytes across isolated KVM peers.
 		$(TIMEOUT) node tests/environments/live-bwu-kvm/environment.mjs \
 		self-test
 
-verify-tooling: lint-live-bwu-kvm
 verify: test-live-bwu-kvm

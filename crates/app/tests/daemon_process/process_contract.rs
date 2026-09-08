@@ -1,3 +1,9 @@
+#[path = "process_contract/client_failures.rs"]
+mod client_failures;
+
+#[path = "process_contract/operation_recovery.rs"]
+mod operation_recovery;
+
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use std::env;
@@ -17,18 +23,18 @@ use quickshare_sharing::{
     VisibilityState,
 };
 
-const BINARY: &str = env!("CARGO_BIN_EXE_omarchy-quickshare");
+const DAEMON_BINARY: &str = env!("CARGO_BIN_EXE_omarchy-quickshare-daemon");
 const ACTIVE_TEXT_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v6/active-text-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v7/active-text-snapshot-response.jsonl"
 );
 const ACTIVE_FILE_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v6/active-file-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v7/active-file-snapshot-response.jsonl"
 );
 const ACTIVE_URL_SNAPSHOT: &str = include_str!(
-    "../../../../tests/fixtures/control/v6/active-url-snapshot-response.jsonl"
+    "../../../../tests/fixtures/control/v7/active-url-snapshot-response.jsonl"
 );
 const CANCELLED_TEXT_SNAPSHOT: &str = include_str!(concat!(
-    "../../../../tests/fixtures/control/v6/",
+    "../../../../tests/fixtures/control/v7/",
     "cancelled-text-snapshot-response.jsonl"
 ));
 const RETRY_DELAY: Duration = Duration::from_millis(5);
@@ -53,11 +59,11 @@ impl DaemonProcessFixture {
     }
 
     fn start(root: PathBuf) -> io::Result<Self> {
-        Self::start_with(root, &["daemon"])
+        Self::start_with(root, &[])
     }
 
     fn start_simulated(root: PathBuf) -> io::Result<Self> {
-        Self::start_with(root, &["daemon", "--simulate"])
+        Self::start_with(root, &["--simulate"])
     }
 
     fn start_with(root: PathBuf, arguments: &[&str]) -> io::Result<Self> {
@@ -68,7 +74,7 @@ impl DaemonProcessFixture {
         permissions.set_readonly(true);
         fs::set_permissions(&home, permissions)?;
         fs::create_dir_all(root.join("received"))?;
-        let child = isolated_command(&root, arguments)
+        let child = process_command(Path::new(DAEMON_BINARY), &root, arguments)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
@@ -148,11 +154,24 @@ fn runtime_fixture_path() -> PathBuf {
 }
 
 fn isolated_command(runtime_directory: &Path, arguments: &[&str]) -> Command {
-    let mut command = Command::new(BINARY);
+    process_command(
+        &Path::new(DAEMON_BINARY).with_file_name("omarchy-quickshare"),
+        runtime_directory,
+        arguments,
+    )
+}
+
+fn process_command(
+    binary: &Path,
+    runtime_directory: &Path,
+    arguments: &[&str],
+) -> Command {
+    let mut command = Command::new(binary);
     let _ = command
         .args(arguments)
         .env("HOME", runtime_directory.join("home"))
         .env("XDG_CONFIG_HOME", runtime_directory.join("config"))
+        .env("XDG_STATE_HOME", runtime_directory.join("state"))
         .env("XDG_DOWNLOAD_DIR", runtime_directory.join("received"))
         .env("XDG_RUNTIME_DIR", runtime_directory)
         .env("OMARCHY_QUICKSHARE_DISABLE_NOTIFICATIONS", "1")

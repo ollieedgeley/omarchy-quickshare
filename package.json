@@ -7,7 +7,10 @@
   "scripts": {
     "lint:javascript": "eslint . --max-warnings 0 --no-warn-ignored",
     "prepare": "husky",
-    "test:tooling": "node --test tools/gates/tests/*.test.mjs tools/gates/tests/hooks/*.test.mjs tools/release/tests/*.test.mjs tools/hooks/pre-push-timing.test.mjs tests/environments/*/*.test.mjs"
+    "test:tooling": "vitest run",
+    "test:release": "vitest run --project release",
+    "test:environments": "vitest run --project environments",
+    "test:process": "vitest run --config vitest.process.config.mjs"
   },
   "devDependencies": {
     "@ast-grep/cli": "0.45.3",
@@ -23,10 +26,11 @@
     "knip": "6.34.0",
     "markdownlint-cli2": "0.23.2",
     "prettier": "3.9.6",
+    "vitest": "5.0.0",
     "yaml": "2.9.0"
   },
   "engines": {
-    "node": ">=24"
+    "node": "^24.0.0 || >=26.0.0"
   },
   "allowScripts": {
     "@ast-grep/cli@0.45.3": true

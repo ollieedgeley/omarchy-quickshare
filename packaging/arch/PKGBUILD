@@ -8,15 +8,18 @@ depends=()
 options=('!debug')
 source=(
   'omarchy-quickshare'
+  'omarchy-quickshare-daemon'
   'omarchy-quickshare.service'
   'omarchy-quickshare.toml'
   'LICENSE'
 )
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 package() {
   install -Dm755 omarchy-quickshare \
     "$pkgdir/usr/bin/omarchy-quickshare"
+  install -Dm755 omarchy-quickshare-daemon \
+    "$pkgdir/usr/bin/omarchy-quickshare-daemon"
   install -Dm644 omarchy-quickshare.service \
     "$pkgdir/usr/lib/systemd/user/omarchy-quickshare.service"
   install -Dm644 omarchy-quickshare.toml \

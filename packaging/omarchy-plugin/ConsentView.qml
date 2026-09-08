@@ -129,6 +129,7 @@ Item {
       spacing: Style.spacing.controlGap
 
       Button {
+        objectName: "quickshare-consent-accept"
         width: (parent.width - parent.spacing) / 2
         text: "Accept"
         bordered: true
@@ -146,6 +147,7 @@ Item {
         onClicked: if (!root.actionBusy) root.acceptRequested()
       }
       Button {
+        objectName: "quickshare-consent-reject"
         width: (parent.width - parent.spacing) / 2
         text: "Reject"
         bordered: true
@@ -165,6 +167,7 @@ Item {
     }
 
     Button {
+      objectName: "quickshare-consent-cancel"
       visible: root.waiting
       width: parent.width
       text: "Cancel"

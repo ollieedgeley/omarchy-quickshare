@@ -12,7 +12,7 @@ import { output, run } from "../gates/lib/process.mjs";
 import { readAppVersion } from "./source-allowlist.mjs";
 import {
   assertCleanReleaseInputs,
-  buildLockedBinary,
+  buildLockedBinaries,
   hashFile,
 } from "./source-build.mjs";
 
@@ -21,7 +21,21 @@ const DESTINATION = join(ROOT, "dist", "native");
 const BINARY_NAME = "omarchy-quickshare";
 const EXECUTABLE_MODE = 0o755;
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
-const CONTROL_PROTOCOL = 6;
+
+function copyComponents(built, destination) {
+  const components = {};
+  for (const [role, component] of Object.entries(built.components)) {
+    const binary = join(destination, component.file);
+    copyFileSync(component.binary, binary);
+    chmodSync(binary, EXECUTABLE_MODE);
+    const sha256 = hashFile(binary);
+    if (sha256 !== component.sha256) {
+      throw new Error(`${role} binary changed during native release creation`);
+    }
+    components[role] = { file: component.file, sha256 };
+  }
+  return components;
+}
 
 export function createNativeRelease({
   destination,
@@ -33,27 +47,23 @@ export function createNativeRelease({
     throw new Error("native release needs a full source commit");
   }
   mkdirSync(destination, { recursive: true });
-  const built = buildLockedBinary({ root, runCommand });
-  const binary = join(destination, BINARY_NAME);
-  copyFileSync(built.binary, binary);
-  chmodSync(binary, EXECUTABLE_MODE);
-  copyFileSync(
-    join(root, "packaging", "systemd", `${BINARY_NAME}.service`),
-    join(destination, `${BINARY_NAME}.service`),
-  );
-  copyFileSync(
-    join(root, "packaging", "systemd", `${BINARY_NAME}.toml`),
-    join(destination, `${BINARY_NAME}.toml`),
-  );
+  const built = buildLockedBinaries({ root, runCommand });
+  const components = copyComponents(built, destination);
+  for (const file of [`${BINARY_NAME}.service`, `${BINARY_NAME}.toml`]) {
+    copyFileSync(
+      join(root, "packaging", "systemd", file),
+      join(destination, file),
+    );
+  }
   copyFileSync(join(root, "LICENSE"), join(destination, "LICENSE"));
   const version = readAppVersion(root);
   if (built.version !== version) {
     throw new Error("native release version does not match the app package");
   }
-  const sha256 = hashFile(binary);
   const meta = {
-    controlProtocol: CONTROL_PROTOCOL,
-    sha256,
+    components,
+    controlProtocol: built.controlProtocol,
+    schemaVersion: 2,
     sourceCommit,
     version,
   };
@@ -61,8 +71,13 @@ export function createNativeRelease({
     join(destination, "version.json"),
     `${JSON.stringify(meta, null, 2)}\n`,
   );
-  writeFileSync(join(destination, "SHA256SUMS"), `${sha256}  ${BINARY_NAME}\n`);
-  return { binary, sha256, version };
+  writeFileSync(
+    join(destination, "SHA256SUMS"),
+    Object.values(components)
+      .map(({ file, sha256 }) => `${sha256}  ${file}\n`)
+      .join(""),
+  );
+  return { components, controlProtocol: built.controlProtocol, version };
 }
 
 function main() {

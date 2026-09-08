@@ -6,35 +6,50 @@ import {
   copyFileSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import test from "node:test";
-import { setTimeout } from "node:timers/promises";
+import { test } from "vitest";
 import { fileURLToPath } from "node:url";
 import { HARNESS_STUBS, headlessEnvironment } from "./plugin-harness-stubs.mjs";
+import {
+  observeJourney,
+  stopFixtureProcess,
+  waitForDaemon,
+} from "./capture-operation-fixtures.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const BINARY = resolve(
   process.env.CARGO_TARGET_DIR ?? join(ROOT, "target"),
   "debug/omarchy-quickshare",
 );
+const DAEMON = resolve(
+  process.env.CARGO_TARGET_DIR ?? join(ROOT, "target"),
+  "debug/omarchy-quickshare-daemon",
+);
+const QUICKSHELL = spawnSync(
+  "which",
+  [process.env.QUICKSHELL ?? "quickshell"],
+  { encoding: "utf8" },
+).stdout.trim();
 const EXECUTABLE_MODE = 0o755;
 const START_ATTEMPTS = 100;
-const RETRY_MS = 10;
 const HARNESS_TIMEOUT_MS = 8_000;
+const CONNECTION_TIMEOUT_MS = 5_000;
+const PRIVATE_DIRECTORY_MODE = 0o700;
 const SUCCESS_PATTERN = /HARNESS_OK/u;
 const FILES = [
   "BarWidget.qml",
-  "StatusProbe.qml",
+  "QuickShareService.qml",
+  "ControlConnection.qml",
   "SharePanel.qml",
   "AttachmentBadge.qml",
   "PeerChoiceView.qml",
   "ConsentView.qml",
+  "IdleView.qml",
   "TransferView.qml",
   "TerminalView.qml",
   "release.json",
@@ -59,15 +74,15 @@ function prepare(root, journey) {
     join(ROOT, "tools/release/tests/capture-harness.qml"),
     join(harness, "capture-harness.qml"),
   );
-  const executable = join(native, "omarchy-quickshare");
-  if (journey.submissionMode) {
-    copyFileSync(
-      join(ROOT, "tools/release/tests/submission-process-fake.mjs"),
-      executable,
+  symlinkSync(process.execPath, join(native, "node"));
+  for (const utility of ["touch", "rm", "cp"]) {
+    const found = spawnSync("which", [utility], { encoding: "utf8" });
+    assert.equal(
+      found.status,
+      0,
+      `${utility} is required for capture fixtures`,
     );
-    chmodSync(executable, EXECUTABLE_MODE);
-  } else {
-    symlinkSync(BINARY, executable);
+    symlinkSync(found.stdout.trim(), join(native, utility));
   }
   const clipboard = join(native, "wl-paste");
   copyFileSync(join(ROOT, "tools/release/tests/clipboard-fake.mjs"), clipboard);
@@ -75,24 +90,14 @@ function prepare(root, journey) {
   return {
     harness: join(harness, "capture-harness.qml"),
     env: headlessEnvironment(root, {
-      PATH: `${native}:${process.env.PATH ?? ""}`,
-      QUICKSHARE_REAL_BINARY: BINARY,
+      PATH: native,
       SUBMISSION_ATTEMPTS: join(root, "submission.attempts"),
+      SUBMISSION_ENVELOPES: join(root, "submission.envelopes"),
       SUBMISSION_MODE: journey.submissionMode || "",
       SUBMISSION_RELEASE: join(root, "submission.release"),
       SUBMISSION_STARTED: join(root, "submission.started"),
     }),
   };
-}
-
-async function waitForDaemon(binary, environment, attempts) {
-  const result = spawnSync(binary, ["health"], { env: environment });
-  if (result.status === 0) {
-    return;
-  }
-  assert.ok(attempts > 0, "isolated simulated daemon did not become ready");
-  await setTimeout(RETRY_MS);
-  await waitForDaemon(binary, environment, attempts - 1);
 }
 
 function prepareClipboard(root, prepared, journey) {
@@ -151,92 +156,123 @@ function prepareJourney(root, journey) {
   return { ...prepared, attachment, peer };
 }
 
-function assertJourneyOutcome(prepared, journey) {
-  const status = spawnSync(BINARY, ["status", "--json"], {
-    env: prepared.env,
-    encoding: "utf8",
+function startProxy(prepared, daemonEnvironment) {
+  const child = spawn(
+    process.execPath,
+    [join(ROOT, "tools/release/tests/submission-socket-fake.mjs")],
+    {
+      env: {
+        ...prepared.env,
+        SUBMISSION_UPSTREAM: join(
+          daemonEnvironment.XDG_RUNTIME_DIR,
+          "omarchy-quickshare/control.sock",
+        ),
+      },
+      stdio: ["ignore", "ignore", "pipe", "ipc"],
+    },
+  );
+  const proxy = { child, exited: once(child, "exit"), output: "" };
+  child.stderr.on("data", (chunk) => {
+    proxy.output += chunk;
   });
-  assert.equal(status.status, 0, status.stderr);
-  const share = JSON.parse(status.stdout).response.snapshot.active_share;
-  if (
-    journey.closedPaste ||
-    journey.failReplacement ||
-    (journey.invalidate && !journey.recover)
-  ) {
-    assert.equal(share, null);
-  } else {
-    assert.deepEqual(share.attachment, prepared.attachment);
-    assert.equal(share.peer.id, prepared.peer);
+  return proxy;
+}
+
+async function configureDaemon(environment, journey) {
+  await waitForDaemon(BINARY, environment, START_ATTEMPTS);
+  const setting = spawnSync(
+    BINARY,
+    ["config", "set", "read_clipboard_on_select", String(journey.automatic)],
+    {
+      encoding: "utf8",
+      env: environment,
+      killSignal: "SIGKILL",
+      timeout: CONNECTION_TIMEOUT_MS,
+    },
+  );
+  assert.equal(setting.status, 0, setting.stderr);
+  if (journey.closedPaste) {
+    const pin = spawnSync(BINARY, ["peer", "pin", "pixel-8"], {
+      encoding: "utf8",
+      env: environment,
+      killSignal: "SIGKILL",
+      timeout: CONNECTION_TIMEOUT_MS,
+    });
+    assert.equal(pin.status, 0, pin.stderr);
   }
-  let expectedReads = "";
-  if (!journey.captureFirst && journey.automatic) {
-    expectedReads = "read\n";
+}
+
+function runPanel(root, prepared, proxy) {
+  const result = spawnSync(QUICKSHELL, ["--no-color", "-p", prepared.harness], {
+    cwd: root,
+    encoding: "utf8",
+    env: prepared.env,
+    killSignal: "SIGKILL",
+    timeout: HARNESS_TIMEOUT_MS,
+  });
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  assert.equal(result.status, 0, output + (proxy?.output ?? ""));
+  assert.match(output, SUCCESS_PATTERN);
+}
+
+async function connectProxy(prepared, environment) {
+  const proxy = startProxy(prepared, environment);
+  try {
+    const [message] = await once(proxy.child, "message", {
+      signal: AbortSignal.timeout(CONNECTION_TIMEOUT_MS),
+    });
+    assert.equal(message, "ready", proxy.output);
+    return proxy;
+  } catch (error) {
+    await stopFixtureProcess(proxy);
+    throw error;
   }
-  if (
-    journey.replacement ||
-    journey.peerChange ||
-    journey.timeoutReplacement ||
-    journey.invalidRead
-  ) {
-    expectedReads = "read\nread\n";
+}
+
+function isolatedDaemonEnvironment(root, prepared, journey) {
+  const environment = { ...prepared.env };
+  if (journey.submissionMode) {
+    environment.XDG_RUNTIME_DIR = join(root, "daemon-runtime");
+    mkdirSync(environment.XDG_RUNTIME_DIR, { mode: PRIVATE_DIRECTORY_MODE });
   }
-  if (journey.failReplacement) {
-    expectedReads = "read\nread\nread\n";
-  }
-  if (journey.invalidate) {
-    expectedReads = "read\n";
-  }
-  assert.equal(readFileSync(prepared.env.CLIPBOARD_LOG, "utf8"), expectedReads);
-  if (journey.failSubmission) {
-    assert.equal(
-      readFileSync(prepared.env.SUBMISSION_ATTEMPTS, "utf8"),
-      "send\nsend\n",
-    );
-  }
+  return environment;
 }
 
 async function runJourney(journey) {
   const root = mkdtempSync(join(tmpdir(), "quickshare-capture-"));
   const prepared = prepareJourney(root, journey);
-  const { automatic } = journey;
-  const daemon = spawn(BINARY, ["daemon", "--simulate"], {
-    env: prepared.env,
+  const daemonEnvironment = isolatedDaemonEnvironment(root, prepared, journey);
+  let proxy = null;
+  const child = spawn(DAEMON, ["--simulate"], {
+    env: daemonEnvironment,
     stdio: "ignore",
   });
-  const exited = once(daemon, "exit");
+  let daemon = { child, exited: once(child, "exit") };
   try {
-    await waitForDaemon(BINARY, prepared.env, START_ATTEMPTS);
-    const setting = spawnSync(
-      BINARY,
-      ["config", "set", "read_clipboard_on_select", String(automatic)],
-      { env: prepared.env, encoding: "utf8" },
-    );
-    assert.equal(setting.status, 0, setting.stderr);
-    if (journey.closedPaste) {
-      const pin = spawnSync(BINARY, ["peer", "pin", "pixel-8"], {
-        env: prepared.env,
-        encoding: "utf8",
-      });
-      assert.equal(pin.status, 0, pin.stderr);
+    await configureDaemon(daemonEnvironment, journey);
+    if (journey.submissionMode) {
+      proxy = await connectProxy(prepared, daemonEnvironment);
     }
-    const result = spawnSync(
-      process.env.QUICKSHELL ?? "quickshell",
-      ["--no-color", "-p", prepared.harness],
+    daemon = await observeJourney(
       {
-        cwd: root,
-        encoding: "utf8",
-        env: prepared.env,
-        timeout: HARNESS_TIMEOUT_MS,
+        binary: BINARY,
+        daemonBinary: DAEMON,
+        environment: daemonEnvironment,
+        prepared,
+        runPanel: () => runPanel(root, prepared, proxy),
       },
+      journey,
+      daemon,
     );
-    const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-    assert.equal(result.status, 0, output);
-    assert.match(output, SUCCESS_PATTERN);
-    assertJourneyOutcome(prepared, journey);
   } finally {
-    daemon.kill("SIGTERM");
-    await exited;
-    rmSync(root, { recursive: true, force: true });
+    try {
+      await Promise.all([
+        stopFixtureProcess(proxy),
+        stopFixtureProcess(daemon),
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 }
 
@@ -434,3 +470,29 @@ test("provided empty value invalidates pending automatic capture", async () => {
     type: "text",
   });
 });
+
+test("lost reply reconciles once; reload respects dismissal", async () => {
+  await runJourney({
+    automatic: false,
+    captureFirst: true,
+    submissionMode: "drop",
+    type: "text",
+  });
+});
+
+for (const terminalOrder of [
+  "client-only reconnect",
+  "cancel-first",
+  "complete-first",
+]) {
+  test(`${terminalOrder}: public terminal ordering`, async () => {
+    await runJourney({
+      automatic: false,
+      captureFirst: true,
+      clientReconnect: true,
+      submissionMode: "client-reconnect",
+      terminalOrder,
+      type: "text",
+    });
+  });
+}

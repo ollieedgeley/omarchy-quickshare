@@ -108,9 +108,9 @@ mod tests {
 
     #[test]
     fn peer_loss_before_terminal_delivery_preserves_inbound_failure() {
-        use crate::config::Config;
         use crate::daemon::network::NetworkEvent;
         use crate::daemon::visibility::tests::Fixture;
+        use quickshare_config::Config;
         use quickshare_sharing::{OfferKind, Phase, ProtocolError};
 
         let mut fixture = Fixture::new(Config::default());

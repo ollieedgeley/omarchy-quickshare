@@ -31,7 +31,7 @@ pub(super) fn outbound_event(
     manager: Option<&NetworkManager>,
     name: &str,
 ) -> NetworkEvent {
-    let event = match send_payload(
+    let result = send_payload(
         transfer.payload(),
         transfer.routes(),
         share_id,
@@ -40,21 +40,25 @@ pub(super) fn outbound_event(
         adapter,
         manager,
         name,
-    ) {
-        Ok(bytes) => NetworkEvent::OutboundCompleted { bytes, share_id },
-        Err(ProtocolError::Cancelled) => {
-            NetworkEvent::OutboundCancelled { share_id }
+    );
+    cancellation.finish(share_id, |cancelled| {
+        if cancelled {
+            return NetworkEvent::OutboundCancelled { share_id };
         }
-        Err(ProtocolError::Rejected) => {
-            NetworkEvent::OutboundRejected { share_id }
+        match result {
+            Ok(bytes) => NetworkEvent::OutboundCompleted { bytes, share_id },
+            Err(ProtocolError::Cancelled) => {
+                NetworkEvent::OutboundCancelled { share_id }
+            }
+            Err(ProtocolError::Rejected) => {
+                NetworkEvent::OutboundRejected { share_id }
+            }
+            Err(error) => NetworkEvent::OutboundFailed {
+                reason: String::from(error.reason()),
+                share_id,
+            },
         }
-        Err(error) => NetworkEvent::OutboundFailed {
-            reason: String::from(error.reason()),
-            share_id,
-        },
-    };
-    cancellation.finish(share_id);
-    event
+    })
 }
 
 fn send_payload(
@@ -188,7 +192,13 @@ fn send_on_connection(
                 protocol_io_kind(error),
             );
         })?;
-    Ok(bytes)
+    cancellation.finish(share_id, |cancelled| {
+        if cancelled {
+            Err(ProtocolError::Cancelled)
+        } else {
+            Ok(bytes)
+        }
+    })
 }
 
 fn send_file<Accepted, Progress, Cancelled>(

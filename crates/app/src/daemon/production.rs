@@ -27,6 +27,7 @@ impl Daemon {
     pub(super) fn apply_network_events(&mut self) -> io::Result<()> {
         while let Some(event) = self.next_network_event()? {
             self.apply_network_event(event);
+            self.persist_operations()?;
         }
         Ok(())
     }
@@ -57,24 +58,7 @@ impl Daemon {
                 share_id,
                 value,
             } => {
-                if let Some(value) = value {
-                    let attachment = match kind {
-                        OfferKind::Url => Attachment::url(&value),
-                        _ => Attachment::text(&value),
-                    };
-                    let _replaced =
-                        self.sharing.replace_attachment(share_id, attachment);
-                }
-                let recorded = self.sharing.record_progress(share_id, bytes)
-                    && self.sharing.complete(share_id);
-                tracing::info!(
-                    share_id,
-                    direction = "inbound",
-                    phase = "completed",
-                    bytes,
-                    "share phase"
-                );
-                self.notify_if_completed(recorded, NotifyKind::Received);
+                self.apply_inbound_completion(bytes, kind, share_id, value);
             }
             NetworkEvent::InboundFailed {
                 reason,
@@ -182,7 +166,9 @@ impl Daemon {
                     error_class = "network",
                     "share failed"
                 );
-                let _failed = self.sharing.fail(share_id);
+                if !self.sharing.fail(share_id) {
+                    return;
+                }
                 let _observed = self.sharing.record_observation(
                     share_id,
                     None,
@@ -191,7 +177,9 @@ impl Daemon {
                     Some(recovery_guidance(&reason)),
                 );
                 self.outbound.finish(share_id);
-                notify::notify(NotifyKind::Error);
+                if self.persist_operations().is_ok() {
+                    notify::notify(NotifyKind::Error);
+                }
             }
             NetworkEvent::OutboundRejected { share_id } => {
                 let _rejected = self.sharing.reject_by_peer(share_id);
@@ -248,8 +236,9 @@ impl Daemon {
                 share_id,
                 transferred_bytes,
             } => {
-                let _recorded =
-                    self.sharing.record_progress(share_id, transferred_bytes);
+                if !self.sharing.record_progress(share_id, transferred_bytes) {
+                    return;
+                }
                 if self.transfer_started_at.is_none() {
                     self.transfer_started_at = Some(Instant::now());
                     tracing::info!(
@@ -288,6 +277,33 @@ impl Daemon {
         }
     }
 
+    fn apply_inbound_completion(
+        &mut self,
+        bytes: u64,
+        kind: OfferKind,
+        share_id: u64,
+        value: Option<String>,
+    ) {
+        if let Some(value) = value {
+            let attachment = match kind {
+                OfferKind::Url => Attachment::url(&value),
+                _ => Attachment::text(&value),
+            };
+            let _replaced =
+                self.sharing.replace_attachment(share_id, attachment);
+        }
+        let recorded = self.sharing.record_progress(share_id, bytes)
+            && self.sharing.complete(share_id);
+        tracing::info!(
+            share_id,
+            direction = "inbound",
+            phase = "completed",
+            bytes,
+            "share phase"
+        );
+        self.notify_if_completed(recorded, NotifyKind::Received);
+    }
+
     fn apply_inbound_failure(
         &mut self,
         candidate_share_id: Option<u64>,
@@ -317,13 +333,15 @@ impl Daemon {
                 Some(recovery_guidance(reason)),
             );
         }
-        if !cancelled {
+        if !cancelled && self.persist_operations().is_ok() {
             notify::notify(NotifyKind::Error);
         }
     }
 
-    fn notify_if_completed(&self, recorded: bool, kind: NotifyKind) {
-        if completion_notice(recorded, self.active_completed_phase()) {
+    fn notify_if_completed(&mut self, recorded: bool, kind: NotifyKind) {
+        if completion_notice(recorded, self.active_completed_phase())
+            && self.persist_operations().is_ok()
+        {
             notify::notify(kind);
         }
     }

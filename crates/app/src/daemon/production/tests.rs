@@ -24,7 +24,7 @@ fn inbound_offered(
     verification_code: impl Into<String>,
 ) -> NetworkEvent {
     let _opened = daemon
-        .response_for(&quickshare_control::request::Request::OpenVisibility)
+        .apply_request(&quickshare_control::request::Request::OpenVisibility)
         .expect("open visibility");
     let generation = daemon
         .visibility
@@ -59,7 +59,7 @@ fn inbound_offer_exposes_pin_until_local_consent() {
     let share_id = share.id().get();
     assert!(matches!(
         daemon
-            .response_for(&quickshare_control::request::Request::Accept {
+            .apply_request(&quickshare_control::request::Request::Accept {
                 share_id
             })
             .expect("accept")
@@ -111,7 +111,7 @@ fn inbound_terminal_events_preserve_rejection_and_cancellation() {
         .get();
     assert!(matches!(
         cancelled
-            .response_for(&quickshare_control::request::Request::Accept {
+            .apply_request(&quickshare_control::request::Request::Accept {
                 share_id: cancelled_id
             })
             .expect("accept")

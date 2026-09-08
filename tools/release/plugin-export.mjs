@@ -16,16 +16,19 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const SOURCE = join(ROOT, "packaging", "omarchy-plugin");
 const DESTINATION = join(ROOT, "dist", "omarchy-plugin");
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
-const CONTROL_PROTOCOL = 6;
-const PLUGIN_FILES = [
+const CONTROL_PROTOCOL = 7;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
+export const PLUGIN_FILES = [
   "AttachmentBadge.qml",
   "BarWidget.qml",
   "ConsentView.qml",
+  "IdleView.qml",
   "LICENSE",
   "PeerChoiceView.qml",
   "README.md",
   "SharePanel.qml",
-  "StatusProbe.qml",
+  "QuickShareService.qml",
+  "ControlConnection.qml",
   "TerminalView.qml",
   "TransferView.qml",
   "manifest.json",
@@ -41,6 +44,24 @@ function assertSourceFile(source, file) {
   return path;
 }
 
+function requireNativeComponents(components) {
+  if (
+    !components ||
+    Object.keys(components).sort().join(",") !== "cli,daemon"
+  ) {
+    throw new Error("native release requires both CLI and daemon components");
+  }
+  for (const [role, file] of [
+    ["cli", "omarchy-quickshare"],
+    ["daemon", "omarchy-quickshare-daemon"],
+  ]) {
+    const component = components[role];
+    if (component?.file !== file || !SHA256_PATTERN.test(component.sha256)) {
+      throw new Error(`native release has invalid ${role} component metadata`);
+    }
+  }
+}
+
 function writeRelease(destination, sourceCommit, artifacts) {
   const path = join(destination, "release.json");
   const release = JSON.parse(readFileSync(path, "utf8"));
@@ -51,10 +72,11 @@ function writeRelease(destination, sourceCommit, artifacts) {
   };
   const nativeArtifact = {
     version: artifacts.nativeVersion ?? release.nativeArtifact.version,
-    published: Boolean(artifacts.nativeSha256),
+    published: Boolean(artifacts.nativeComponents),
   };
-  if (artifacts.nativeSha256) {
-    nativeArtifact.sha256 = artifacts.nativeSha256;
+  if (artifacts.nativeComponents) {
+    requireNativeComponents(artifacts.nativeComponents);
+    nativeArtifact.components = artifacts.nativeComponents;
   }
   release.nativeArtifact = nativeArtifact;
   if (artifacts.sourceSha256) {
@@ -127,7 +149,17 @@ export function loadReleaseArtifacts({
   if (nativeMeta && existsSync(nativeMeta)) {
     const native = JSON.parse(readFileSync(nativeMeta, "utf8"));
     assertMatchingCommit("native", native, sourceCommit);
-    artifacts.nativeSha256 = native.sha256;
+    if (
+      native.schemaVersion !== 2 ||
+      native.controlProtocol !== CONTROL_PROTOCOL
+    ) {
+      throw new Error(
+        "native release requires schema 2 and " +
+          `control protocol ${CONTROL_PROTOCOL}`,
+      );
+    }
+    requireNativeComponents(native.components);
+    artifacts.nativeComponents = native.components;
     artifacts.nativeVersion = native.version;
   }
   if (sourceMeta && existsSync(sourceMeta)) {

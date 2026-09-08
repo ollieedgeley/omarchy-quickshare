@@ -1,9 +1,12 @@
 /// Deterministic control requests used by the simulator.
 mod simulation;
+/// Submission constructors with optional peer selection.
+mod submission;
 
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::PROTOCOL_VERSION;
 
@@ -13,13 +16,20 @@ use crate::PROTOCOL_VERSION;
 pub struct Envelope {
     /// The command carried by this envelope.
     request: Request,
+    /// Caller identity for submit deduplication; absent on other commands.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_request_id"
+    )]
+    request_id: Option<String>,
     /// The protocol version used to encode the command.
     version: u16,
 }
 
 #[expect(
     clippy::multiple_inherent_impl,
-    reason = "Simulator constructors stay in their owned request submodule"
+    reason = "Simulation and submission constructors own request submodules"
 )]
 impl Envelope {
     /// Creates a request to accept one inbound share.
@@ -28,6 +38,7 @@ impl Envelope {
     pub const fn accept(share_id: u64) -> Self {
         Self {
             request: Request::Accept { share_id },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -38,6 +49,7 @@ impl Envelope {
     pub const fn cancel(share_id: u64) -> Self {
         Self {
             request: Request::Cancel { share_id },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -48,6 +60,7 @@ impl Envelope {
     pub const fn close_visibility() -> Self {
         Self {
             request: Request::CloseVisibility,
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -58,6 +71,7 @@ impl Envelope {
     pub const fn discover() -> Self {
         Self {
             request: Request::Discover,
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -68,6 +82,7 @@ impl Envelope {
     pub const fn dismiss(share_id: u64) -> Self {
         Self {
             request: Request::Dismiss { share_id },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -78,6 +93,20 @@ impl Envelope {
     pub const fn open_visibility() -> Self {
         Self {
             request: Request::OpenVisibility,
+            request_id: None,
+            version: PROTOCOL_VERSION,
+        }
+    }
+
+    /// Queries a submission without submitting or retrying it.
+    #[must_use]
+    #[inline]
+    pub fn operation(request_id: &str) -> Self {
+        Self {
+            request: Request::Operation {
+                request_id: String::from(request_id),
+            },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -91,6 +120,7 @@ impl Envelope {
                 key: String::from(key),
                 value: String::from(value),
             },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -103,6 +133,7 @@ impl Envelope {
             request: Request::PinPeer {
                 peer_id: String::from(peer_id),
             },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -113,6 +144,7 @@ impl Envelope {
     pub const fn reject(share_id: u64) -> Self {
         Self {
             request: Request::Reject { share_id },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -124,6 +156,13 @@ impl Envelope {
         &self.request
     }
 
+    /// Returns the submission identity supplied by the caller.
+    #[must_use]
+    #[inline]
+    pub fn request_id(&self) -> Option<&str> {
+        self.request_id.as_deref()
+    }
+
     /// Creates a request to select an outbound peer.
     #[must_use]
     #[inline]
@@ -133,6 +172,7 @@ impl Envelope {
                 peer_id: String::from(peer_id),
                 share_id,
             },
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -143,6 +183,7 @@ impl Envelope {
     pub const fn snapshot() -> Self {
         Self {
             request: Request::Snapshot,
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -153,6 +194,7 @@ impl Envelope {
     pub const fn status() -> Self {
         Self {
             request: Request::Status,
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
     }
@@ -163,83 +205,9 @@ impl Envelope {
     pub const fn stop_discovery() -> Self {
         Self {
             request: Request::StopDiscovery,
+            request_id: None,
             version: PROTOCOL_VERSION,
         }
-    }
-
-    /// Creates a request to submit one file for sharing.
-    #[must_use]
-    #[inline]
-    pub fn submit_file(path: &Path) -> Self {
-        Self::submit_file_for(path, None)
-    }
-
-    /// Builds one file submission with an optional selected peer.
-    fn submit_file_for(path: &Path, peer_id: Option<&str>) -> Self {
-        Self {
-            request: Request::SubmitFile {
-                path: path.to_path_buf(),
-                peer_id: peer_id.map(String::from),
-            },
-            version: PROTOCOL_VERSION,
-        }
-    }
-
-    /// Creates a request to submit one file to a selected peer.
-    #[must_use]
-    #[inline]
-    pub fn submit_file_to_peer(path: &Path, peer_id: &str) -> Self {
-        Self::submit_file_for(path, Some(peer_id))
-    }
-
-    /// Creates a request to submit plain text for sharing.
-    #[must_use]
-    #[inline]
-    pub fn submit_text(text: &str) -> Self {
-        Self::submit_text_for(text, None)
-    }
-
-    /// Builds one text submission with an optional selected peer.
-    fn submit_text_for(text: &str, peer_id: Option<&str>) -> Self {
-        Self {
-            request: Request::SubmitText {
-                peer_id: peer_id.map(String::from),
-                text: String::from(text),
-            },
-            version: PROTOCOL_VERSION,
-        }
-    }
-
-    /// Creates a request to submit plain text to a selected peer.
-    #[must_use]
-    #[inline]
-    pub fn submit_text_to_peer(text: &str, peer_id: &str) -> Self {
-        Self::submit_text_for(text, Some(peer_id))
-    }
-
-    /// Creates a request to submit a URL for sharing.
-    #[must_use]
-    #[inline]
-    pub fn submit_url(url: &str) -> Self {
-        Self::submit_url_for(url, None)
-    }
-
-    /// Builds one URL submission with an optional selected peer.
-    fn submit_url_for(url: &str, peer_id: Option<&str>) -> Self {
-        Self {
-            request: Request::SubmitUrl {
-                peer_id: peer_id.map(String::from),
-                url: String::from(url),
-            },
-            version: PROTOCOL_VERSION,
-        }
-    }
-
-    /// Creates a request to submit a URL to a selected peer.
-    #[must_use]
-    #[inline]
-    pub fn submit_url_to_peer(url: &str, peer_id: &str) -> Self {
-        Self::submit_url_for(url, Some(peer_id))
     }
 
     /// Creates a request to clear the single pinned peer.
@@ -248,7 +216,37 @@ impl Envelope {
     pub const fn unpin_peer() -> Self {
         Self {
             request: Request::UnpinPeer,
+            request_id: None,
             version: PROTOCOL_VERSION,
+        }
+    }
+
+    /// Checks identities appear only where the protocol permits.
+    #[expect(
+        clippy::ref_patterns,
+        reason = "Borrow query IDs without copying or implicit ref patterns"
+    )]
+    pub(crate) fn validate(&self) -> io::Result<()> {
+        let valid_id = |id: &str| !id.is_empty() && id.len() <= 128;
+        let valid = if matches!(
+            self.request,
+            Request::SubmitFile { .. }
+                | Request::SubmitText { .. }
+                | Request::SubmitUrl { .. }
+        ) {
+            self.request_id().is_some_and(valid_id)
+        } else if let Request::Operation { ref request_id } = self.request {
+            self.request_id.is_none() && valid_id(request_id)
+        } else {
+            self.request_id.is_none()
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid or forbidden control request_id",
+            ))
         }
     }
 
@@ -286,6 +284,11 @@ pub enum Request {
     },
     /// Request ten minutes of inbound permission, without extending a lease.
     OpenVisibility,
+    /// Reconcile a submission by its original caller identity.
+    Operation {
+        /// Opaque identity supplied on the original submit envelope.
+        request_id: String,
+    },
     /// Persist and activate one preference.
     PatchPreferences {
         /// Preference name in the saved document.
@@ -400,4 +403,14 @@ pub enum Request {
     },
     /// Clear the single preferred outbound peer.
     UnpinPeer,
+}
+
+/// Rejects explicit null identities while allowing an omitted envelope field.
+fn deserialize_request_id<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
 }

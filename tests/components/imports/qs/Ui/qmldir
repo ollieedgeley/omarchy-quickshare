@@ -1,0 +1,8 @@
+module qs.Ui
+BorderSurface 1.0 BorderSurface.qml
+Button 1.0 Button.qml
+CursorSurface 1.0 CursorSurface.qml
+PanelHero 1.0 PanelHero.qml
+PanelSectionHeader 1.0 PanelSectionHeader.qml
+PanelSeparator 1.0 PanelSeparator.qml
+ToggleSwitch 1.0 ToggleSwitch.qml

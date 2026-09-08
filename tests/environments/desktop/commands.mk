@@ -18,9 +18,11 @@ desktop-prepare-stop: ## Stop only the retained preparation guest.
 	@python3 tests/environments/desktop/environment.py prepare-stop
 
 .PHONY: native-build native-deploy
-native-build: ## Build the current combined executable and record artifact identity.
+NATIVE_COMPONENT ?= all
+export NATIVE_COMPONENT
+native-build: ## Build NATIVE_COMPONENT=all|cli|daemon and record artifact identity.
 	@python3 tests/environments/desktop/build_native.py
-native-deploy: ## Deploy identified native bytes only into DESKTOP_LAB.
+native-deploy: ## Deploy NATIVE_COMPONENT=all|cli|daemon into DESKTOP_LAB.
 	@python3 tests/environments/desktop/deploy_native.py $(if $(NATIVE_ARTIFACT),--artifact "$(NATIVE_ARTIFACT)")
 
 .PHONY: panel-deploy
@@ -46,7 +48,8 @@ desktop-peer-remove: ## Remove selected peer containers and network, retaining e
 
 .PHONY: desktop-scenario
 desktop-scenario: ## Send a private file through the application and verify peer receipt.
-	@python3 tests/environments/desktop/scenario.py
+	@$(VITEST) run --config vitest.process.config.mjs \
+		tests/scenarios/desktop.e2e.mjs
 
 .PHONY: desktop-resources desktop-cleanup-inspect desktop-cleanup
 desktop-resources: ## Report joint owned VM, peer and worker allocations.
@@ -58,11 +61,13 @@ desktop-cleanup: ## Apply retention policy only to eligible owned data.
 
 .PHONY: desktop-candidate desktop-clean-install desktop-ui-scenario
 desktop-candidate: ## Assemble local candidate packages from identified native bytes.
-	@python3 tests/environments/desktop/candidate.py $(if $(NATIVE_ARTIFACT),--artifact "$(NATIVE_ARTIFACT)")
+	@python3 tests/environments/desktop/candidate.py $(if $(NATIVE_ARTIFACT),--artifact "$(NATIVE_ARTIFACT)") $(if $(DESKTOP_PLUGIN),--plugin "$(DESKTOP_PLUGIN)")
 desktop-clean-install: ## Install DESKTOP_CANDIDATE into a new DESKTOP_LAB from DESKTOP_BASE.
 	@python3 tests/environments/desktop/clean_install.py $(if $(DESKTOP_CANDIDATE),--candidate "$(DESKTOP_CANDIDATE)") $(if $(DESKTOP_LAB),--lab "$(DESKTOP_LAB)") $(if $(DESKTOP_BASE),--base "$(DESKTOP_BASE)")
 desktop-ui-scenario: ## Exercise the installed panel identified by DESKTOP_INSTALLATION.
-	@python3 tests/environments/desktop/ui_scenario.py $(if $(DESKTOP_INSTALLATION),--installation "$(DESKTOP_INSTALLATION)")
+	@DESKTOP_SCENARIO_INSTALLATION="$${DESKTOP_INSTALLATION:?set DESKTOP_INSTALLATION}" \
+		$(VITEST) run --config vitest.process.config.mjs \
+		tests/scenarios/desktop.e2e.mjs
 
 .PHONY: desktop-clean-job desktop-clean-recover
 desktop-clean-job: ## Run the installed-candidate journey and clean only its owned resources.

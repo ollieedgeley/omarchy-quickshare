@@ -786,6 +786,7 @@ dependencies = [
  "clap",
  "prost",
  "quickshare-bluez",
+ "quickshare-config",
  "quickshare-connections",
  "quickshare-control",
  "quickshare-crypto",
@@ -794,10 +795,21 @@ dependencies = [
  "quickshare-storage",
  "rand_core",
  "rustix",
- "toml_edit",
+ "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
  "zbus",
+]
+
+[[package]]
+name = "omarchy-quickshare-cli"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "quickshare-config",
+ "quickshare-control",
+ "quickshare-sharing",
 ]
 
 [[package]]
@@ -956,6 +968,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "quickshare-config"
+version = "0.0.0"
+dependencies = [
+ "toml_edit",
+]
+
+[[package]]
 name = "quickshare-connections"
 version = "0.0.0"
 dependencies = [
@@ -972,6 +991,8 @@ name = "quickshare-contract-tests"
 version = "0.0.0"
 dependencies = [
  "omarchy-quickshare",
+ "omarchy-quickshare-cli",
+ "quickshare-control",
  "quickshare-sharing",
  "quickshare-test-support",
  "serde_json",
@@ -982,6 +1003,8 @@ name = "quickshare-control"
 version = "0.0.0"
 dependencies = [
  "quickshare-sharing",
+ "rand_core",
+ "rustix",
  "serde",
  "serde_json",
 ]
@@ -1011,10 +1034,6 @@ dependencies = [
  "tracing",
  "zbus",
 ]
-
-[[package]]
-name = "quickshare-quality-contracts"
-version = "0.0.0"
 
 [[package]]
 name = "quickshare-sharing"

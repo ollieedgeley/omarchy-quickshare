@@ -12,6 +12,8 @@ ESLINT ?= $(NODE_BIN)/eslint
 PRETTIER ?= $(NODE_BIN)/prettier
 MARKDOWNLINT ?= $(NODE_BIN)/markdownlint-cli2
 RUFF ?= $(CURDIR)/.cache/tools/ruff-0.16.5/ruff
+CLANG_FORMAT ?= clang-format
+QMLFORMAT ?= /usr/lib/qt6/bin/qmlformat
 export TEST_ENV_CACHE ?= $(or $(realpath $(CURDIR)/.cache/test-env),\
 	$(CURDIR)/.cache/test-env)
 QUICKSHELL ?= quickshell
@@ -23,6 +25,8 @@ RUST_LAN_GATES := $(addprefix test-rust-lan-,$(RUST_LAN_CASES))
 REPOSITORY_FILES = git ls-files --cached --others --exclude-standard -z
 TOOLING_FILES = $(REPOSITORY_FILES) -- ':(exclude)*.md'
 DOCUMENT_FILES = $(REPOSITORY_FILES) -- '*.md'
+CPP_FILES = $(REPOSITORY_FILES) -- '*.c' '*.cc' '*.cpp' '*.h' '*.hpp'
+QML_FILES = $(REPOSITORY_FILES) -- '*.qml'
 
 .PHONY: help setup hooks-install ruff-provision analyzers-provision
 .PHONY: sources-fetch
@@ -30,6 +34,8 @@ DOCUMENT_FILES = $(REPOSITORY_FILES) -- '*.md'
 .PHONY: format-check format-app-check format-tooling-check format-docs-check
 .PHONY: lint-rust lint-javascript lint-python lint-ast lint-analysis lint-docs
 .PHONY: lint-analysis-general lint-analysis-clang-tidy lint-analysis-cppcheck
+.PHONY: language-style-provision lint-language-style
+.PHONY: format-native format-native-check
 .PHONY: lint-structure lint-structure-app lint-structure-tooling
 .PHONY: lint-sources lint-oracle lint-nearshare lint-nearby-linux
 .PHONY: lint-diverse-lan lint-proxies
@@ -56,6 +62,7 @@ DOCUMENT_FILES = $(REPOSITORY_FILES) -- '*.md'
 .PHONY: test-network-hotspot-owner test-network-wifi-direct-client
 .PHONY: verify-app verify-tooling verify build
 include tests/environments/desktop/commands.mk
+include tests/commands.mk
 
 help: ## List public and targeted gates.
 	@awk 'BEGIN {FS = ":.*## "} \
@@ -87,8 +94,12 @@ hooks-install: ## Activate Husky and initialize the staged CodeGraph mirror.
 ruff-provision: ## Install the pinned standalone Python quality tool.
 	@tools/setup/ruff.sh
 
+analyzers-provision: language-style-provision
 analyzers-provision: ## Install and verify pinned cross-language analyzers.
 	@tools/setup/analyzers.sh
+
+language-style-provision: ## Install pinned native size-check dependencies.
+	@tools/setup/language-style.sh
 
 sources-fetch: ## Download, hash-check, and extract every pinned test source.
 	@node tools/gates/sources.mjs fetch
@@ -102,11 +113,18 @@ format: format-app format-tooling format-docs
 format-app: ## Rewrite Rust application files with rustfmt.
 	@cargo fmt --all
 
+format-tooling: format-native
 format-tooling: ## Rewrite tooling and repository configuration files.
 	@$(RUFF) format .
 	@set -o pipefail; $(TOOLING_FILES) | \
 		xargs --null --no-run-if-empty $(PRETTIER) --write \
 			--ignore-unknown --
+
+format-native: ## Rewrite C++ and QML with their native formatters.
+	@set -o pipefail; $(CPP_FILES) | \
+		xargs --null --no-run-if-empty $(CLANG_FORMAT) -i --
+	@set -o pipefail; $(QML_FILES) | \
+		xargs --null --no-run-if-empty $(QMLFORMAT) -i --
 
 format-docs: ## Rewrite repository documentation with Prettier.
 	@set -o pipefail; $(DOCUMENT_FILES) | \
@@ -119,11 +137,21 @@ format-check: format-app-check format-tooling-check format-docs-check
 format-app-check: ## Check only Rust application formatting.
 	@$(TIMEOUT) cargo fmt --all -- --check
 
+format-tooling-check: format-native-check
 format-tooling-check: ## Check tooling and repository configuration formatting.
 	@$(TIMEOUT) $(RUFF) format --check .
 	@set -o pipefail; $(TOOLING_FILES) | \
 		$(TIMEOUT) xargs --null --no-run-if-empty $(PRETTIER) --check \
 			--ignore-unknown --
+
+format-native-check: ## Check native formatter output without changing files.
+	@set -o pipefail; $(CPP_FILES) | \
+		$(TIMEOUT) xargs --null --no-run-if-empty \
+			$(CLANG_FORMAT) --dry-run --Werror --
+	@set -o pipefail; $(QML_FILES) | \
+		$(TIMEOUT) xargs --null --no-run-if-empty -n1 bash -c \
+			'set -o pipefail; "$$0" -- "$$1" | diff -u -- "$$1" -' \
+			"$(QMLFORMAT)"
 
 format-docs-check: ## Check repository documentation formatting.
 	@set -o pipefail; $(DOCUMENT_FILES) | \
@@ -149,6 +177,9 @@ lint-analysis-clang-tidy: ## Run strict clang-tidy analysis.
 	@$(TIMEOUT) node tools/gates/lib/analysis.mjs --full-clang-tidy
 lint-analysis-cppcheck: ## Run strict Cppcheck analysis.
 	@$(TIMEOUT) node tools/gates/lib/analysis.mjs --full-cppcheck
+lint-language-style: ## Check native size rules; optionally set STYLE_FILES.
+	@$(TIMEOUT) node tools/gates/lib/analysis.mjs \
+		--full-language-style $(STYLE_FILES)
 lint-docs: ## Run Markdown policy checks.
 	@$(TIMEOUT) $(MARKDOWNLINT) '**/*.md' '#node_modules' '#target' '#.cache'
 lint-structure: lint-structure-app lint-structure-tooling
@@ -177,25 +208,15 @@ lint-network: ## Validate pinned virtual Wi-Fi environment inputs.
 	@$(TIMEOUT) node tests/environments/network/environment.mjs validate
 lint-android: ## Validate pinned Android SDK, probe, and AVD inputs.
 	@$(TIMEOUT) node tests/environments/android/environment.mjs validate
-test-rust: ## Run complete workspace Rust tests and doc tests.
+test-rust: native-debug-prepare ## Run complete workspace Rust tests and doc tests.
 	@$(TIMEOUT) cargo test --workspace --all-targets --all-features --locked
 	@$(TIMEOUT) cargo test --workspace --doc --all-features --locked
 
 test-contracts: ## Run shared transfer scenarios against fast test doubles.
 	@$(TIMEOUT) cargo test -p quickshare-contract-tests --test suite --locked
-test-tooling: ## Run quality-gate and hook contract tests.
-	@$(TIMEOUT) npm run test:tooling
-test-plugin-release: ## Check the plugin export and native status states.
-	@QUICKSHELL=$(QUICKSHELL) $(TIMEOUT) node --test \
-		tools/release/tests/plugin-release-contract.test.mjs
-.PHONY: plugin-capture-prepare test-plugin-capture
-plugin-capture-prepare: ## Prepare the CLI outside the capture test budget.
-	@cargo build -p omarchy-quickshare --bin omarchy-quickshare --locked
-test-plugin-capture: ## Check capture journeys with a prepared debug CLI.
-	@QT_QPA_PLATFORM=offscreen QUICKSHELL=$(QUICKSHELL) $(TIMEOUT) node --test \
-		tools/release/tests/capture-journey.e2e.mjs
-test-local-install: ## Check local binary and systemd-user-service installation.
-	@$(TIMEOUT) node --test tools/release/tests/local-install-contract.test.mjs
+.PHONY: native-debug-prepare test-plugin-capture
+native-debug-prepare: ## Prepare both executables outside process test budgets.
+	@cargo build -p omarchy-quickshare -p omarchy-quickshare-cli --bins --locked
 install-local: ## Build, install, and start the local user service.
 	@node tools/release/local-install.mjs
 install-local-simulation: ## Install the local service with simulated peers.
@@ -214,10 +235,6 @@ release-arch: release-native ## Package the native Arch artifact and PKGBUILD.
 	@node tools/release/arch-package.mjs
 release: release-native release-source release-sparse release-arch plugin-export
 release: ## Produce native, source, sparse, Arch, and plugin artifacts.
-test-source-build: ## Check source-build path sets and clean-build closure.
-	@$(TIMEOUT) node --test tools/release/tests/source-build-contract.test.mjs
-test-native-release: ## Check native checksums, version, and Arch paths.
-	@$(TIMEOUT) node --test tools/release/tests/native-release-contract.test.mjs
 test-ast-rules: ## Run ast-grep rule fixtures and committed snapshots.
 	@$(TIMEOUT) $(AST_GREP) test --config sgconfig.yml
 test-source-cache: ## Hash-check prepared source archives.
@@ -240,8 +257,6 @@ test-nearshare-reference: ## Test full LAN Sharing in both peer roles.
 		node tests/environments/nearshare/environment.mjs up; \
 		$(TIMEOUT) node tests/environments/nearshare/environment.mjs self-test
 
-test-nearby-linux-tooling: ## Test Nearby Linux environment contracts.
-	@$(TIMEOUT) node --test tests/environments/nearby-linux/*.test.mjs
 
 test-nearby-linux-connections: ## Exchange exact bytes over Connections LAN.
 	@trap 'node tests/environments/nearby-linux/environment.mjs down' EXIT; \
@@ -278,35 +293,6 @@ rust-lan-provision: ## Build the current Rust daemon into the LAN test image.
 test-rust-lan: rust-lan-provision $(RUST_LAN_GATES)
 test-rust-lan: ## Verify daemon LAN transfers, outcomes, and retry behavior.
 
-test-rust-lan-outbound: ## Send from Rust to the Google-derived LAN peer.
-	@$(TIMEOUT) node --test $(RUST_LAN_TEST_DIR)/rust-lan-outbound.e2e.mjs
-
-test-rust-lan-inbound: ## Receive from the Google-derived LAN peer in Rust.
-	@$(TIMEOUT) node --test $(RUST_LAN_TEST_DIR)/rust-lan-inbound.e2e.mjs
-
-test-rust-lan-inbound-content: ## Receive reference text and Retry 12 URL bytes.
-	@$(TIMEOUT) node --test \
-		$(RUST_LAN_TEST_DIR)/rust-lan-inbound-content.e2e.mjs
-
-test-rust-lan-outbound-content: ## Send Rust text and Retry 12 URL bytes.
-	@$(TIMEOUT) node --test \
-		$(RUST_LAN_TEST_DIR)/rust-lan-outbound-content.e2e.mjs
-
-test-rust-lan-rejection: ## Reject before payload persistence in both roles.
-	@$(TIMEOUT) node --test $(RUST_LAN_TEST_DIR)/rust-lan-rejection.e2e.mjs
-
-test-rust-lan-retry: ## Continue after Retry 12 with file data in both roles.
-	@$(TIMEOUT) node --test $(RUST_LAN_TEST_DIR)/rust-lan-retry.e2e.mjs
-
-test-rust-lan-cancellation-inbound: ## Reference sender cancels before consent.
-test-rust-lan-cancellation-outbound: ## Rust sender cancels before consent.
-test-rust-lan-failure-inbound: ## Reference sender disappears before consent.
-test-rust-lan-failure-outbound: ## Reference receiver disappears before consent.
-test-rust-lan-cancellation-inbound \
-	test-rust-lan-cancellation-outbound \
-	test-rust-lan-failure-inbound \
-	test-rust-lan-failure-outbound: test-rust-lan-%:
-	@$(TIMEOUT) node --test $(RUST_LAN_TEST_DIR)/rust-lan-$*.e2e.mjs
 
 test-oracle-bluetooth: ## Check Google's simulated Bluetooth Classic medium.
 	@$(TIMEOUT) node tests/environments/oracle/environment.mjs \
@@ -435,7 +421,7 @@ verify: format-check lint-structure lint-javascript lint-python lint-docs \
 	test-bluetooth-ble test-bluetooth-classic test-network-wmediumd \
 	test-network-netem test-network-lan test-network-hotspot-client \
 	test-network-hotspot-owner test-network-wifi-direct-client \
-	plugin-capture-prepare test-plugin-capture
+	native-debug-prepare test-plugin-capture
 	@set -Eeuo pipefail; \
 		trap 'node tests/environments/oracle/environment.mjs \
 			reference-down' EXIT; \

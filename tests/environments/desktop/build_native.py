@@ -1,4 +1,4 @@
-"""Build an identified combined binary without touching a desktop lab."""  # ruff: ignore[implicit-namespace-package] - Standalone sibling tooling.
+"""Build identified native components without touching a desktop lab."""  # ruff: ignore[implicit-namespace-package] - Standalone sibling tooling.
 
 import fcntl
 import hashlib
@@ -19,6 +19,25 @@ import vm_control
 NAME = "omarchy-quickshare"
 BUILDS = vm_control.CACHE / "native"
 UNIT = vm_control.ROOT / "packaging/systemd" / f"{NAME}.service"
+SCHEMA_VERSION = 2
+COMPONENTS = {
+    "cli": {"file": NAME, "package": "omarchy-quickshare-cli"},
+    "daemon": {"file": NAME + "-daemon", "package": NAME},
+}
+
+
+def components(component: str = "all") -> tuple[str, ...]:
+    """Return selected roles.
+
+    Raises:
+        ValueError: The component selector is unknown.
+    """
+    if component == "all":
+        return tuple(COMPONENTS)
+    if component not in COMPONENTS:
+        message = "NATIVE_COMPONENT must be all, cli or daemon"
+        raise ValueError(message)
+    return (component,)
 
 
 def digest(path: Path) -> str:
@@ -88,7 +107,9 @@ def _source_identity() -> dict[str, Any]:
     }
 
 
-def _configuration() -> tuple[list[str], dict[str, str], dict[str, Any]]:
+def _configuration(
+    component: str = "all",
+) -> tuple[list[str], dict[str, str], dict[str, Any]]:
     profile = os.environ.get("DESKTOP_NATIVE_PROFILE", "release")
     if profile not in {"release", "dev"}:
         message = "DESKTOP_NATIVE_PROFILE must be release or dev"
@@ -115,10 +136,16 @@ def _configuration() -> tuple[list[str], dict[str, str], dict[str, Any]]:
         profile,
         "--jobs",
         "1",
-        "--package",
-        NAME,
-        "--bin",
-        NAME,
+        *[
+            argument
+            for role in components(component)
+            for argument in (
+                "--package",
+                COMPONENTS[role]["package"],
+                "--bin",
+                COMPONENTS[role]["file"],
+            )
+        ],
         "--target-dir",
         str(BUILDS / "cargo-target"),
         "--target",
@@ -142,20 +169,21 @@ def _configuration() -> tuple[list[str], dict[str, str], dict[str, Any]]:
     return command, environment, compatibility
 
 
-def _cargo_artifact(messages: Path) -> dict[str, Any]:
+def _cargo_artifact(messages: Path, role: str) -> dict[str, Any]:
     artifacts = []
     with messages.open(encoding="utf-8") as events:
         for line in events:
             event = json.loads(line)
             if (
                 event.get("reason") == "compiler-artifact"
-                and event["target"]["name"] == NAME
+                and event["target"]["name"] == COMPONENTS[role]["file"]
                 and "bin" in event["target"]["kind"]
                 and event.get("executable")
+                and not event["profile"].get("test", False)
             ):
                 artifacts.append(event)
     if len(artifacts) != 1:
-        message = "Cargo did not identify exactly one application executable"
+        message = f"Cargo did not identify exactly one {role} executable"
         raise RuntimeError(message)
     artifact = artifacts[0]
     output = Path(artifact["executable"]).resolve()
@@ -167,8 +195,11 @@ def _cargo_artifact(messages: Path) -> dict[str, Any]:
 
 def _build(destination: Path, lock_fd: int) -> dict[str, Any]:
     source = _source_identity()
-    command, environment, compatibility = _configuration()
+    component = os.environ.get("NATIVE_COMPONENT", "all")
+    command, environment, compatibility = _configuration(component)
     metadata = {
+        "schemaVersion": SCHEMA_VERSION,
+        "component": component,
         "buildId": destination.name,
         "startedAt": datetime.now(UTC).isoformat(),
         "status": "building",
@@ -243,38 +274,70 @@ def _build(destination: Path, lock_fd: int) -> dict[str, Any]:
             vm_control.save(destination / "build.json", metadata)
             if process.returncode:
                 raise subprocess.CalledProcessError(process.returncode, command)
-    artifact = _cargo_artifact(messages)
-    output = Path(artifact["executable"]).resolve()
-    binary = destination / NAME
-    shutil.copyfile(output, binary)
-    binary.chmod(0o500)
-    shutil.copyfile(UNIT, destination / UNIT.name)
-    (destination / UNIT.name).chmod(0o400)
+    return _publish(destination, metadata, compatibility)
+
+
+def _publish(
+    destination: Path, metadata: dict[str, Any], compatibility: dict[str, Any]
+) -> dict[str, Any]:
+    component = metadata["component"]
+    source = metadata["source"]
+    messages = destination / "cargo.jsonl"
+    metadata["components"] = {}
+    protocols = set()
+    for role in components(component):
+        artifact = _cargo_artifact(messages, role)
+        output = Path(artifact["executable"]).resolve()
+        binary = destination / COMPONENTS[role]["file"]
+        shutil.copyfile(output, binary)
+        binary.chmod(0o500)
+        flag = "protocol-version" if role == "cli" else "--protocol-version"
+        protocols.add(int(vm_control.output([binary, flag], timeout=10)))
+        metadata["components"][role] = {
+            "file": binary.name,
+            "sha256": digest(binary),
+            "cargoArtifact": {
+                "executable": str(output),
+                "packageId": artifact["package_id"],
+                "profile": artifact["profile"],
+                "features": artifact["features"],
+                "fresh": artifact["fresh"],
+            },
+        }
+    if len(protocols) != 1 or next(iter(protocols)) <= 0:
+        message = "Selected executables report incompatible control protocols"
+        raise RuntimeError(message)
+    metadata["controlProtocol"] = protocols.pop()
+    if "daemon" in components(component):
+        shutil.copyfile(UNIT, destination / UNIT.name)
+        (destination / UNIT.name).chmod(0o400)
+        metadata["unitSha256"] = digest(destination / UNIT.name)
+        if (
+            metadata["unitSha256"]
+            != source["inputs"][str(UNIT.relative_to(vm_control.ROOT))]
+        ):
+            message = "Service input changed during compilation"
+            raise RuntimeError(message)
     if (
         source != _source_identity()
-        or compatibility != _configuration()[2]
-        or digest(destination / UNIT.name)
-        != source["inputs"][str(UNIT.relative_to(vm_control.ROOT))]
+        or compatibility != _configuration(component)[2]
     ):
         message = (
             "Build inputs changed during compilation; artifact not published"
         )
         raise RuntimeError(message)
-    metadata["cargoArtifact"] = {
-        "executable": str(output),
-        "packageId": artifact["package_id"],
-        "profile": artifact["profile"],
-        "features": artifact["features"],
-        "fresh": artifact["fresh"],
-    }
     metadata.update({
         "status": "built",
         "finishedAt": datetime.now(UTC).isoformat(),
-        "sha256": digest(binary),
-        "unitSha256": digest(destination / UNIT.name),
     })
     vm_control.save(destination / "build.json", metadata)
-    vm_control.save(BUILDS / "latest.json", {"artifact": str(destination)})
+    (destination / "build.json").chmod(0o400)
+    for role in (
+        *components(component),
+        *(("all",) if component == "all" else ()),
+    ):
+        pointer = "latest.json" if role == "all" else f"latest-{role}.json"
+        vm_control.save(BUILDS / pointer, {"artifact": str(destination)})
     return metadata
 
 

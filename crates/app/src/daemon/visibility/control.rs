@@ -83,6 +83,12 @@ impl Daemon {
             let _rejected = consent.reject(0);
             return None;
         }
+        if self.sharing.next_share_id() == u64::MAX
+            || self.persist_operations().is_err()
+        {
+            let _rejected = consent.reject(0);
+            return None;
+        }
         if !self.visibility.admit(&consent) {
             return None;
         }
@@ -93,6 +99,11 @@ impl Daemon {
             let _rejected = consent.reject(0);
             return None;
         };
+        if self.persist_operations().is_err() {
+            let _rejected = consent.reject(0);
+            let _failed = self.sharing.fail(share_id.get());
+            return None;
+        }
         consent.bind(share_id.get());
         self.pending_consent = Some(consent);
         Some(share_id.get())

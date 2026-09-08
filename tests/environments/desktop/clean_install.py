@@ -274,8 +274,20 @@ def install(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] 
     )
     manifest["plugin"] = wait_probe(state, manifest, attempt, "plugin")
     after = wait_probe(state, manifest, attempt, "native")
-    if after["mainPid"] != manifest["native"]["mainPid"]:
-        message = "Native daemon changed during plugin installation"
+    if any(
+        after[key] != manifest["native"][key]
+        for key in [
+            "mainPid",
+            "executable",
+            "loadedSha256",
+            "installedSha256",
+            "components",
+        ]
+    ):
+        message = (
+            "Native daemon or installed components changed "
+            "during plugin installation"
+        )
         raise RuntimeError(message)
     manifest["nativeAfterPlugin"] = after
 

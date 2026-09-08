@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import test from "node:test";
+import { test } from "vitest";
 
 import { createComposeRunner } from "./compose-runner.mjs";
 

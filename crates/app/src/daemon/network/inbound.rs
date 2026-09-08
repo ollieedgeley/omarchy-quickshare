@@ -23,7 +23,6 @@ use self::consent::{Consent, wait_for_consent};
 use super::{
     NetworkCommand, NetworkEvent, TransferCancellation, emit_progress,
 };
-use crate::config::Config;
 use crate::daemon::media::{
     ENDPOINT_ID_BYTES, accept_connection, accept_negotiated_upgrade,
     endpoint_name, medium_name, sharing_session,
@@ -32,6 +31,7 @@ use crate::daemon::observations::{
     connection_span, protocol_io_kind, record_share_id, storage_reason,
     trace_paired_key_exchange, trace_protocol, trace_storage,
 };
+use quickshare_config::Config;
 
 const LAN_PORT: u16 = 53_318;
 const TEST_LAN_PORT: &str = "OMARCHY_QUICKSHARE_TEST_LAN_PORT";
@@ -175,7 +175,6 @@ where
                 session.reject_incoming_offer().map_err(|error| {
                     (String::from(error.reason()), Some(share_id))
                 })?;
-                cancellation.finish(share_id);
                 return Ok(NetworkEvent::InboundRejected { share_id });
             }
             Consent::Cancelled => {
@@ -242,31 +241,35 @@ where
             events,
             cancellation,
         );
-        cancellation.finish(share_id);
-        match transfer {
-            Ok(event) => {
-                for file in staged {
-                    drop(file.commit().map_err(|error| {
-                        payload_storage_failure(share_id, "commit", &error)
-                    })?);
+        cancellation.finish(share_id, |cancelled| {
+            if cancelled {
+                return Ok(NetworkEvent::InboundCancelled { share_id });
+            }
+            match transfer {
+                Ok(event) => {
+                    for file in staged {
+                        drop(file.commit().map_err(|error| {
+                            payload_storage_failure(share_id, "commit", &error)
+                        })?);
+                    }
+                    trace_storage("commit", "completed", None);
+                    Ok(event)
                 }
-                trace_storage("commit", "completed", None);
-                Ok(event)
+                Err(ProtocolError::Cancelled) => {
+                    Ok(NetworkEvent::InboundCancelled { share_id })
+                }
+                Err(error) => {
+                    trace_protocol(
+                        "payload_transfer",
+                        "receive",
+                        "failed",
+                        Some(error.reason()),
+                        protocol_io_kind(&error),
+                    );
+                    Err((String::from(error.reason()), Some(share_id)))
+                }
             }
-            Err(ProtocolError::Cancelled) => {
-                Ok(NetworkEvent::InboundCancelled { share_id })
-            }
-            Err(error) => {
-                trace_protocol(
-                    "payload_transfer",
-                    "receive",
-                    "failed",
-                    Some(error.reason()),
-                    protocol_io_kind(&error),
-                );
-                Err((String::from(error.reason()), Some(share_id)))
-            }
-        }
+        })
     })() {
         Ok(event) => event,
         Err((reason, share_id)) => {
@@ -277,6 +280,24 @@ where
                 consent: proposal,
             }
         }
+    };
+    let share_id = match &event {
+        NetworkEvent::InboundCompleted { share_id, .. }
+        | NetworkEvent::InboundCancelled { share_id }
+        | NetworkEvent::InboundRejected { share_id } => Some(*share_id),
+        NetworkEvent::InboundFailed { share_id, .. } => *share_id,
+        _ => None,
+    };
+    let event = if let Some(share_id) = share_id {
+        cancellation.finish(share_id, |cancelled| {
+            if cancelled {
+                NetworkEvent::InboundCancelled { share_id }
+            } else {
+                event
+            }
+        })
+    } else {
+        event
     };
     let (outcome, reason) = match &event {
         NetworkEvent::InboundCompleted { .. } => ("completed", None),

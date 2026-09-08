@@ -1,28 +1,31 @@
-//! Process entry point for Omarchy Quick Share.
+//! Process entry point for the Omarchy Quick Share daemon.
 
 #![expect(
-    clippy::multiple_crate_versions,
-    reason = "Locked deps pin overlapping getrandom and syn versions"
+    clippy::pub_with_shorthand,
+    clippy::redundant_pub_crate,
+    clippy::single_call_fn,
+    reason = "Entrypoint keeps rustfmt visibility and focused startup helpers"
 )]
-use clap as _;
+
+mod startup;
+
 #[cfg(test)]
 use prost as _;
 use std::io;
 
 use quickshare_bluez as _;
+use quickshare_config as _;
 use quickshare_connections as _;
-use quickshare_control as _;
 use quickshare_crypto as _;
 use quickshare_network as _;
 use quickshare_sharing as _;
 use quickshare_storage as _;
 use rand_core as _;
 use rustix as _;
-use toml_edit as _;
-use tracing as _;
-use tracing_subscriber as _;
+use serde as _;
+use serde_json as _;
 use zbus as _;
 
 fn main() -> io::Result<()> {
-    omarchy_quickshare::run_from_environment()
+    startup::run_from_environment()
 }

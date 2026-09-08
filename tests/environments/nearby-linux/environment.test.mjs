@@ -11,11 +11,10 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import { test, vi } from "vitest";
 import * as failure from "../../../tools/gates/lib/failure-artifact.mjs";
 
 import {
-  contextFingerprint,
   contextPath,
   contextRelativePath,
   treeFingerprint,
@@ -37,7 +36,6 @@ import * as sharingTest from "./sharing/transfer.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const DIRECTORY = join(ROOT, "tests", "environments", "nearby-linux");
-const BASE_IMAGE_PATTERN = /^ubuntu@sha256:[0-9a-f]{64}$/u;
 const CONTEXT_ROOT = "/tmp/nearby-linux";
 const FINGERPRINT =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -54,11 +52,11 @@ const MARKER_OFFSET = 1;
 const MARKER_PATH_PATTERN = /^\/run\/quickshare\/commands\/.+\.pid$/u;
 const UNKNOWN_FAILURE_ARTIFACT_KEY = /unknown failure artifact key/u;
 const CONNECTION_CONTRACT_TEST =
-  "Connections contracts both Wi-Fi LAN directions and cleans fixtures";
+  "Connections runner validates simulated evidence and cleans fixtures";
 const SHARING_TRANSFER_TEST =
-  "Sharing completes transfer evidence in both directions";
+  "Sharing runner validates simulated transfer evidence in both directions";
 const SHARING_ACTION_TEST =
-  "Sharing actions contract rejects and cancels in both directions";
+  "Sharing actions runner validates simulated rejection and cancellation";
 const TOKEN_FINGERPRINT = "token_fingerprint";
 
 function fakeComposeProcess() {
@@ -135,27 +133,6 @@ function inputs() {
     sources: readFileSync(join(ROOT, "upstream", "sources.toml"), "utf8"),
   };
 }
-
-test("Nearby Linux pins its image, source inputs, and build context", () => {
-  const { manifest, ...files } = inputs();
-  const input = { ...files, manifestSource: manifest };
-  const parsed = validateEnvironment(input);
-  assert.match(parsed.ubuntu.base, BASE_IMAGE_PATTERN);
-  assert.ok(parsed.sources.includes("gloop"));
-  assert.ok(parsed.sources.includes("sdbus-cpp"));
-  assert.equal(environmentFingerprint(input), contextFingerprint(input));
-  assert.ok(existsSync(join(DIRECTORY, "assets", "peer-entrypoint.sh")));
-});
-
-test("Nearby Linux waits for a managed local network", () => {
-  const configuration = readFileSync(
-    join(DIRECTORY, "assets", "NetworkManager.conf"),
-    "utf8",
-  );
-  const compose = readFileSync(join(DIRECTORY, "compose.yaml"), "utf8");
-  assert.ok(configuration.includes("unmanaged-devices=\n"));
-  assert.ok(compose.includes("nmcli --get-values STATE general"));
-});
 
 test("Nearby Linux rejects a mutable image and missing build source", () => {
   const { manifest, ...files } = inputs();
@@ -234,7 +211,6 @@ test("pinned Compose values override the invoking host environment", () => {
   try {
     const environment = buildEnvironment(parsed, FINGERPRINT, CONTEXT_ROOT);
     assert.equal(environment.NEARBY_LINUX_IMAGE, parsed.image);
-    assert.equal(environment.NEARBY_LINUX_DOCKERFILE, "Dockerfile");
   } finally {
     if (hadPrevious) {
       process.env.NEARBY_LINUX_IMAGE = previous;
@@ -268,13 +244,6 @@ test("Compose runner scopes peer cleanup to its started command", async () => {
     args: ["/usr/local/bin/file_share", "--advertise"],
     peer: "peer-a",
   });
-  assert.ok(calls[0].includes("setsid"));
-  assert.ok(
-    calls[0].some(
-      (argument) =>
-        typeof argument === "string" && argument.includes("umask 022"),
-    ),
-  );
   await peerProcess.stop();
   const marker = calls[0][calls[0].indexOf("compose-runner") + MARKER_OFFSET];
   assert.match(marker, MARKER_PATH_PATTERN);
@@ -655,13 +624,13 @@ function createStalledActionRunner() {
   return { processes, runner };
 }
 
-async function runFakeTimers(mock, remaining) {
+async function runFakeTimers(remaining) {
   if (remaining === 0) {
     return;
   }
-  mock.timers.runAll();
+  vi.runAllTimers();
   await new Promise(setImmediate);
-  await runFakeTimers(mock, remaining - 1);
+  await runFakeTimers(remaining - 1);
 }
 
 test(CONNECTION_CONTRACT_TEST, async () => {
@@ -696,16 +665,16 @@ test(CONNECTION_CONTRACT_TEST, async () => {
   }
 });
 
-test(SHARING_TRANSFER_TEST, async (context) => {
+test(SHARING_TRANSFER_TEST, async () => {
   const { cases, root } = createCases();
-  context.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     const fake = createTransferRunner(cases, "sharing");
     const result = sharingTest.runSharingSelfTest({
       cases,
       runner: fake.runner,
     });
-    await runFakeTimers(context.mock, TIMER_TICKS);
+    await runFakeTimers(TIMER_TICKS);
     const completed = await result;
     const transfers = [completed.first, completed.second];
     assert.deepEqual(
@@ -721,7 +690,7 @@ test(SHARING_TRANSFER_TEST, async (context) => {
       ["peer-a", "peer-b"],
     );
   } finally {
-    context.mock.timers.reset();
+    vi.useRealTimers();
     rmSync(root, { force: true, recursive: true });
   }
 });

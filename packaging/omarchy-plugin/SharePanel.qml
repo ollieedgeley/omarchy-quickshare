@@ -1,481 +1,497 @@
 import QtQuick
-import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
 
 Item {
-  id: root
+    id: root
 
-  property var snapshot: ({})
-  property string actionError: ""
-  property bool actionBusy: false
-  property bool showPasteBadge: false
-  property string clipboardPreview: ""
+    property var snapshot: ({})
+    property var operations: []
+    property string actionError: ""
+    property bool actionBusy: false
+    property bool showPasteBadge: false
+    property string clipboardPreview: ""
 
-  readonly property var activeShare: snapshot.active_share || ({})
-  readonly property string activeShareId: String(activeShare.id_string || "")
-  readonly property bool hasActiveShare: activeShareId.length > 0
-  readonly property var attachment: activeShare.attachment || ({})
-  readonly property var peers: snapshot.peers || []
-  readonly property var orderedPeers: {
-    var decorated = []
-    for (var i = 0; i < peers.length; i++) {
-      decorated.push({ peer: peers[i], index: i })
+    readonly property var activeShare: snapshot.active_share || ({})
+    readonly property string activeShareId: String(activeShare.id_string || "")
+    readonly property bool hasActiveShare: activeShareId.length > 0
+    readonly property var recoveredOperation: {
+        var latest = operations.length > 0 ? operations[operations.length - 1] :
+                                             null;
+        return !hasActiveShare && latest && !latest.dismissed ? latest : null;
     }
-    decorated.sort(function(a, b) {
-      var pins = Number(Boolean(b.peer && b.peer.pinned))
-        - Number(Boolean(a.peer && a.peer.pinned))
-      return pins !== 0 ? pins : a.index - b.index
-    })
-    var result = []
-    for (var j = 0; j < decorated.length; j++) {
-      result.push(decorated[j].peer)
+    readonly property var outcome: hasActiveShare ? activeShare : (
+                                                        recoveredOperation || (
+                                                            {}))
+    readonly property string outcomeId: String(outcome.id_string || "")
+    readonly property var attachment: activeShare.attachment || ({})
+    readonly property var peers: snapshot.peers || []
+    readonly property var orderedPeers: {
+        var decorated = [];
+        for (var i = 0; i < peers.length; i++) {
+            decorated.push({
+                               peer: peers[i],
+                               index: i
+                           });
+        }
+        decorated.sort(function (a, b) {
+            var aPinned = Number(Boolean(a.peer && a.peer.pinned));
+            var bPinned = Number(Boolean(b.peer && b.peer.pinned));
+            var pins = bPinned - aPinned;
+            return pins !== 0 ? pins : a.index - b.index;
+        });
+        var result = [];
+        for (var j = 0; j < decorated.length; j++) {
+            result.push(decorated[j].peer);
+        }
+        return result;
     }
-    return result
-  }
-  readonly property string phase: String(activeShare.phase || "")
-  readonly property string viewState: {
-    if (!hasActiveShare) {
-      return snapshot.discovery === "searching"
-          || snapshot.discovery === "timed_out"
-          || orderedPeers.length > 0
-        ? "peer_choice"
-        : "idle"
+    readonly property string phase: String(outcome.phase || "")
+    readonly property string viewState: {
+        if (!hasActiveShare) {
+            if (recoveredOperation)
+                return "terminal";
+            return snapshot.discovery === "searching" || snapshot.discovery
+                    === "timed_out" || orderedPeers.length > 0 ? "peer_choice" :
+                                                                 "idle";
+        }
+        if (phase === "waiting_for_peer")
+            return "peer_choice";
+        if (phase === "awaiting_local_consent")
+            return "consent";
+        if (phase === "awaiting_peer_consent")
+            return "waiting";
+        if (phase === "transferring")
+            return "transfer";
+        return "terminal";
     }
-    if (phase === "waiting_for_peer") return "peer_choice"
-    if (phase === "awaiting_local_consent") return "consent"
-    if (phase === "awaiting_peer_consent") return "waiting"
-    if (phase === "transferring") return "transfer"
-    return "terminal"
-  }
-  readonly property bool visibilityOpen: snapshot.visibility === "open"
-  readonly property bool visibilityRequestedByDaemon:
-    (snapshot.visibility_status || {}).requested === true
-  readonly property string visibilityMessage: {
-    if (visibilityOpen) return "Ready to receive"
-    if (snapshot.visibility === "starting") return "Starting receive visibility"
-    if (snapshot.visibility === "unavailable") return "Receive unavailable"
-    return "Receive visibility closed"
-  }
-  readonly property var previewAttachment: hasActiveShare
-    ? attachment
-    : ({
-      type: clipboardPreview.startsWith("file:")
-        ? "file"
-        : (clipboardPreview.startsWith("http") ? "url" : "text"),
-      value: clipboardPreview,
-    })
-  readonly property string previewText: hasActiveShare
-    ? (attachment.type === "file"
-      ? String(attachment.name || attachment.value || "File")
-      : String(attachment.value || attachment.name || "Unknown attachment"))
-    : clipboardPreview
-  readonly property string previewIcon: attachmentIcon(previewAttachment)
-  readonly property string peerName: String((activeShare.peer || {}).name || "")
-  readonly property string consentPin:
-    String(activeShare.verification_code || "")
-  readonly property string discoveryMessage: {
-    if (snapshot.discovery === "timed_out") {
-      return orderedPeers.length > 0
-        ? "Search complete."
-        : "No devices found. Turn on Bluetooth and make Quick Share visible."
+    readonly property bool visibilityOpen: snapshot.visibility === "open"
+    readonly property bool visibilityRequestedByDaemon: {
+        var status = snapshot.visibility_status || {};
+        return status.requested === true;
     }
-    if (snapshot.discovery === "searching") {
-      return orderedPeers.length > 0
-        ? "Searching for more devices…"
-        : "Searching for devices…"
+    readonly property string visibilityMessage: {
+        if (visibilityOpen)
+            return "Ready to receive";
+        if (snapshot.visibility === "starting")
+            return "Starting receive visibility";
+        if (snapshot.visibility === "unavailable")
+            return "Receive unavailable";
+        return "Receive visibility closed";
     }
-    return viewState === "peer_choice" ? "Search stopped." : ""
-  }
-  readonly property bool totalKnown: Number(activeShare.total_bytes || 0) > 0
-  readonly property int progressPercent: {
-    var total = Number(activeShare.total_bytes || 0)
-    var transferred = Number(activeShare.transferred_bytes || 0)
-    if (total <= 0) return phase === "completed" ? 100 : 0
-    return Math.min(100, Math.max(0, Math.round(100 * transferred / total)))
-  }
-  readonly property string progressText:
-    formatBytes(activeShare.transferred_bytes) + " / "
-      + formatBytes(activeShare.total_bytes)
-  readonly property string etaText: {
-    var seconds = Number(activeShare.remaining_seconds)
-    if (!isFinite(seconds) || seconds < 0) {
-      return "Estimating time remaining…"
+    readonly property var previewAttachment: {
+        if (hasActiveShare)
+            return attachment;
+        var type = "text";
+        if (clipboardPreview.startsWith("file:"))
+            type = "file";
+        else if (clipboardPreview.startsWith("http"))
+            type = "url";
+        return {
+            type: type,
+            value: clipboardPreview
+        };
     }
-    seconds = Math.ceil(seconds)
-    if (seconds < 60) return seconds + "s remaining"
-    return Math.floor(seconds / 60) + "m " + (seconds % 60) + "s remaining"
-  }
-  readonly property string terminalTitle: {
-    var inbound = activeShare.direction === "inbound"
-    if (phase === "completed") return inbound ? "Received" : "Sent"
-    if (phase === "cancelled") return "Transfer cancelled"
-    if (phase === "rejected") {
-      return inbound ? "Share rejected" : "Peer declined"
+    readonly property string previewText: {
+        if (!hasActiveShare)
+            return clipboardPreview;
+        if (attachment.type === "file")
+            return String(attachment.name || attachment.value || "File");
+        return String(attachment.value || attachment.name
+                      || "Unknown attachment");
     }
-    return inbound ? "Could not receive" : "Could not send"
-  }
-  readonly property string terminalDetail: {
-    var reason = String(activeShare.terminal_reason || "")
-    var guidance = String(activeShare.recovery_guidance || "")
-    if (reason && guidance) return reason + "\n" + guidance
-    return reason || guidance
-  }
-  readonly property color terminalColor: phase === "completed"
-    ? Color.accent
-    : (phase === "failed" ? Color.urgent : Color.muted)
-  readonly property string terminalSummary:
-    terminalDetail || (phase === "completed"
-    ? "The transfer finished successfully."
-    : (phase === "cancelled"
-      ? "No more data will be transferred."
-      : (phase === "rejected"
-        ? "The transfer did not start."
-        : "Check both devices and try again.")))
+    readonly property string previewIcon: attachmentIcon(previewAttachment)
+    readonly property string peerName: String((activeShare.peer || {}).name
+                                              || "")
+    readonly property string consentPin: String(activeShare.verification_code
+                                                || "")
+    readonly property string discoveryMessage: {
+        if (snapshot.discovery === "timed_out") {
+            if (orderedPeers.length > 0)
+                return "Search complete.";
+            return "No devices found. Turn on Bluetooth "
+                    + "and make Quick Share visible.";
+        }
+        if (snapshot.discovery === "searching") {
+            return orderedPeers.length > 0 ? "Searching for more devices…" :
+                                             "Searching for devices…";
+        }
+        return viewState === "peer_choice" ? "Search stopped." : "";
+    }
+    readonly property bool totalKnown: Number(activeShare.total_bytes || 0) > 0
+    readonly property int progressPercent: {
+        var total = Number(activeShare.total_bytes || 0);
+        var transferred = Number(activeShare.transferred_bytes || 0);
+        if (total <= 0)
+            return phase === "completed" ? 100 : 0;
+        return Math.min(100, Math.max(0, Math.round(100 * transferred
+                                                    / total)));
 
-  property bool cursorActive: false
-  property string selectedTarget: ""
-  readonly property var cursorTargets: {
-    var targets = []
-    if (viewState === "idle") return ["visibility"]
-    if (viewState === "peer_choice") {
-      for (var i = 0; i < orderedPeers.length; i++) {
-        targets.push("peer:" + String(orderedPeers[i].id || ""))
-      }
-      targets.push("search", "cancel")
-      return targets
     }
-    if (viewState === "consent") return ["accept", "reject"]
-    if (viewState === "waiting" || viewState === "transfer") {
-      return ["cancel"]
+    readonly property string progressText: formatBytes(
+                                               activeShare.transferred_bytes)
+                                           + " / " + formatBytes(
+                                               activeShare.total_bytes)
+    readonly property string etaText: {
+        var seconds = Number(activeShare.remaining_seconds);
+        if (!isFinite(seconds) || seconds < 0) {
+            return "Estimating time remaining…";
+        }
+        seconds = Math.ceil(seconds);
+        if (seconds < 60)
+            return seconds + "s remaining";
+        return Math.floor(seconds / 60) + "m " + (seconds % 60) + "s remaining";
     }
-    return viewState === "terminal" ? ["done"] : targets
-  }
-  readonly property int selectedIndex: cursorTargets.indexOf(selectedTarget)
+    readonly property string terminalTitle: {
+        var inbound = outcome.direction === "inbound";
+        if (outcome.terminal_reason === "interrupted")
+            return "Transfer interrupted";
+        if (phase === "completed")
+            return inbound ? "Received" : "Sent";
+        if (phase === "cancelled")
+            return "Transfer cancelled";
+        if (phase === "rejected") {
+            return inbound ? "Share rejected" : "Peer declined";
+        }
+        return inbound ? "Could not receive" : "Could not send";
+    }
+    readonly property string terminalDetail: {
+        var reason = String(outcome.terminal_reason || "");
+        var guidance = String(outcome.recovery_guidance || "");
+        if (reason && guidance)
+            return reason + "\n" + guidance;
+        return reason || guidance;
+    }
+    readonly property color terminalColor: {
+        if (phase === "completed")
+            return Color.accent;
+        return phase === "failed" ? Color.urgent : Color.muted;
+    }
+    readonly property string terminalSummary: {
+        if (terminalDetail)
+            return terminalDetail;
+        if (phase === "completed")
+            return "The transfer finished successfully.";
+        if (phase === "cancelled")
+            return "No more data will be transferred.";
+        if (phase === "rejected")
+            return "The transfer did not start.";
+        return "Check both devices and try again.";
+    }
+    property bool cursorActive: false
+    property string selectedTarget: ""
+    readonly property var cursorTargets: {
+        var targets = [];
+        if (viewState === "idle")
+            return ["visibility"];
+        if (viewState === "peer_choice") {
+            for (var i = 0; i < orderedPeers.length; i++) {
+                targets.push("peer:" + String(orderedPeers[i].id || ""));
+            }
+            targets.push("search", "cancel");
+            return targets;
+        }
+        if (viewState === "consent")
+            return ["accept", "reject"];
+        if (viewState === "waiting" || viewState === "transfer") {
+            return ["cancel"];
+        }
+        return viewState === "terminal" ? ["done"] : targets;
+    }
+    readonly property int selectedIndex: cursorTargets.indexOf(selectedTarget)
 
-  signal acceptRequested(string shareId)
-  signal cancelRequested(string shareId)
-  signal dismissRequested(string shareId)
-  signal discoverRequested()
-  signal stopDiscoveryRequested()
-  signal peerSelected(string shareId, string peerId)
-  signal pinRequested(string peerId, bool shouldPin)
-  signal rejectRequested(string shareId)
-  signal visibilityRequested(bool shouldOpen)
+    signal acceptRequested(string shareId)
+    signal cancelRequested(string shareId)
+    signal dismissRequested(string shareId)
+    signal discoverRequested
+    signal stopDiscoveryRequested
+    signal peerSelected(string shareId, string peerId)
+    signal pinRequested(string peerId, bool shouldPin)
+    signal rejectRequested(string shareId)
+    signal visibilityRequested(bool shouldOpen)
 
-  function accept() {
-    if (!actionBusy && viewState === "consent") {
-      acceptRequested(activeShareId)
+    function accept() {
+        if (!actionBusy && viewState === "consent") {
+            acceptRequested(activeShareId);
+        }
     }
-  }
-  function cancel() {
-    if (actionBusy || viewState === "terminal") return
-    if (!hasActiveShare && viewState === "peer_choice") {
-      cancelRequested("")
-    } else if (hasActiveShare) {
-      cancelRequested(activeShareId)
+    function cancel() {
+        if (actionBusy || viewState === "terminal")
+            return;
+        if (!hasActiveShare && viewState === "peer_choice") {
+            cancelRequested("");
+        } else if (hasActiveShare) {
+            cancelRequested(activeShareId);
+        }
     }
-  }
-  function choosePeer(peerId) {
-    if (!actionBusy && viewState === "peer_choice") {
-      peerSelected(activeShareId, peerId)
+    function choosePeer(peerId) {
+        if (!actionBusy && viewState === "peer_choice") {
+            peerSelected(activeShareId, peerId);
+        }
     }
-  }
-  function dismiss() {
-    if (!actionBusy && viewState === "terminal") {
-      dismissRequested(activeShareId)
+    function dismiss() {
+        if (!actionBusy && viewState === "terminal") {
+            dismissRequested(outcomeId);
+        }
     }
-  }
-  function reject() {
-    if (!actionBusy && viewState === "consent") {
-      rejectRequested(activeShareId)
+    function reject() {
+        if (!actionBusy && viewState === "consent") {
+            rejectRequested(activeShareId);
+        }
     }
-  }
-  function toggleDiscovery() {
-    if (actionBusy || viewState !== "peer_choice") return
-    if (snapshot.discovery === "searching") stopDiscoveryRequested()
-    else discoverRequested()
-  }
-  function togglePin(peerId, pinned) {
-    if (!actionBusy && viewState === "peer_choice") {
-      pinRequested(peerId, !pinned)
+    function toggleDiscovery() {
+        if (actionBusy || viewState !== "peer_choice")
+            return;
+        if (snapshot.discovery === "searching")
+            stopDiscoveryRequested();
+        else
+            discoverRequested();
     }
-  }
-  function toggleVisibility() {
-    if (!actionBusy && viewState === "idle") {
-      visibilityRequested(!visibilityRequestedByDaemon)
+    function togglePin(peerId, pinned) {
+        if (!actionBusy && viewState === "peer_choice") {
+            pinRequested(peerId, !pinned);
+        }
     }
-  }
-  function attachmentIcon(value) {
-    var type = String(value.type || "").toLowerCase()
-    var mime = String(value.mime_type || value.mime || "").toLowerCase()
-    var name = String(value.name || value.value || "").toLowerCase()
-    if (type === "text") return "󰊄"
-    if (type === "url") return ""
-    if (type === "android_app" || type === "apk" || name.endsWith(".apk")) {
-      return ""
+    function toggleVisibility() {
+        if (!actionBusy && viewState === "idle") {
+            visibilityRequested(!visibilityRequestedByDaemon);
+        }
     }
-    if (mime.startsWith("audio/")
-        || /\.(flac|m4a|mp3|ogg|opus|wav)$/.test(name)) return "󰝚"
-    if (mime.startsWith("video/")
-        || /\.(avi|m4v|mkv|mov|mp4|webm)$/.test(name)) return ""
-    return type === "file" ? "" : ""
-  }
-  function formatBytes(value) {
-    var bytes = Math.max(0, Number(value || 0))
-    if (!isFinite(bytes) || bytes < 1024) return Math.round(bytes) + " B"
-    var units = ["KB", "MB", "GB", "TB"]
-    var amount = bytes / 1024
-    var index = 0
-    while (amount >= 1024 && index < units.length - 1) {
-      amount /= 1024
-      index += 1
+    function attachmentIcon(value) {
+        var type = String(value.type || "").toLowerCase();
+        var mime = String(value.mime_type || value.mime || "").toLowerCase();
+        var name = String(value.name || value.value || "").toLowerCase();
+        if (type === "text")
+            return "󰊄";
+        if (type === "url")
+            return "";
+        if (type === "android_app" || type === "apk" || name.endsWith(".apk")) {
+            return "";
+        }
+        if (mime.startsWith("audio/") || /\.(flac|m4a|mp3|ogg|opus|wav)$/.test(
+                    name))
+            return "󰝚";
+        if (mime.startsWith("video/") || /\.(avi|m4v|mkv|mov|mp4|webm)$/.test(
+                    name))
+            return "";
+        return type === "file" ? "" : "";
     }
-    var digits = amount < 10 && amount % 1 !== 0 ? 1 : 0
-    return amount.toFixed(digits) + " " + units[index]
-  }
-  function setCursor(target) {
-    if (cursorTargets.indexOf(target) < 0) return
-    cursorActive = true
-    selectedTarget = target
-  }
-  function moveCursor(dx, dy) {
-    if (cursorTargets.length === 0) return
-    var index = selectedIndex
-    if (!cursorActive || index < 0) {
-      setCursor(cursorTargets[0])
-      return
+    function formatBytes(value) {
+        var bytes = Math.max(0, Number(value || 0));
+        if (!isFinite(bytes) || bytes < 1024)
+            return Math.round(bytes) + " B";
+        var units = ["KB", "MB", "GB", "TB"];
+        var amount = bytes / 1024;
+        var index = 0;
+        while (amount >= 1024 && index < units.length - 1) {
+            amount /= 1024;
+            index += 1;
+        }
+        var digits = amount < 10 && amount % 1 !== 0 ? 1 : 0;
+        return amount.toFixed(digits) + " " + units[index];
     }
-    var delta = Number(dy) !== 0
-      ? Math.sign(Number(dy))
-      : Math.sign(Number(dx))
-    if (delta === 0) return
-    index = Math.max(0, Math.min(cursorTargets.length - 1, index + delta))
-    setCursor(cursorTargets[index])
-    if (selectedTarget.startsWith("peer:")) {
-      peerChoice.showPeer(index)
+    function setCursor(target) {
+        if (cursorTargets.indexOf(target) < 0)
+            return;
+        cursorActive = true;
+        selectedTarget = target;
     }
-  }
-  function activateTarget(target) {
-    if (actionBusy) return
-    if (target.startsWith("peer:")) choosePeer(target.slice(5))
-    else if (target === "search") toggleDiscovery()
-    else if (target === "cancel") cancel()
-    else if (target === "accept") accept()
-    else if (target === "reject") reject()
-    else if (target === "visibility") toggleVisibility()
-    else if (target === "done") dismiss()
-  }
-  function activateCursor() {
-    if (cursorActive && selectedIndex >= 0) activateTarget(selectedTarget)
-  }
-  function toggleSelectedPin() {
-    if (actionBusy || viewState !== "peer_choice"
-        || !selectedTarget.startsWith("peer:")) return
-    var peerId = selectedTarget.slice(5)
-    for (var i = 0; i < orderedPeers.length; i++) {
-      var peer = orderedPeers[i]
-      if (String(peer.id || "") === peerId) {
-        togglePin(peerId, Boolean(peer.pinned))
-        return
-      }
+    function moveCursor(dx, dy) {
+        if (cursorTargets.length === 0)
+            return;
+        var index = selectedIndex;
+        if (!cursorActive || index < 0) {
+            setCursor(cursorTargets[0]);
+            return;
+        }
+        var movement = Number(dy) !== 0 ? Number(dy) : Number(dx);
+        var delta = Math.sign(movement);
+        if (delta === 0)
+            return;
+        index = Math.max(0, Math.min(cursorTargets.length - 1, index + delta));
+        setCursor(cursorTargets[index]);
+        if (selectedTarget.startsWith("peer:")) {
+            peerChoice.showPeer(index);
+        }
     }
-  }
-  function targetHasCursor(target) {
-    return cursorActive && selectedTarget === target
-  }
+    function activateTarget(target) {
+        if (actionBusy)
+            return;
+        if (target.startsWith("peer:"))
+            choosePeer(target.slice(5));
+        else if (target === "search")
+            toggleDiscovery();
+        else if (target === "cancel")
+            cancel();
+        else if (target === "accept")
+            accept();
+        else if (target === "reject")
+            reject();
+        else if (target === "visibility")
+            toggleVisibility();
+        else if (target === "done")
+            dismiss();
+    }
+    function activateCursor() {
+        if (cursorActive && selectedIndex >= 0)
+            activateTarget(selectedTarget);
+    }
+    function toggleSelectedPin() {
+        if (actionBusy || viewState !== "peer_choice" ||
+                !selectedTarget.startsWith("peer:"))
+            return;
+        var peerId = selectedTarget.slice(5);
+        for (var i = 0; i < orderedPeers.length; i++) {
+            var peer = orderedPeers[i];
+            if (String(peer.id || "") === peerId) {
+                togglePin(peerId, Boolean(peer.pinned));
+                return;
+            }
+        }
+    }
+    function targetHasCursor(target) {
+        return cursorActive && selectedTarget === target;
+    }
 
-  onViewStateChanged: {
-    cursorActive = false
-    selectedTarget = ""
-  }
-  onCursorTargetsChanged: {
-    if (cursorTargets.indexOf(selectedTarget) < 0) {
-      selectedTarget = cursorTargets.length > 0 ? cursorTargets[0] : ""
+    onViewStateChanged: {
+        cursorActive = false;
+        selectedTarget = "";
     }
-  }
+    onCursorTargetsChanged: {
+        if (cursorTargets.indexOf(selectedTarget) < 0) {
+            selectedTarget = cursorTargets.length > 0 ? cursorTargets[0] : "";
+        }
+    }
 
-  implicitHeight: content.implicitHeight
-
-  Column {
-    id: content
-    width: parent.width
-    spacing: Style.spacing.panelGap
+    implicitHeight: content.implicitHeight
 
     Column {
-      visible: root.viewState === "idle"
-      width: parent.width
-      spacing: Style.spacing.panelGap
-
-      PanelHero {
+        id: content
         width: parent.width
-        title: "Quick Share"
-        meta: root.visibilityMessage
-        foreground: Color.foreground
-        fontFamily: Style.font.family
-        iconComponent: Component {
-          Text {
-            text: ""
-            color: Color.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.display
-            textFormat: Text.PlainText
-          }
+        spacing: Style.spacing.panelGap
+
+        IdleView {
+            visible: root.viewState === "idle"
+            width: parent.width
+            actionBusy: root.actionBusy
+            cursorActive: root.cursorActive
+            selectedTarget: root.selectedTarget
+            visibilityMessage: root.visibilityMessage
+            visibilityRequestedByDaemon: root.visibilityRequestedByDaemon
+            onCursorRequested: function (target) {
+                root.setCursor(target);
+            }
+            onVisibilityRequested: root.toggleVisibility()
         }
-      }
-      PanelSeparator {
-        foreground: Color.foreground
-      }
-      PanelSectionHeader {
-        text: "RECEIVE"
-        foreground: Color.foreground
-        fontFamily: Style.font.family
-        textFormat: Text.PlainText
-      }
-      CursorSurface {
-        width: parent.width
-        implicitHeight: receiveRow.implicitHeight + Style.spacing.rowPaddingX
-        hasCursor: root.targetHasCursor("visibility")
-        foreground: Color.foreground
-        enabled: !root.actionBusy
-        opacity: enabled ? 1 : 0.5
-        Accessible.role: Accessible.CheckBox
-        Accessible.name: root.visibilityRequestedByDaemon
-          ? "Close Quick Share visibility"
-          : "Open Quick Share visibility"
-        Accessible.checked: root.visibilityRequestedByDaemon
-        Accessible.onPressAction: root.toggleVisibility()
 
-        RowLayout {
-          id: receiveRow
-          anchors.left: parent.left
-          anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
-          anchors.leftMargin: Style.spacing.controlPaddingX
-          anchors.rightMargin: Style.spacing.controlPaddingX
-          spacing: Style.spacing.controlGap
-
-          Text {
-            Layout.fillWidth: true
-            text: root.visibilityMessage
-            color: Color.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.body
-            elide: Text.ElideRight
-            textFormat: Text.PlainText
-          }
-          ToggleSwitch {
-            checked: root.visibilityRequestedByDaemon
-            busy: root.actionBusy
-            interactive: false
-            foreground: Color.foreground
-          }
+        PeerChoiceView {
+            id: peerChoice
+            visible: root.viewState === "peer_choice"
+            width: parent.width
+            actionBusy: root.actionBusy
+            cursorActive: root.cursorActive
+            discoveryMessage: root.discoveryMessage
+            discoveryState: String(root.snapshot.discovery || "")
+            orderedPeers: root.orderedPeers
+            previewIcon: root.previewIcon
+            previewText: root.previewText
+            selectedTarget: root.selectedTarget
+            showPasteBadge: root.showPasteBadge
+            onCancelRequested: root.cancel()
+            onCursorRequested: function (target) {
+                root.setCursor(target);
+            }
+            onPeerRequested: function (peerId) {
+                root.choosePeer(peerId);
+            }
+            onPinRequested: function (peerId, pinned) {
+                root.togglePin(peerId, pinned);
+            }
+            onSearchRequested: root.toggleDiscovery()
         }
-        MouseArea {
-          anchors.fill: parent
-          enabled: !root.actionBusy
-          hoverEnabled: true
-          cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-          onEntered: root.setCursor("visibility")
-          onClicked: root.toggleVisibility()
+
+        ConsentView {
+            visible: root.viewState === "consent" || root.viewState
+                     === "waiting"
+            width: parent.width
+            actionBusy: root.actionBusy
+            attachmentName: root.previewText
+            attachmentIcon: root.previewIcon
+            cursorActive: root.cursorActive
+            peerName: root.peerName
+            selectedTarget: root.selectedTarget
+            verificationCode: root.consentPin
+            showPasteBadge: root.showPasteBadge
+            waiting: root.viewState === "waiting"
+            onAcceptRequested: root.accept()
+            onCancelRequested: root.cancel()
+            onCursorRequested: function (target) {
+                root.setCursor(target);
+            }
+            onRejectRequested: root.reject()
         }
-      }
-    }
 
-    PeerChoiceView {
-      id: peerChoice
-      visible: root.viewState === "peer_choice"
-      width: parent.width
-      actionBusy: root.actionBusy
-      cursorActive: root.cursorActive
-      discoveryMessage: root.discoveryMessage
-      discoveryState: String(root.snapshot.discovery || "")
-      orderedPeers: root.orderedPeers
-      previewIcon: root.previewIcon
-      previewText: root.previewText
-      selectedTarget: root.selectedTarget
-      showPasteBadge: root.showPasteBadge
-      onCancelRequested: root.cancel()
-      onCursorRequested: function(target) { root.setCursor(target) }
-      onPeerRequested: function(peerId) { root.choosePeer(peerId) }
-      onPinRequested: function(peerId, pinned) {
-        root.togglePin(peerId, pinned)
-      }
-      onSearchRequested: root.toggleDiscovery()
-    }
+        TransferView {
+            visible: root.viewState === "transfer"
+            width: parent.width
+            actionBusy: root.actionBusy
+            cursorActive: root.cursorActive
+            direction: String(root.activeShare.direction || "")
+            etaText: root.etaText
+            progressPercent: root.progressPercent
+            progressText: {
+                if (root.totalKnown)
+                    return root.progressText;
+                var bytes = root.activeShare.transferred_bytes;
+                return root.formatBytes(bytes) + " transferred";
+            }
+            selectedTarget: root.selectedTarget
+            totalKnown: root.totalKnown
+            onCancelRequested: root.cancel()
+            onCursorRequested: function (target) {
+                root.setCursor(target);
+            }
+        }
 
-    ConsentView {
-      visible: root.viewState === "consent" || root.viewState === "waiting"
-      width: parent.width
-      actionBusy: root.actionBusy
-      attachmentName: root.previewText
-      attachmentIcon: root.previewIcon
-      cursorActive: root.cursorActive
-      peerName: root.peerName
-      selectedTarget: root.selectedTarget
-      verificationCode: root.consentPin
-      showPasteBadge: root.showPasteBadge
-      waiting: root.viewState === "waiting"
-      onAcceptRequested: root.accept()
-      onCancelRequested: root.cancel()
-      onCursorRequested: function(target) { root.setCursor(target) }
-      onRejectRequested: root.reject()
-    }
+        TerminalView {
+            visible: root.viewState === "terminal"
+            width: parent.width
+            actionBusy: root.actionBusy
+            cursorActive: root.cursorActive
+            phase: root.phase
+            selectedTarget: root.selectedTarget
+            summary: root.terminalSummary
+            title: root.terminalTitle
+            tone: root.terminalColor
+            onCursorRequested: function (target) {
+                root.setCursor(target);
+            }
+            onDoneRequested: root.dismiss()
+        }
 
-    TransferView {
-      visible: root.viewState === "transfer"
-      width: parent.width
-      actionBusy: root.actionBusy
-      cursorActive: root.cursorActive
-      direction: String(root.activeShare.direction || "")
-      etaText: root.etaText
-      progressPercent: root.progressPercent
-      progressText: root.totalKnown
-        ? root.progressText
-        : root.formatBytes(root.activeShare.transferred_bytes) + " transferred"
-      selectedTarget: root.selectedTarget
-      totalKnown: root.totalKnown
-      onCancelRequested: root.cancel()
-      onCursorRequested: function(target) { root.setCursor(target) }
-    }
+        Column {
+            visible: root.actionError.length > 0
+            width: parent.width
+            spacing: Style.spacing.labelGap
 
-    TerminalView {
-      visible: root.viewState === "terminal"
-      width: parent.width
-      actionBusy: root.actionBusy
-      cursorActive: root.cursorActive
-      phase: root.phase
-      selectedTarget: root.selectedTarget
-      summary: root.terminalSummary
-      title: root.terminalTitle
-      tone: root.terminalColor
-      onCursorRequested: function(target) { root.setCursor(target) }
-      onDoneRequested: root.dismiss()
+            PanelSeparator {
+                foreground: Color.urgent
+            }
+            PanelSectionHeader {
+                text: "ACTION NEEDED"
+                foreground: Color.urgent
+                fontFamily: Style.font.family
+                textFormat: Text.PlainText
+            }
+            Text {
+                width: parent.width
+                text: root.actionError
+                color: Color.urgent
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+                textFormat: Text.PlainText
+            }
+        }
     }
-
-    Column {
-      visible: root.actionError.length > 0
-      width: parent.width
-      spacing: Style.spacing.labelGap
-
-      PanelSeparator {
-        foreground: Color.urgent
-      }
-      PanelSectionHeader {
-        text: "ACTION NEEDED"
-        foreground: Color.urgent
-        fontFamily: Style.font.family
-        textFormat: Text.PlainText
-      }
-      Text {
-        width: parent.width
-        text: root.actionError
-        color: Color.urgent
-        font.family: Style.font.family
-        font.pixelSize: Style.font.bodySmall
-        wrapMode: Text.WordWrap
-        textFormat: Text.PlainText
-      }
-    }
-  }
 }

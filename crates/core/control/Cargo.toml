@@ -9,6 +9,8 @@ publish = false
 
 [dependencies]
 quickshare-sharing = { path = "../sharing" }
+rand_core = { workspace = true, features = ["getrandom"] }
+rustix = { workspace = true, features = ["net"] }
 serde.workspace = true
 serde_json.workspace = true
 

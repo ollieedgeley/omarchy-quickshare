@@ -94,6 +94,23 @@ impl Coordinator {
         }
     }
 
+    /// Returns the next identifier without reserving it.
+    #[must_use]
+    #[inline]
+    pub const fn next_share_id(&self) -> u64 {
+        self.next_share_id
+    }
+
+    /// Restores the durable counter before admitting any new work.
+    #[inline]
+    pub const fn restore_next_share_id(&mut self, next_share_id: u64) -> bool {
+        if next_share_id == 0 || next_share_id < self.next_share_id {
+            return false;
+        }
+        self.next_share_id = next_share_id;
+        true
+    }
+
     /// Reserves the next stable share identifier.
     #[inline]
     const fn next_id(&mut self) -> ShareId {
@@ -247,7 +264,9 @@ impl Coordinator {
         let Some(active) = self.snapshot.active_share_mut() else {
             return false;
         };
-        if active.id().get() != share_id {
+        if active.id().get() != share_id
+            || active.phase() != Phase::Transferring
+        {
             return false;
         }
         active.replace_attachment(attachment);

@@ -13,8 +13,8 @@ use quickshare_control::response::Response;
 use quickshare_sharing::{Phase, VisibilityState};
 
 use super::Resources;
-use crate::config::Config;
 use crate::daemon::network::NetworkEvent;
+use quickshare_config::Config;
 
 #[test]
 fn temporary_admission_closes_at_600_boot_seconds_without_renewal() {

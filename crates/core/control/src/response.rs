@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use quickshare_sharing::EndpointSnapshot;
+use quickshare_sharing::{Direction, EndpointSnapshot, Phase};
 use serde::{Deserialize, Serialize};
 
 /// Preference values represented by the local control protocol.
@@ -47,6 +47,34 @@ pub struct PreferenceStatus {
     pub saved: Option<PreferenceValues>,
 }
 
+/// Durable public outcome of one accepted operation.
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "Operation records are a closed versioned local wire encoding"
+)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperationRecord {
+    /// Direction relative to this endpoint.
+    pub direction: Direction,
+    /// Whether the user dismissed this result.
+    pub dismissed: bool,
+    /// Lossless decimal local share identifier.
+    pub id_string: String,
+    /// Last durably recorded lifecycle phase.
+    pub phase: Phase,
+    /// Safe next action after a terminal outcome.
+    pub recovery_guidance: Option<String>,
+    /// Original caller identity, absent for inbound shares.
+    pub request_id: Option<String>,
+    /// Stable terminal outcome reason.
+    pub terminal_reason: Option<String>,
+    /// Declared payload size.
+    pub total_bytes: u64,
+    /// Payload bytes observed at the transfer seam.
+    pub transferred_bytes: u64,
+}
+
 /// One versioned response from the local endpoint.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -78,12 +106,32 @@ impl Envelope {
         }
     }
 
+    /// Creates a structured rejection of a control message.
+    #[must_use]
+    #[inline]
+    pub const fn error(code: ErrorCode) -> Self {
+        Self {
+            response: Response::Error { code },
+            version: crate::PROTOCOL_VERSION,
+        }
+    }
+
     /// Creates a response for a share identifier that is not active.
     #[must_use]
     #[inline]
     pub const fn not_found() -> Self {
         Self {
             response: Response::NotFound,
+            version: crate::PROTOCOL_VERSION,
+        }
+    }
+
+    /// Creates a reconciliation response for an accepted operation.
+    #[must_use]
+    #[inline]
+    pub const fn operation(operation: OperationRecord) -> Self {
+        Self {
+            response: Response::Operation { operation },
             version: crate::PROTOCOL_VERSION,
         }
     }
@@ -101,9 +149,9 @@ impl Envelope {
     /// Creates a successful response for one queued share.
     #[must_use]
     #[inline]
-    pub const fn queued(share_id: u64) -> Self {
+    pub const fn queued(operation: OperationRecord) -> Self {
         Self {
-            response: Response::Queued { share_id },
+            response: Response::Queued { operation },
             version: crate::PROTOCOL_VERSION,
         }
     }
@@ -131,9 +179,11 @@ impl Envelope {
     pub fn snapshot(
         snapshot: &EndpointSnapshot,
         preferences: &PreferenceStatus,
+        operations: &[OperationRecord],
     ) -> Self {
         Self {
             response: Response::Snapshot {
+                operations: operations.to_vec(),
                 preferences: preferences.clone(),
                 snapshot: snapshot.clone(),
             },
@@ -158,8 +208,18 @@ pub enum Response {
     Applied,
     /// The endpoint cancelled the requested share.
     Cancelled,
+    /// The endpoint could not complete the control exchange.
+    Error {
+        /// Stable machine-readable rejection reason.
+        code: ErrorCode,
+    },
     /// No active share matched the requested identifier.
     NotFound,
+    /// Last durable state of an accepted operation.
+    Operation {
+        /// Reconciled operation, without resubmission.
+        operation: OperationRecord,
+    },
     /// The endpoint's current preference status.
     Preferences {
         /// Saved and activated values observed through the control seam.
@@ -167,16 +227,45 @@ pub enum Response {
     },
     /// The endpoint queued the command for processing.
     Queued {
-        /// Stable identifier used by subsequent share actions.
-        share_id: u64,
+        /// Durably accepted operation.
+        operation: OperationRecord,
     },
     /// The local endpoint is ready to accept commands.
     Ready,
     /// The endpoint's current public state.
     Snapshot {
+        /// Retained durable operation outcomes.
+        operations: Vec<OperationRecord>,
         /// Saved and activated preferences accompanying this snapshot.
         preferences: PreferenceStatus,
         /// State observed through the local control seam.
         snapshot: EndpointSnapshot,
     },
+}
+
+/// Stable failures at the local control transport boundary.
+#[expect(
+    clippy::arbitrary_source_item_ordering,
+    reason = "Keep numeric discriminants stable for existing Rust clients"
+)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ErrorCode {
+    /// The caller identity already belongs to different submitted content.
+    Conflict,
+    /// The endpoint cannot accept another operation now.
+    Busy,
+    /// Durable storage failed before acceptance could be confirmed.
+    PersistenceFailed,
+    /// Acceptance or outcome cannot be established; never implies safe retry.
+    OutcomeUnknown,
+    /// The frame is not a valid request envelope.
+    InvalidRequest,
+    /// The envelope uses another protocol version.
+    UnsupportedVersion,
+    /// The request or response JSON frame exceeds the byte limit.
+    MessageTooLarge,
+    /// The connection did not complete within its deadline.
+    RequestTimeout,
 }

@@ -12,44 +12,43 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import build_native
 import deploy_native
 import retention_payload
 import vm_control
 
-NAME = "omarchy-quickshare"
-UNIT = "omarchy-quickshare.service"
-LIVE_IDENTITY_LINES = 6
-
 
 def _live_identity(state: dict[str, Any]) -> set[str]:
     if not vm_control.running(state):
-        message = (
-            "Ambiguous deployment on a stopped lab protects native payloads"
-        )
+        message = "Ambiguous stopped lab protects native payloads"
         raise RuntimeError(message)
-    command = deploy_native.PROBE + (
-        '\nsha256sum "$HOME/.local/bin/omarchy-quickshare" '
-        '"$HOME/.config/systemd/user/omarchy-quickshare.service"\n'
+    command = deploy_native.SESSION + shlex.join([
+        "python3",
+        "-c",
+        deploy_native.GUEST,
+        "identity",
+    ])
+    record = json.loads(
+        vm_control.ssh(state, "bash -lc " + shlex.quote(command)).stdout
     )
-    lines = (
-        vm_control
-        .ssh(state, "bash -lc " + shlex.quote(command))
-        .stdout.strip()
-        .splitlines()
-    )
-    if len(lines) != LIVE_IDENTITY_LINES or lines[0] != "available":
-        message = "Cannot prove installed and loaded native identities"
-        raise ValueError(message)
-    hashes = [lines[index].split()[0] for index in (1, 4, 5)]
-    if any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in hashes):
-        message = "Malformed live executable or unit digest"
-        raise ValueError(message)
-    return {"sha256:" + digest for digest in hashes[:2]}
+    return {
+        "sha256:" + value
+        for component in record["components"].values()
+        for key, value in component.items()
+        if key in {"loadedSha256", "installedSha256"}
+    }
 
 
 def _references(read: Callable, children: Callable) -> set[str]:  # ruff: ignore[too-many-branches] - Each managed owner and record must be unambiguous before pruning.
-    latest, _ = read(vm_control.CACHE / "native/latest.json")
-    references = {latest["artifact"]}
+    references = set()
+    for pointer in children(vm_control.CACHE / "native"):
+        if pointer.name in {
+            "latest.json",
+            "latest-cli.json",
+            "latest-daemon.json",
+        }:
+            latest, _ = read(pointer)
+            references.add(latest["artifact"])
     for owner in children(vm_control.CACHE / "labs"):
         state_path = owner / "state.json"
         # A never-started owner containing only its lock cannot own a deploy.
@@ -109,6 +108,8 @@ def sweep(  # ruff: ignore[too-many-arguments] - Explicit existing record and lo
                     "artifacts.lock",
                     "cargo-target",
                     "latest.json",
+                    "latest-cli.json",
+                    "latest-daemon.json",
                 }:
                     continue
                 try:
@@ -145,7 +146,7 @@ def sweep(  # ruff: ignore[too-many-arguments] - Explicit existing record and lo
     save()
 
 
-def _artifact(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, too-many-branches, complex-structure] - Preserve one artifact's identity across classification and exact unlink.
+def _artifact(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, too-many-branches, complex-structure, too-many-statements] - Preserve one artifact's identity across classification and exact unlink.
     artifact: Path,
     references: set[str],
     hours: float,
@@ -158,7 +159,27 @@ def _artifact(  # ruff: ignore[too-many-arguments, too-many-positional-arguments
         message = "Latest or retained deployment reference; payload kept"
         raise ValueError(message)
     record, checksum = read(artifact / "build.json")
-    if "sha256:" + record.get("sha256", "") in references:
+    if record.get("schemaVersion") != build_native.SCHEMA_VERSION:
+        message = "Unknown historical native schema protects its payloads"
+        raise ValueError(message)
+    records = record.get("components", {})
+    if (
+        not isinstance(records, dict)
+        or not records
+        or not records.keys() <= build_native.COMPONENTS.keys()
+    ):
+        message = "Unknown native component inventory protects its payloads"
+        raise ValueError(message)
+    payloads = {}
+    for role, component in records.items():
+        name = build_native.COMPONENTS[role]["file"]
+        if component.get("file") != name:
+            message = "Unknown native component filename"
+            raise ValueError(message)
+        payloads[name] = component["sha256"]
+    if "daemon" in records:
+        payloads[build_native.UNIT.name] = record["unitSha256"]
+    if any("sha256:" + digest in references for digest in payloads.values()):
         message = "Installed or loaded guest native executable retained"
         raise ValueError(message)
     if (
@@ -169,7 +190,7 @@ def _artifact(  # ruff: ignore[too-many-arguments, too-many-positional-arguments
         message = "Unknown, unfinished or failed native build retained"
         raise ValueError(message)
     names = {path.name for path in children(artifact)}
-    if not names <= {NAME, UNIT, "build.json", "build.log", "cargo.jsonl"}:
+    if not names <= {*payloads, "build.json", "build.log", "cargo.jsonl"}:
         message = (
             "Unknown inventory or failure evidence protects native attempt"
         )
@@ -185,8 +206,8 @@ def _artifact(  # ruff: ignore[too-many-arguments, too-many-positional-arguments
     if finished < datetime.fromisoformat(record["startedAt"]) or age < hours:
         message = "Native build has not reached its retention age"
         raise ValueError(message)
-    for name, field in ((NAME, "sha256"), (UNIT, "unitSha256")):
-        expected = {"sha256": record[field]}
+    for name, digest in payloads.items():
+        expected = {"sha256": digest}
         item = retention_payload.payload(artifact / name, expected)
         item.update(
             location="host",
@@ -341,9 +362,12 @@ def prune_cache(  # ruff: ignore[too-many-arguments, too-many-branches] - Explic
     save()
 
 
-def _cache_target(
+def _cache_target(  # ruff: ignore[too-many-branches] - Validate each recorded compiler cache boundary.
     record: dict[str, Any], root: Path, profile: str
 ) -> str | None:
+    if record.get("schemaVersion") != build_native.SCHEMA_VERSION:
+        message = "Unknown historical native schema protects its compiler cache"
+        raise ValueError(message)
     command = record["command"]
     if not isinstance(command, list) or not all(
         isinstance(arg, str) for arg in command
