@@ -1,5 +1,6 @@
 .cache/
 .codegraph/
+__pycache__/
 Handoff.md
 How-the-app-works-user-pov.md
 dist/

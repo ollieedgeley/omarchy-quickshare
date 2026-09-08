@@ -2,6 +2,10 @@ name: omarchy-quickshare-nearby-linux
 
 x-peer: &peer
   image: ${NEARBY_LINUX_IMAGE:?set NEARBY_LINUX_IMAGE}
+  cpus: 0.5
+  mem_limit: 256m
+  memswap_limit: 256m
+  pids_limit: 128
   build:
     context: ${NEARBY_LINUX_BUILD_CONTEXT:?set NEARBY_LINUX_BUILD_CONTEXT}
     dockerfile: ${NEARBY_LINUX_DOCKERFILE:?set Dockerfile path}
@@ -13,6 +17,8 @@ x-peer: &peer
       LLVM_SIGNING_CERT_SHA256: ${LLVM_SIGNING_CERT_SHA256:?set cert SHA-256}
       LLVM_APT_SOURCE: ${LLVM_APT_SOURCE:?set LLVM apt source}
       RUNTIME_PACKAGES: ${RUNTIME_PACKAGES:?set package pins}
+      REFERENCE_BAZEL_MEMORY_MIB: ${REFERENCE_BAZEL_MEMORY_MIB:-2048}
+      REFERENCE_BAZEL_JVM_HEAP_MIB: ${REFERENCE_BAZEL_JVM_HEAP_MIB:-512}
   cap_drop:
     - ALL
   cap_add:

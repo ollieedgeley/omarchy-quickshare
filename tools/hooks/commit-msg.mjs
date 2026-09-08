@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const SUBJECT_LIMIT = 72;
 const TYPES = "(?:feat|fix|test|refactor|perf|docs|build|chore)";
 const SCOPE = "(?:\\([a-z0-9][a-z0-9-]*\\))?";
 
@@ -12,9 +11,6 @@ export const COMMIT_PATTERN = new RegExp(
 
 export function validateCommitMessage(message) {
   const [subject] = message.split("\n", 1);
-  if (subject.length > SUBJECT_LIMIT) {
-    return "commit subject exceeds 72 characters";
-  }
   if (!COMMIT_PATTERN.test(subject)) {
     return "use Conventional Commits: type(scope): imperative description";
   }

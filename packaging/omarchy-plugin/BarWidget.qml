@@ -8,6 +8,9 @@ BarWidget {
 
   moduleName: "io.github.ollieedgeley.omarchy-quickshare"
 
+  // Stamped by the retained-desktop deployer, never read from mutable files.
+  readonly property string deploymentRevision: "unversioned"
+
   property bool popupOpen: false
   property bool popoutSwitchClosing: false
   property var capturedContent: null
@@ -224,6 +227,15 @@ BarWidget {
 
   IpcHandler {
     target: root.moduleName
+
+    function deploymentIdentity(nonce: string): string {
+      return JSON.stringify({
+        id: root.moduleName,
+        revision: root.deploymentRevision,
+        component: String(Qt.resolvedUrl("BarWidget.qml")),
+        nonce: nonce
+      })
+    }
 
     function close(): void { root.close() }
     function hide(): void { root.close() }

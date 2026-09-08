@@ -1,0 +1,118 @@
+name: ${DESKTOP_PEER_PROJECT:?set owned project}
+
+x-owned: &owned
+  image: ${DESKTOP_PEER_IMAGE:?set content-addressed image}
+  pull_policy: never
+  labels:
+    org.omarchy-quickshare.desktop-owner: ${DESKTOP_PEER_OWNER:?set lab owner}
+    org.omarchy-quickshare.peer-runtime: ${DESKTOP_PEER_RUNTIME:?set runtime identity}
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  pids_limit: 128
+  cpus: 0.5
+  mem_limit: 256m
+  restart: "no"
+  logging:
+    driver: json-file
+    options:
+      max-size: 8m
+      max-file: "2"
+
+services:
+  peer:
+    <<: *owned
+    hostname: ${DESKTOP_PEER_NAME:?set peer name}
+    # The raw QEMU stream carries wire frames, not kernel offload metadata.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - >-
+        ethtool -K eth0 tx off tso off gso off gro off;
+        exec /usr/local/libexec/nearby-linux-peer "$$@"
+      - --
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - NET_ADMIN
+      - NET_BIND_SERVICE
+      - NET_RAW
+      - SETGID
+      - SETUID
+    tmpfs:
+      - /run:rw,nosuid,nodev,size=32m
+      - /tmp:rw,nosuid,nodev,size=64m
+    environment:
+      XDG_CONFIG_HOME: /run/quickshare/config
+      XDG_DOWNLOAD_DIR: /cases/received
+      XDG_RUNTIME_DIR: /run/quickshare
+      XDG_STATE_HOME: /run/quickshare/state
+    command:
+      - /usr/local/bin/nearby_sharing_cli
+      - receive
+      - --name
+      - ${DESKTOP_PEER_NAME:?set peer name}
+      - --timeout
+      - "0"
+      - --action
+      - accept
+    volumes:
+      - type: bind
+        source: ${DESKTOP_PEER_CASES:?set owned receive directory}
+        target: /cases
+    networks:
+      private:
+        ipv4_address: ${DESKTOP_PEER_ADDRESS:?set private peer address}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -x /usr/local/bin/nearby_sharing_cli &&
+          dbus-send --system --print-reply
+          --dest=org.freedesktop.NetworkManager /org/freedesktop/NetworkManager
+          org.freedesktop.DBus.Peer.Ping && avahi-daemon --check
+      interval: 1s
+      timeout: 2s
+      retries: 30
+  relay:
+    <<: *owned
+    cap_add:
+      - NET_RAW
+    pids_limit: 16
+    mem_limit: 64m
+    entrypoint: [python3, -u, /opt/lan_relay.py]
+    volumes:
+      - type: bind
+        source: ${DESKTOP_PEER_RELAY:?set relay source}
+        target: /opt/lan_relay.py
+        read_only: true
+    networks:
+      private:
+        ipv4_address: ${DESKTOP_RELAY_ADDRESS:?set private relay address}
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - >-
+          from pathlib import Path;
+          assert any(row.split()[1].endswith(':4A92') and row.split()[3] == '0A'
+          for row in Path('/proc/net/tcp').read_text().splitlines()[1:])
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+networks:
+  private:
+    driver: bridge
+    internal: true
+    labels:
+      org.omarchy-quickshare.desktop-owner: ${DESKTOP_PEER_OWNER:?set lab owner}
+      org.omarchy-quickshare.peer-runtime: ${DESKTOP_PEER_RUNTIME:?set runtime identity}
+    ipam:
+      config:
+        - subnet: ${DESKTOP_PEER_SUBNET:?set private subnet}
+          aux_addresses:
+            guest: ${DESKTOP_GUEST_ADDRESS:?set reserved guest address}

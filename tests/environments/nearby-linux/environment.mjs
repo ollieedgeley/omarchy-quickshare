@@ -4,7 +4,6 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -24,6 +23,11 @@ import {
   prepareContext,
   treeFingerprint,
 } from "./context.mjs";
+import {
+  capacityCommand,
+  downloadVerified,
+  withProvisionLock,
+} from "./provision-cache.mjs";
 import { runSharingActionsSelfTest } from "./sharing/actions.mjs";
 import { runSharingSelfTest } from "./sharing/transfer.mjs";
 
@@ -285,61 +289,50 @@ function validateSourceTrees(records) {
   }
 }
 
-function downloadVerified(url, expected, destination) {
-  if (
-    existsSync(destination) &&
-    digest(readFileSync(destination)) === expected
-  ) {
-    return;
-  }
-  const temporary = `${destination}.temporary`;
-  rmSync(temporary, { force: true });
-  mkdirSync(dirname(destination), { recursive: true });
-  run("curl", ["--fail", "--location", "--output", temporary, url]);
-  if (digest(readFileSync(temporary)) !== expected) {
-    rmSync(temporary, { force: true });
-    throw new Error(`Nearby Linux download SHA-256 mismatch: ${url}`);
-  }
-  renameSync(temporary, destination);
-}
-
 function prepareToolInputs(manifest) {
   downloadVerified(manifest.bazel.url, manifest.bazel.sha256, BAZEL_BINARY);
   downloadVerified(manifest.llvm.keyUrl, manifest.llvm.keySha256, LLVM_KEY);
 }
 
 function provision() {
-  const { fingerprint, manifest } = inputs();
-  const records = sourceRecords(manifest);
-  validateSourceTrees(records);
-  prepareToolInputs(manifest);
-  const context = prepareContext({
-    bazel: BAZEL_BINARY,
-    cacheRoot: CACHE_ROOT,
-    connectionsPeer: join(ROOT, "tools", "oracle", "connections-peer"),
-    environment: DIRECTORY,
-    fingerprint,
-    fixtureGenerator: join(ROOT, "tools", "oracle", "sharing-fixtures"),
-    llvmKey: LLVM_KEY,
-    overlayRoot: OVERLAY_ROOT,
-    sourceRoot: SOURCE_ROOT,
+  return withProvisionLock(ENVIRONMENT_ROOT, (descriptor) => {
+    const { fingerprint, manifest } = inputs();
+    const records = sourceRecords(manifest);
+    validateSourceTrees(records);
+    prepareToolInputs(manifest);
+    const context = prepareContext({
+      bazel: BAZEL_BINARY,
+      cacheRoot: CACHE_ROOT,
+      connectionsPeer: join(ROOT, "tools", "oracle", "connections-peer"),
+      environment: DIRECTORY,
+      fingerprint,
+      fixtureGenerator: join(ROOT, "tools", "oracle", "sharing-fixtures"),
+      llvmKey: LLVM_KEY,
+      overlayRoot: OVERLAY_ROOT,
+      sourceRoot: SOURCE_ROOT,
+    });
+    const environment = buildEnvironment(manifest, fingerprint, context);
+    // Both peers use one tag; only one service may publish it.
+    capacityCommand(
+      COMPOSE_PATH,
+      ["build", "--pull", "--provenance=false", "peer-a"],
+      { environment, descriptor },
+    );
+    assertPrepared(manifest, fingerprint);
+    mkdirSync(ENVIRONMENT_ROOT, { recursive: true });
+    const imageId = output(process.env.DOCKER ?? "docker", [
+      "image",
+      "inspect",
+      "--format",
+      "{{.Id}}",
+      manifest.image,
+    ]);
+    writeFileSync(
+      STATE_PATH,
+      `${JSON.stringify({ context, fingerprint, imageId }, null, 2)}\n`,
+    );
+    process.stdout.write(`Prepared Nearby Linux image ${imageId}.\n`);
   });
-  const environment = buildEnvironment(manifest, fingerprint, context);
-  dockerCompose(["build", "--pull", "--provenance=false"], environment);
-  assertPrepared(manifest, fingerprint);
-  mkdirSync(ENVIRONMENT_ROOT, { recursive: true });
-  const imageId = output(process.env.DOCKER ?? "docker", [
-    "image",
-    "inspect",
-    "--format",
-    "{{.Id}}",
-    manifest.image,
-  ]);
-  writeFileSync(
-    STATE_PATH,
-    `${JSON.stringify({ context, fingerprint, imageId }, null, 2)}\n`,
-  );
-  process.stdout.write(`Prepared Nearby Linux image ${imageId}.\n`);
 }
 
 function caseDirectories() {
@@ -391,9 +384,10 @@ function up() {
     QUICKSHARE_CASE_A_DIR: directories.peerA,
     QUICKSHARE_CASE_B_DIR: directories.peerB,
   };
-  dockerCompose(
+  capacityCommand(
+    COMPOSE_PATH,
     ["up", "--detach", "--wait", "--wait-timeout", "30"],
-    environment,
+    { environment },
   );
   writeFileSync(
     join(ENVIRONMENT_ROOT, "running.json"),

@@ -25,6 +25,7 @@
 
 - Code files should be no more than 500 Lines long.
 - Test Files should be no more than 800 Lines long.
+- Functions should be no more than 50 Lines.
 
 Going over these limit is an indication to make a decision. Use [structure guidance](docs/project-structure.md) to make that decision.
 

@@ -1,0 +1,12 @@
+{
+  "iso": {
+    "version": "4.0.1",
+    "url": "https://iso.omarchy.org/omarchy-4.0.1.iso",
+    "sha256": "69cbb4e10d98ad831c3c9f245b5757a9d1fedfd0c9592780e977d6f950dea8c3"
+  },
+  "diskGiB": 40,
+  "user": "omarchy",
+  "hostname": "quickshare-desktop",
+  "reference": "j0achim/omarchy-crucible@0b66ddd5e77e6c217aec3e2ece49b4f1ba8b97d5",
+  "runtimeContractReference": "basecamp/omarchy@e848f1df97bbbe23db42fc2b1fb04937d7a0eae0"
+}

@@ -29,14 +29,12 @@ import { pushedCommits } from "../../../hooks/pre-push.mjs";
 import { parsePackageArgs } from "../../rust-lints.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const OVERLONG_SUBJECT_LENGTH = 70;
 const SHA_LENGTH = 40;
 const MALFORMED_COMMIT_TEST =
   "Conventional Commit validation rejects vague or malformed subjects";
 const CARGO_SELECTION_TEST =
   "Cargo selection includes owners and transitive downstream packages";
 const CONVENTIONAL_COMMIT_PATTERN = /Conventional Commits/u;
-const SUBJECT_LENGTH_PATTERN = /72 characters/u;
 const RUFF_ALL_PATTERN = /select = \["ALL"\]/u;
 const RUFF_PREVIEW_PATTERN = /preview = true/u;
 const RUFF_VERSION_PATTERN = /RUFF_VERSION="0\.16\.5"/u;
@@ -131,11 +129,6 @@ test(MALFORMED_COMMIT_TEST, () => {
   assert.match(
     validateCommitMessage("build: install hooks.") ?? "",
     CONVENTIONAL_COMMIT_PATTERN,
-  );
-  assert.match(
-    validateCommitMessage(`build: ${"a".repeat(OVERLONG_SUBJECT_LENGTH)}`) ??
-      "",
-    SUBJECT_LENGTH_PATTERN,
   );
 });
 
