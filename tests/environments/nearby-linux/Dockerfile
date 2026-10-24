@@ -15,6 +15,8 @@ ARG LLVM_APT_SOURCE
 ARG BAZEL_SHA256=\
 b4746d3ee7e698b08ebc6a91bd6b4062a25d1b4214a5964f866986f59fc159fb
 ARG CLANG_VERSION=21
+ARG REFERENCE_BAZEL_JVM_HEAP_MIB=512
+ARG REFERENCE_BAZEL_MEMORY_MIB=2048
 
 COPY cache/llvm-apt-signing-key.asc /tmp/llvm.asc
 COPY cache/bazel-9.0.1-linux-x86_64 /tmp/bazel
@@ -60,8 +62,12 @@ COPY cache/repository/ /var/cache/bazel-repository/
 RUN --mount=type=cache,target=/var/cache/bazel-disk \
     CC="/usr/bin/clang-${CLANG_VERSION}" \
     CXX="/usr/bin/clang++-${CLANG_VERSION}" \
-    bazel --output_user_root=/var/cache/bazel-user build \
+    bazel --host_jvm_args="-Xmx${REFERENCE_BAZEL_JVM_HEAP_MIB}m" \
+      --output_user_root=/var/cache/bazel-user build \
       --lockfile_mode=error \
+      --jobs=1 \
+      --local_resources=cpu=1 \
+      --local_resources=memory="${REFERENCE_BAZEL_MEMORY_MIB}" \
       --repository_cache=/var/cache/bazel-repository \
       --disk_cache=/var/cache/bazel-disk \
       --action_env=CC \

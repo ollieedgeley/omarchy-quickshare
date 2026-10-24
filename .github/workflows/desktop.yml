@@ -1,0 +1,182 @@
+name: Clean desktop verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker:
+        description: Approved fresh Ubuntu 24.04 x64 KVM worker label. No worker is provisioned by this workflow.
+        required: true
+        type: string
+      workspace_budget_gib:
+        description: Reviewed physical peak GiB for ISO, base, overlay, Cargo and evidence. Not virtual disk capacity.
+        required: true
+        type: number
+      docker_budget_gib:
+        description: Reviewed physical peak GiB for the pinned reference build and image, added if storage is shared.
+        required: true
+        type: number
+
+permissions:
+  contents: read
+
+# No automatic trigger or runner default. Standard workers advertise 14 GB;
+# a suitable ephemeral worker and its measured storage plan need approval.
+# Selecting a paid or self-hosted label requires approval outside this file.
+jobs:
+  desktop:
+    runs-on: ${{ inputs.worker }}
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    env:
+      EVIDENCE: ${{ runner.temp }}/desktop-evidence
+      SHARED_STATE: ${{ runner.temp }}/desktop-orchestration/shared.json
+      DESKTOP_WORKSPACE_BUDGET_GIB: ${{ inputs.workspace_budget_gib }}
+      DESKTOP_DOCKER_BUDGET_GIB: ${{ inputs.docker_budget_gib }}
+      DESKTOP_CPUS: "1"
+      DESKTOP_MEMORY_MIB: "2048"
+      DESKTOP_HOST_HEADROOM_MIB: "1024"
+      DESKTOP_HOST_HEADROOM_CPUS: "1"
+      DESKTOP_REFERENCE_MEMORY_MIB: "3072"
+      CARGO_TERM_COLOR: never
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_ANALYTICS: "1"
+    steps:
+      - name: Initialize fresh evidence
+        run: |
+          set -Eeuo pipefail
+          mkdir "$EVIDENCE"
+          mkdir "$(dirname "$SHARED_STATE")"
+
+      - name: Check out reviewed revision
+        id: checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          clean: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+
+      - name: Admit actual worker capacity and KVM
+        timeout-minutes: 3
+        run: |
+          set -Eeuo pipefail
+          . /etc/os-release
+          test "$ID" = ubuntu
+          test "$VERSION_ID" = 24.04
+          # Only this fresh worker's current account receives KVM access.
+          test -c /dev/kvm
+          sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+          python3 tests/environments/desktop/shared_job.py preflight --state "$SHARED_STATE"
+
+      - name: Install host tools
+        timeout-minutes: 20
+        run: |
+          set -Eeuo pipefail
+          # Noble's imagemagick is v6 and has no magick entry point. The
+          # documented runner Homebrew installation supplies a v7 bottle.
+          test -x /home/linuxbrew/.linuxbrew/bin/brew
+          timeout --kill-after=30s 8m sudo apt-get update
+          timeout --kill-after=30s 8m sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-utils ovmf curl openssh-client openssl \
+            dosfstools mtools tesseract-ocr tesseract-ocr-eng zstd \
+            build-essential pkg-config libssl-dev libdbus-1-dev libudev-dev
+          timeout --kill-after=30s 10m /home/linuxbrew/.linuxbrew/bin/brew install --force-bottle imagemagick
+          printf '%s\n' /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
+          /home/linuxbrew/.linuxbrew/bin/brew info --json=v2 imagemagick \
+            > "$(dirname "$SHARED_STATE")/imagemagick.log"
+          dpkg-query -W qemu-system-x86 qemu-utils ovmf tesseract-ocr \
+            dosfstools mtools zstd > "$(dirname "$SHARED_STATE")/host-packages.log"
+
+      - name: Install selected Rust toolchain and verify host tools
+        timeout-minutes: 8
+        run: |
+          set -Eeuo pipefail
+          timeout --kill-after=30s 6m rustup show active-toolchain
+          for tool in qemu-system-x86_64 qemu-img magick tesseract make curl ssh scp \
+            ssh-keygen openssl mkfs.vfat mcopy tar zstd taskset timeout; do
+            command -v "$tool"
+          done
+          [[ "$(magick -version)" == *"ImageMagick 7."* ]]
+          {
+            qemu-system-x86_64 --version
+            qemu-img --version
+            magick -version
+            tesseract --version
+            docker compose version
+            docker buildx version
+            node --version
+            rustc -vV
+            cargo --version
+          } > "$(dirname "$SHARED_STATE")/toolchain.log" 2>&1
+          # Exercise the exact raster formats used by the existing UI driver.
+          magick -limit thread 1 -size 2x2 xc:white \
+            "$(dirname "$SHARED_STATE")/probe.ppm"
+          magick -limit thread 1 "$(dirname "$SHARED_STATE")/probe.ppm" \
+            "$(dirname "$SHARED_STATE")/probe.png"
+          magick identify -format '%w %h' "$(dirname "$SHARED_STATE")/probe.png"
+          python3 tests/environments/desktop/shared_job.py preflight --tools --state "$SHARED_STATE"
+
+      - name: Prepare identified inputs and run installed-candidate journey
+        id: journey
+        timeout-minutes: 300
+        run: python3 tests/environments/desktop/shared_job.py run --state "$SHARED_STATE"
+
+      - name: Recover owned normal or interrupted resources
+        id: recovery
+        if: always() && steps.checkout.outcome == 'success'
+        timeout-minutes: 10
+        run: |
+          set -Eeuo pipefail
+          if test -f "$SHARED_STATE"; then
+            python3 tests/environments/desktop/shared_job.py recover --state "$SHARED_STATE"
+          fi
+
+      - name: Stage bounded evidence allowlist
+        id: collection
+        if: always() && steps.checkout.outcome == 'success'
+        timeout-minutes: 3
+        run: |
+          set -Eeuo pipefail
+          if test -f "$SHARED_STATE"; then
+            python3 tests/environments/desktop/shared_job.py collect \
+              --state "$SHARED_STATE" --evidence "$EVIDENCE"
+          fi
+
+      - name: Record workflow outcomes
+        if: always()
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          JOURNEY_OUTCOME: ${{ steps.journey.outcome }}
+          RECOVERY_OUTCOME: ${{ steps.recovery.outcome }}
+          COLLECTION_OUTCOME: ${{ steps.collection.outcome }}
+          JOB_STATUS: ${{ job.status }}
+          SOURCE_SHA: ${{ github.sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKER_LABEL: ${{ inputs.worker }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$EVIDENCE"
+          printf 'checkout=%s\njourney=%s\nrecovery=%s\ncollection=%s\njob_status=%s\n' \
+            "$CHECKOUT_OUTCOME" "$JOURNEY_OUTCOME" "$RECOVERY_OUTCOME" \
+            "$COLLECTION_OUTCOME" "$JOB_STATUS" > "$EVIDENCE/outcomes.txt"
+          printf 'source_sha=%s\nworkflow_sha=%s\nrun_id=%s\nrun_attempt=%s\nworker=%s\nrunner_image_version=%s\n' \
+            "$SOURCE_SHA" "$WORKFLOW_SHA" "$RUN_ID" "$RUN_ATTEMPT" \
+            "$WORKER_LABEL" "${ImageVersion:-unknown}" >> "$EVIDENCE/outcomes.txt"
+
+      - name: Retain desktop evidence
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.EVIDENCE }}
+          retention-days: 14
+          if-no-files-found: error

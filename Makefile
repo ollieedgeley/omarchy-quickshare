@@ -55,6 +55,8 @@ DOCUMENT_FILES = $(REPOSITORY_FILES) -- '*.md'
 .PHONY: test-network-lan test-network-hotspot-client
 .PHONY: test-network-hotspot-owner test-network-wifi-direct-client
 .PHONY: verify-app verify-tooling verify build
+include tests/environments/desktop/commands.mk
+
 help: ## List public and targeted gates.
 	@awk 'BEGIN {FS = ":.*## "} \
 		/^[a-zA-Z0-9_.-]+:.*## / {printf "%-28s %s\n", $$1, $$2}' \
