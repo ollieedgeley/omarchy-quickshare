@@ -121,24 +121,12 @@ def _retained(state: dict[str, Any], base: Path) -> None:
         raise RuntimeError(message)
 
 
-def start(
-    owner: Path, preparation: tuple[str, dict[str, Any], Path, Path]
-) -> None:
-    """Reuse a healthy owner or resume its retained writable disk.
-
-    Raises:
-        RuntimeError: Inputs, retained storage or preparation are incompatible.
-    """
+def _launch_retained(
+    owner: Path,
+    preparation: tuple[str, dict[str, Any], Path, Path],
+    state: dict[str, Any] | None,
+) -> dict[str, Any]:
     fingerprint, _, code, _ = preparation
-    state = active(owner)
-    if state:
-        _compatible(state, fingerprint)
-    if vm_control.running(state):
-        diagnostics.desktop_ready(
-            state, vm_control.number("DESKTOP_BOOT_TIMEOUT", 600, 1)
-        )
-        print(f"Reusing healthy lab {owner.name}: {owner}")
-        return
     descriptor = os.open(
         vm_control.CACHE / "bases.lock",
         os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
@@ -156,7 +144,7 @@ def start(
             _retained(state, base)
         else:
             _storage(owner, base)
-        state = vm_control.launch(
+        return vm_control.launch(
             owner,
             allocation,
             disk=owner / "desktop.qcow2",
@@ -166,6 +154,23 @@ def start(
             code=code,
             previous=state,
         )
+
+
+def start(
+    owner: Path, preparation: tuple[str, dict[str, Any], Path, Path]
+) -> None:
+    """Reuse a healthy owner or resume its retained writable disk."""
+    fingerprint = preparation[0]
+    state = active(owner)
+    if state:
+        _compatible(state, fingerprint)
+    if vm_control.running(state):
+        diagnostics.desktop_ready(
+            state, vm_control.number("DESKTOP_BOOT_TIMEOUT", 600, 1)
+        )
+        print(f"Reusing healthy lab {owner.name}: {owner}")
+        return
+    state = _launch_retained(owner, preparation, state)
     diagnostics.desktop_ready(
         state, vm_control.number("DESKTOP_BOOT_TIMEOUT", 600, 1)
     )

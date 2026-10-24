@@ -41,23 +41,7 @@ def absent(plugin_id: str) -> dict[str, Any]:
         RuntimeError: Candidate files, registry entries or a unit already exist.
     """
     home = Path.home()
-    paths: list[Path] = [
-        home / ".local/bin/omarchy-quickshare",
-        Path("/usr/bin/omarchy-quickshare"),
-        home / ".local/bin/omarchy-quickshare-daemon",
-        Path("/usr/bin/omarchy-quickshare-daemon"),
-        home / ".config/systemd/user/omarchy-quickshare.service",
-        Path("/usr/lib/systemd/user/omarchy-quickshare.service"),
-        home / ".config/omarchy/plugins" / plugin_id,
-    ]
-    paths.extend(
-        home / directory / "omarchy-quickshare"
-        for directory in [".config", ".cache", ".local/share", ".local/state"]
-    )
-    for path in paths:
-        if path.exists() or path.is_symlink():
-            msg = f"Clean base contains candidate or retained data: {path}"
-            raise RuntimeError(msg)
+    _absent_paths(home, plugin_id)
     packages = output("pacman", "-Qq").splitlines()
     if "omarchy-quickshare" in packages:
         msg = "Candidate package already installed"
@@ -86,6 +70,26 @@ def absent(plugin_id: str) -> dict[str, Any]:
         "unitLoadState": unit,
         "home": str(home),
     }
+
+
+def _absent_paths(home: Path, plugin_id: str) -> None:
+    paths: list[Path] = [
+        home / ".local/bin/omarchy-quickshare",
+        Path("/usr/bin/omarchy-quickshare"),
+        home / ".local/bin/omarchy-quickshare-daemon",
+        Path("/usr/bin/omarchy-quickshare-daemon"),
+        home / ".config/systemd/user/omarchy-quickshare.service",
+        Path("/usr/lib/systemd/user/omarchy-quickshare.service"),
+        home / ".config/omarchy/plugins" / plugin_id,
+    ]
+    paths.extend(
+        home / directory / "omarchy-quickshare"
+        for directory in [".config", ".cache", ".local/share", ".local/state"]
+    )
+    for path in paths:
+        if path.exists() or path.is_symlink():
+            msg = f"Clean base contains candidate or retained data: {path}"
+            raise RuntimeError(msg)
 
 
 def _unit_identity(unit: str) -> tuple[str, str]:
@@ -172,7 +176,28 @@ def native(candidate: dict[str, Any]) -> dict[str, Any]:
     if digest(fragment) != candidate["package"]["unitSha256"]:
         msg = "Installed shipped unit checksum mismatch"
         raise RuntimeError(msg)
-    package = output("pacman", "-Q", name)
+    package, health, status = _native_readiness(candidate, components, pid)
+    components["daemon"]["loadedSha256"] = hashes["loaded"]
+    return {
+        "mainPid": int(pid),
+        "executable": executable,
+        "hashes": hashes,
+        "components": components,
+        "installedSha256": hashes["installed"],
+        "loadedSha256": hashes["loaded"],
+        "effectiveUnitPath": fragment,
+        "unitSha256": digest(fragment),
+        "package": package,
+        "health": health,
+        "publicStatus": status,
+    }
+
+
+def _native_readiness(
+    candidate: dict[str, Any], components: dict[str, Any], pid: str
+) -> tuple[str, str, dict[str, Any]]:
+    unit = "omarchy-quickshare.service"
+    package = output("pacman", "-Q", "omarchy-quickshare")
     expected_pkg = (
         candidate["package"]["name"]
         + " "
@@ -196,20 +221,7 @@ def native(candidate: dict[str, Any]) -> dict[str, Any]:
     ):
         msg = "Candidate daemon changed during readiness probe"
         raise RuntimeError(msg)
-    components["daemon"]["loadedSha256"] = hashes["loaded"]
-    return {
-        "mainPid": int(pid),
-        "executable": executable,
-        "hashes": hashes,
-        "components": components,
-        "installedSha256": hashes["installed"],
-        "loadedSha256": hashes["loaded"],
-        "effectiveUnitPath": fragment,
-        "unitSha256": digest(fragment),
-        "package": package,
-        "health": health,
-        "publicStatus": status,
-    }
+    return package, health, status
 
 
 def _plugin_inventory(root: Path) -> dict[str, str]:
@@ -256,6 +268,19 @@ def plugin(candidate: dict[str, Any], nonce: str) -> dict[str, Any]:
     ):
         msg = "Installed plugin checkout is dirty"
         raise RuntimeError(msg)
+    registered, identity = _live_plugin(expected, root, nonce)
+    return {
+        "installedDirectory": str(root),
+        "files": files,
+        "commit": commit,
+        "loadedIdentity": identity,
+        "registryIdentity": registered,
+    }
+
+
+def _live_plugin(
+    expected: dict[str, Any], root: Path, nonce: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
     plugins = json.loads(output("omarchy-shell", "shell", "listPlugins"))
     registered = next(
         (item for item in plugins if item["id"] == expected["id"]), None
@@ -275,13 +300,7 @@ def plugin(candidate: dict[str, Any], nonce: str) -> dict[str, Any]:
     if identity != wanted:
         msg = f"Fresh live plugin identity mismatch: {identity}"
         raise RuntimeError(msg)
-    return {
-        "installedDirectory": str(root),
-        "files": files,
-        "commit": commit,
-        "loadedIdentity": identity,
-        "registryIdentity": registered,
-    }
+    return registered, identity
 
 
 if __name__ == "__main__":

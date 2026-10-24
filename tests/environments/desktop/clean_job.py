@@ -130,14 +130,65 @@ def save(job: dict[str, Any]) -> None:
     vm_control.save(JOBS / job["jobId"] / "job.json", job)
 
 
+def _stage_child(
+    job: dict[str, Any], record: dict[str, Any], launch: tuple
+) -> subprocess.Popen:
+    read_fd, log = launch
+    return subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true] - Explicit local argv with no shell.
+        [
+            sys.executable,
+            str(SOURCE / "clean_job.py"),
+            "_gate",
+            str(read_fd),
+            str(job["lockFd"]),
+            str(record["deadlineSeconds"]),
+            *record["command"],
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        pass_fds=(read_fd, job["lockFd"]),
+        env={
+            **os.environ,
+            "DESKTOP_LAB": Path(job["ownerDirectory"]).name,
+            **(
+                {
+                    "DESKTOP_SCENARIO_INSTALLATION": str(
+                        Path(job["installationDirectory"]) / "installation.json"
+                    ),
+                    "DESKTOP_SCENARIO_PYTHON": sys.executable,
+                }
+                if record["name"] == "scenario"
+                else {}
+            ),
+        },
+    )
+
+
+def _release_stage(job: dict, record: dict, worker: tuple) -> int:
+    child, write_fd = worker
+    identity = process(child.pid)
+    if identity is None:
+        message = "Stage gate exited before ownership recording"
+        raise RuntimeError(message)
+    record["worker"] = identity
+    record["status"] = "running"
+    save(job)
+    os.write(write_fd, b"1")
+    code = child.wait()
+    record.update({
+        "exitCode": code,
+        "status": "passed" if code == 0 else "failed",
+    })
+    return code
+
+
 def stage(job: dict[str, Any], name: str, command: list[str]) -> int:
     """Gate resource creation until bounded child identity is durable.
 
     Returns:
         The real stage exit code, including GNU timeout's nonzero result.
-
-    Raises:
-        RuntimeError: Child identity could not be persisted before launch.
     """
     directory = JOBS / job["jobId"]
     record: dict[str, Any] = {
@@ -152,53 +203,10 @@ def stage(job: dict[str, Any], name: str, command: list[str]) -> int:
     save(job)
     read_fd, write_fd = os.pipe()
     child = None
-    try:  # ruff: ignore[too-many-statements-in-try-clause] - Gate, record and supervise one child as a single interruption boundary.
+    try:
         with Path(record["log"]).open("x", encoding="utf-8") as log:
-            child = subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true] - Explicit local argv with no shell.
-                [
-                    sys.executable,
-                    str(SOURCE / "clean_job.py"),
-                    "_gate",
-                    str(read_fd),
-                    str(job["lockFd"]),
-                    str(record["deadlineSeconds"]),
-                    *command,
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                pass_fds=(read_fd, job["lockFd"]),
-                env={
-                    **os.environ,
-                    "DESKTOP_LAB": Path(job["ownerDirectory"]).name,
-                    **(
-                        {
-                            "DESKTOP_SCENARIO_INSTALLATION": str(
-                                Path(job["installationDirectory"])
-                                / "installation.json"
-                            ),
-                            "DESKTOP_SCENARIO_PYTHON": sys.executable,
-                        }
-                        if name == "scenario"
-                        else {}
-                    ),
-                },
-            )
-            identity = process(child.pid)
-            if identity is None:
-                message = "Stage gate exited before ownership recording"
-                raise RuntimeError(message)  # ruff: ignore[raise-within-try] - The surrounding handler must reap the gated child.
-            record["worker"] = identity
-            record["status"] = "running"
-            save(job)
-            os.write(write_fd, b"1")
-            code = child.wait()
-            record.update({
-                "exitCode": code,
-                "status": "passed" if code == 0 else "failed",
-            })
-            return code
+            child = _stage_child(job, record, (read_fd, log))
+            return _release_stage(job, record, (child, write_fd))
     except BaseException:
         if child is not None:
             identity = record.get("worker") or process(child.pid)
@@ -253,6 +261,125 @@ def exit_code(job: dict[str, Any]) -> int:
     return 0 if job["cleanupAttempts"][-1]["status"] == "passed" else 1
 
 
+def _new_job(
+    options: argparse.Namespace, identifier: str, lock_fd: int
+) -> dict:
+    owner = (
+        vm_control.CACHE / "labs" / ("job-" + identifier.replace("-", "")[:27])
+    )
+    return {
+        "schemaVersion": 1,
+        "kind": "disposable-clean-job",
+        "jobId": identifier,
+        "startedAt": candidate.now(),
+        "worker": process(os.getpid()),
+        "candidateDirectory": str(options.candidate),
+        "baseFingerprint": options.base,
+        "ownerDirectory": str(owner),
+        "installationDirectory": str(
+            vm_control.CACHE / "clean-installs" / identifier
+        ),
+        "stages": [],
+        "cleanupAttempts": [],
+        "lockFd": lock_fd,
+        "originalResult": {"status": "running"},
+        "deadlines": {
+            "install": 1200,
+            "peer-prepare": 1200,
+            "peer-start": 180,
+            "scenario": options.scenario_timeout,
+            "cleanup": 300,
+        },
+    }
+
+
+def _scenario_command() -> list[str]:
+    return [
+        "node",
+        str(SOURCE.parents[2] / "node_modules/vitest/vitest.mjs"),
+        "run",
+        "--root",
+        str(SOURCE.parents[2]),
+        "--config",
+        str(SOURCE.parents[2] / "vitest.process.config.mjs"),
+        str(SOURCE.parents[2] / "tests/scenarios/desktop.e2e.mjs"),
+    ]
+
+
+def _job_commands(job: dict, selected: Path) -> list[tuple[str, list[str]]]:
+    installation = Path(job["installationDirectory"]) / "installation.json"
+    return [
+        (
+            "install",
+            [
+                sys.executable,
+                str(SOURCE / "clean_install.py"),
+                "--candidate",
+                str(selected),
+                "--lab",
+                Path(job["ownerDirectory"]).name,
+                "--base",
+                job["baseFingerprint"],
+                "--attempt",
+                str(installation.parent),
+            ],
+        ),
+        (
+            "peer-prepare",
+            [sys.executable, str(SOURCE / "reference_peer.py"), "prepare"],
+        ),
+        (
+            "peer-start",
+            [sys.executable, str(SOURCE / "reference_peer.py"), "start"],
+        ),
+        ("scenario", _scenario_command()),
+    ]
+
+
+def _run_stages(job: dict, selected: Path) -> None:
+    for name, command in _job_commands(job, selected):
+        job["originalResult"] = {"status": "running", "stage": name}
+        save(job)
+        code = stage(job, name, command)
+        if code:
+            job["originalResult"] = {
+                "status": "failed",
+                "stage": name,
+                "exitCode": code if code >= 0 else 128 - code,
+            }
+            break
+    else:
+        job["originalResult"] = {
+            "status": "passed",
+            "stage": "scenario",
+            "exitCode": 0,
+        }
+
+
+def _run_job(job: dict, options: argparse.Namespace) -> int:
+    try:
+        selected = options.candidate.resolve(strict=True)
+        job["candidate"] = candidate.load(selected)
+        job["candidateManifestSha256"] = build_native.digest(
+            selected / "candidate.json"
+        )
+        save(job)
+        _run_stages(job, selected)
+    except (Exception, KeyboardInterrupt) as error:  # ruff: ignore[blind-except] - Persist original failure before the shared cleanup path.
+        job["originalResult"] = {
+            "status": "interrupted"
+            if isinstance(error, KeyboardInterrupt)
+            else "failed",
+            "exitCode": 130 if isinstance(error, KeyboardInterrupt) else 1,
+            "error": f"{type(error).__name__}: {error}",
+        }
+    finally:
+        job["originalResult"]["finishedAt"] = candidate.now()
+        save(job)
+        cleanup(job)
+    return exit_code(job)
+
+
 def run(options: argparse.Namespace) -> int:
     """Create a durable job before touching its unique disposable resources.
 
@@ -268,128 +395,12 @@ def run(options: argparse.Namespace) -> int:
     identifier = str(uuid.uuid4())
     directory = JOBS / identifier
     directory.mkdir(parents=True)
-    owner = (
-        vm_control.CACHE / "labs" / ("job-" + identifier.replace("-", "")[:27])
-    )
     with (directory / "lifetime.lock").open("x") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        job: dict[str, Any] = {
-            "schemaVersion": 1,
-            "kind": "disposable-clean-job",
-            "jobId": identifier,
-            "startedAt": candidate.now(),
-            "worker": process(os.getpid()),
-            "candidateDirectory": str(options.candidate),
-            "baseFingerprint": options.base,
-            "ownerDirectory": str(owner),
-            "installationDirectory": str(
-                vm_control.CACHE / "clean-installs" / identifier
-            ),
-            "stages": [],
-            "cleanupAttempts": [],
-            "lockFd": lock.fileno(),
-            "originalResult": {"status": "running"},
-            "deadlines": {
-                "install": 1200,
-                "peer-prepare": 1200,
-                "peer-start": 180,
-                "scenario": options.scenario_timeout,
-                "cleanup": 300,
-            },
-        }
+        job = _new_job(options, identifier, lock.fileno())
         save(job)
         print(f"Clean job: {directory / 'job.json'}", flush=True)
-        try:  # ruff: ignore[too-many-statements-in-try-clause] - Preserve original work separately from mandatory cleanup.
-            selected = options.candidate.resolve(strict=True)
-            job["candidate"] = candidate.load(selected)
-            job["candidateManifestSha256"] = build_native.digest(
-                selected / "candidate.json"
-            )
-            save(job)
-            installation = (
-                Path(job["installationDirectory"]) / "installation.json"
-            )
-            commands = [
-                (
-                    "install",
-                    [
-                        sys.executable,
-                        str(SOURCE / "clean_install.py"),
-                        "--candidate",
-                        str(selected),
-                        "--lab",
-                        owner.name,
-                        "--base",
-                        options.base,
-                        "--attempt",
-                        str(installation.parent),
-                    ],
-                ),
-                (
-                    "peer-prepare",
-                    [
-                        sys.executable,
-                        str(SOURCE / "reference_peer.py"),
-                        "prepare",
-                    ],
-                ),
-                (
-                    "peer-start",
-                    [
-                        sys.executable,
-                        str(SOURCE / "reference_peer.py"),
-                        "start",
-                    ],
-                ),
-                (
-                    "scenario",
-                    [
-                        "node",
-                        str(
-                            SOURCE.parents[2] / "node_modules/vitest/vitest.mjs"
-                        ),
-                        "run",
-                        "--root",
-                        str(SOURCE.parents[2]),
-                        "--config",
-                        str(SOURCE.parents[2] / "vitest.process.config.mjs"),
-                        str(
-                            SOURCE.parents[2]
-                            / "tests/scenarios/desktop.e2e.mjs"
-                        ),
-                    ],
-                ),
-            ]
-            for name, command in commands:
-                job["originalResult"] = {"status": "running", "stage": name}
-                save(job)
-                code = stage(job, name, command)
-                if code:
-                    job["originalResult"] = {
-                        "status": "failed",
-                        "stage": name,
-                        "exitCode": code if code >= 0 else 128 - code,
-                    }
-                    break
-            else:
-                job["originalResult"] = {
-                    "status": "passed",
-                    "stage": "scenario",
-                    "exitCode": 0,
-                }
-        except (Exception, KeyboardInterrupt) as error:  # ruff: ignore[blind-except] - Persist original failure before the shared cleanup path.
-            job["originalResult"] = {
-                "status": "interrupted"
-                if isinstance(error, KeyboardInterrupt)
-                else "failed",
-                "exitCode": 130 if isinstance(error, KeyboardInterrupt) else 1,
-                "error": f"{type(error).__name__}: {error}",
-            }
-        finally:
-            job["originalResult"]["finishedAt"] = candidate.now()
-            save(job)
-            cleanup(job)
-        return exit_code(job)
+        return _run_job(job, options)
 
 
 def recover(path: Path) -> int:

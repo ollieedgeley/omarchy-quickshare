@@ -30,8 +30,6 @@ const START_SCRIPT = [
   "mkdir -p /run/quickshare/commands",
   'printf "%s\\n" "$$" > "$marker"',
   "umask 022",
-  'cleanup() { rm -f "$marker"; }',
-  "trap cleanup EXIT",
   "trap ':' INT TERM",
   '"$@" &',
   "child=$!",
@@ -49,8 +47,8 @@ const CONTROL_SCRIPT = [
   'pid=$(cat "$marker")',
   'case "$action" in',
   "  exists) : ;;",
-  '  signal) kill -"$signal" -- "-$pid" 2>/dev/null ;;',
-  '  probe) kill -0 -- "-$pid" 2>/dev/null ;;',
+  '  signal) kill -s "$signal" -- "-$pid" 2>/dev/null ;;',
+  '  probe) kill -s 0 -- "-$pid" 2>/dev/null ;;',
   '  verify) ! pgrep --pgroup "$pid" >/dev/null 2>&1 ;;',
   '  remove) rm -f "$marker" ;;',
   "esac",
@@ -264,25 +262,28 @@ async function findLateMarker(options, input, deadline) {
 
 async function waitForProcessStop(options, input, deadline) {
   if (!(await control(options, { ...input, action: "probe" }))) {
-    return;
+    return true;
   }
   if (Date.now() >= deadline) {
-    await control(options, { ...input, action: "signal", signal: "KILL" });
-    return;
+    return false;
   }
   await delay(STOP_POLL_MS);
-  await waitForProcessStop(options, input, deadline);
+  return waitForProcessStop(options, input, deadline);
 }
 
 async function stopOwnedProcess(options, input) {
-  if (
-    !(await control(options, { ...input, action: "signal", signal: "INT" }))
-  ) {
-    return;
-  }
-  await waitForProcessStop(options, input, Date.now() + input.stopMs);
-  if (await control(options, { ...input, action: "probe" })) {
-    throw new Error("Nearby Linux peer command did not stop");
+  const deadline = Date.now() + input.stopMs;
+  await control(options, { ...input, action: "signal", signal: "INT" });
+  const stopped = await waitForProcessStop(
+    options,
+    input,
+    deadline - input.stopMs / 2,
+  );
+  if (!stopped) {
+    await control(options, { ...input, action: "signal", signal: "KILL" });
+    if (!(await waitForProcessStop(options, input, deadline))) {
+      throw new Error("Nearby Linux peer command did not stop");
+    }
   }
   if (!(await control(options, { ...input, action: "verify" }))) {
     throw new Error("Nearby Linux peer command left a stale process group");
@@ -361,7 +362,8 @@ function startPeerProcess(options, command) {
   );
   const logs = capture(child);
   const completed = completion(child);
-  const stopChild = async () => {
+  let stopping = null;
+  const stopProcess = async () => {
     const stopMs = options.stopMs ?? DEFAULT_STOP_MS;
     const input = {
       completed,
@@ -383,6 +385,7 @@ function startPeerProcess(options, command) {
       await stopOwnedProcess(options, input);
     }
   };
+  const stopChild = () => (stopping ??= stopProcess());
   return {
     logs,
     stop: stopChild,

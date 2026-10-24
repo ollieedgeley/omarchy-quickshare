@@ -8,13 +8,68 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
+  writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { run } from "../../../tools/gates/lib/process.mjs";
+import { output, run } from "../../../tools/gates/lib/process.mjs";
+
+import { contextPath } from "./context.mjs";
 
 const PRIVATE_FILE_MODE = 0o600;
+const IMAGE_ID_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+
+export function preparedImage(statePath, cacheRoot, configuration) {
+  const { dockerfile, fingerprint, manifest } = configuration;
+  try {
+    const prepared = JSON.parse(readFileSync(statePath, "utf8"));
+    if (
+      prepared?.fingerprint !== fingerprint ||
+      typeof prepared.context !== "string" ||
+      !IMAGE_ID_PATTERN.test(prepared.imageId) ||
+      resolve(prepared.context) !==
+        resolve(contextPath(cacheRoot, fingerprint)) ||
+      !statSync(prepared.context).isDirectory() ||
+      readFileSync(join(prepared.context, "Dockerfile"), "utf8") !== dockerfile
+    ) {
+      return false;
+    }
+    const result = run(
+      process.env.DOCKER ?? "docker",
+      ["image", "inspect", "--format", "{{json .}}", manifest.image],
+      { allowFailure: true, capture: true, quiet: true },
+    );
+    if (result.status !== 0) {
+      return false;
+    }
+    const image = JSON.parse(result.stdout);
+    return (
+      image.Id === prepared.imageId &&
+      image.Config?.Labels?.["org.omarchy-quickshare.fingerprint"] ===
+        fingerprint
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function publishPreparedState(statePath, configuration, context) {
+  const { fingerprint, manifest } = configuration;
+  const imageId = output(process.env.DOCKER ?? "docker", [
+    "image",
+    "inspect",
+    "--format",
+    "{{.Id}}",
+    manifest.image,
+  ]);
+  writeFileSync(
+    statePath,
+    `${JSON.stringify({ context, fingerprint, imageId }, null, 2)}\n`,
+  );
+  process.stdout.write(`Prepared Nearby Linux image ${imageId}.\n`);
+}
 
 export function withProvisionLock(directory, provision) {
   mkdirSync(directory, { recursive: true });

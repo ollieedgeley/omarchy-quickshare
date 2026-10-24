@@ -1,7 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { pipelineForFile } from "../support/edited-file-pipeline.js";
+import {
+  batchChecksForFiles,
+  pipelineForFile,
+} from "../support/edited-file-pipeline.js";
+import { registerExecutionChecks } from "../support/execution-checks.js";
 
 const BOUND = 2048;
 const TIMEOUT_MS = 60000;
@@ -102,7 +106,7 @@ async function execute(pi, step, cwd) {
   try {
     const result = await pi.exec(step.command, step.args, {
       cwd,
-      timeout: TIMEOUT_MS,
+      timeout: step.timeout ?? TIMEOUT_MS,
     });
     if (!result || !Number.isInteger(result.code)) {
       return executionFailure(step, "tool returned no exit status");
@@ -176,6 +180,16 @@ function unresolvedFailure(step, result, file) {
         `${step.name} found unresolved format errors:\n${output}`,
       ),
       kind: "format",
+      rule: null,
+      step,
+    };
+  }
+  if (step.kind === "check") {
+    return {
+      diagnostic: bounded(
+        `${step.name} found unresolved check errors:\n${output}`,
+      ),
+      kind: "check",
       rule: null,
       step,
     };
@@ -279,7 +293,7 @@ function recordOutcome(state, step, outcome) {
   if (outcome.kind === "execution") {
     state.failures.push(outcome);
     state.brokenTools.add(step.name);
-  } else if (outcome.result.code > 1 && step.kind !== "format") {
+  } else if (outcome.result.code > 1 && step.kind === "lint") {
     state.failures.push(
       executionFailure(
         step,
@@ -308,7 +322,8 @@ async function runSteps(state) {
   await runSteps(state);
 }
 
-async function processFile(pi, file, base) {
+async function processFile(job, file) {
+  const { base, pi } = job;
   const pipeline = pipelineForFile(file, base);
   if (!pipeline) {
     return { changed: false, failures: [], language: null };
@@ -323,17 +338,46 @@ async function processFile(pi, file, base) {
     index: 0,
     pi,
   };
-  state.steps = pipeline.fixes;
+  state.steps = [];
+  if (job.explicit.has(file)) {
+    state.steps = pipeline.fixes;
+  }
   await runSteps(state);
+  const snapshot = fs.readFileSync(file);
   state.fix = false;
   state.index = 0;
   state.steps = pipeline.checks;
   await runSteps(state);
   return {
-    changed: !before.equals(fs.readFileSync(file)),
+    changed: !before.equals(snapshot),
     failures: state.failures,
     language: pipeline.language,
+    snapshot,
   };
+}
+
+function collectFailures(state, failures, language) {
+  state.failures.push(...failures);
+  for (const failure of failures) {
+    state.records.push(
+      ...recordsForFailure(failure, language, state.timestamp),
+    );
+  }
+}
+
+async function processBatch(state) {
+  const batch = {
+    base: state.base,
+    brokenTools: new Set(),
+    failures: [],
+    file: state.targets.join(", "),
+    fix: false,
+    index: 0,
+    pi: state.pi,
+    steps: batchChecksForFiles(state.targets, state.base),
+  };
+  await runSteps(batch);
+  collectFailures(state, batch.failures, "rust");
 }
 
 async function processTargets(state) {
@@ -342,19 +386,14 @@ async function processTargets(state) {
   }
   const file = state.targets[state.index];
   state.index += 1;
-  const result = await processFile(state.pi, file, state.base);
+  const result = await processFile(state, file);
+  if (result.snapshot) {
+    state.tracker?.accept(state.base, file, result.snapshot);
+  }
   if (result.changed) {
     state.changed.push(file);
   }
-  state.failures.push(...result.failures);
-  for (const failure of result.failures) {
-    const records = recordsForFailure(
-      failure,
-      result.language,
-      state.timestamp,
-    );
-    state.records.push(...records);
-  }
+  collectFailures(state, result.failures, result.language);
   await processTargets(state);
 }
 
@@ -369,7 +408,7 @@ function replacement(event, text, isError) {
   return {
     content: [...(event.content || []), { type: "text", text: bounded(text) }],
     details: event.details,
-    isError,
+    isError: Boolean(event.isError || isError),
   };
 }
 
@@ -389,27 +428,31 @@ function finalResult(event, state) {
 }
 
 export async function handleToolResult(pi, event, ctx) {
-  if (
-    event.isError ||
-    (event.toolName !== "write" && event.toolName !== "edit")
-  ) {
-    return globalThis.undefined;
-  }
+  const tracker = ctx?.mutationTracker;
   const state = {
     base: "",
     changed: [],
+    explicit: new Set(),
     failures: [],
     index: 0,
     pi,
     records: [],
     targets: [],
     timestamp: new Date().toISOString(),
+    tracker,
   };
   try {
-    const resolved = resolveValidTargets(extractCandidates(event), ctx?.cwd);
+    const direct = resolveValidTargets(extractCandidates(event), ctx?.cwd);
+    state.explicit = new Set(direct.targets);
+    const candidates = [
+      ...direct.targets,
+      ...(tracker?.changes(ctx?.cwd) ?? []),
+    ];
+    const resolved = resolveValidTargets(candidates, ctx?.cwd);
     state.base = resolved.base;
     state.targets = resolved.targets;
     await processTargets(state);
+    await processBatch(state);
     if (state.records.length) {
       appendFailureRecords(state.base, state.records);
     }
@@ -423,5 +466,5 @@ export async function handleToolResult(pi, event, ctx) {
 }
 
 export default function checkEditedFiles(pi) {
-  pi.on("tool_result", (event, ctx) => handleToolResult(pi, event, ctx));
+  registerExecutionChecks(pi, handleToolResult);
 }

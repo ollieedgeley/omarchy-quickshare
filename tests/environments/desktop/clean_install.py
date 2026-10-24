@@ -132,11 +132,7 @@ def copy_inputs(  # ruff: ignore[too-many-arguments, too-many-positional-argumen
     selected: Path,
     attempt: Path,
 ) -> None:
-    """Stage candidate bytes and a read-only probe over pinned SSH.
-
-    Raises:
-        RuntimeError: A transferred input differs from its recorded digest.
-    """
+    """Stage candidate bytes and a read-only probe over pinned SSH."""
     stage = guest(
         state,
         "printf '%s\\n' \"$HOME/.cache/omarchy-quickshare-clean-install/"
@@ -166,6 +162,13 @@ def copy_inputs(  # ruff: ignore[too-many-arguments, too-many-positional-argumen
         f"desktop:{stage}/",
     ]
     candidate.command(args, vm_control.ROOT, attempt / "copy.log")
+    _check_inputs(state, manifest, attempt)
+
+
+def _check_inputs(
+    state: dict[str, Any], manifest: dict[str, Any], attempt: Path
+) -> None:
+    stage = manifest["guestStage"]
     for name, expected in [
         (
             Path(manifest["candidate"]["package"]["path"]).name,
@@ -192,11 +195,7 @@ def install(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] 
     selected: Path,
     attempt: Path,
 ) -> None:
-    """Install shipped artifacts without a dev link or desktop replacement.
-
-    Raises:
-        RuntimeError: Installed identity or daemon continuity differs.
-    """
+    """Install shipped artifacts without a dev link or desktop replacement."""
     copy_inputs(state, manifest, selected, attempt)
     # A startup ping can precede a responsive plugin registry. Wait for the
     # actual absence probe, without weakening its checks or changing the guest.
@@ -219,6 +218,36 @@ def install(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] 
         attempt,
         "installer-source",
     )
+    _install_native(state, manifest, attempt)
+    _install_plugin(state, manifest, attempt)
+    _native_continuity(state, manifest, attempt)
+
+
+def _native_continuity(
+    state: dict[str, Any], manifest: dict[str, Any], attempt: Path
+) -> None:
+    after = wait_probe(state, manifest, attempt, "native")
+    if any(
+        after[key] != manifest["native"][key]
+        for key in [
+            "mainPid",
+            "executable",
+            "loadedSha256",
+            "installedSha256",
+            "components",
+        ]
+    ):
+        message = (
+            "Native daemon or installed components changed "
+            "during plugin installation"
+        )
+        raise RuntimeError(message)
+    manifest["nativeAfterPlugin"] = after
+
+
+def _install_native(
+    state: dict[str, Any], manifest: dict[str, Any], attempt: Path
+) -> None:
     stage = Path(manifest["guestStage"])
     package = stage / Path(manifest["candidate"]["package"]["path"]).name
     guest(
@@ -236,6 +265,12 @@ def install(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] 
         "native-start",
     )
     manifest["native"] = wait_probe(state, manifest, attempt, "native")
+
+
+def _install_plugin(
+    state: dict[str, Any], manifest: dict[str, Any], attempt: Path
+) -> None:
+    stage = Path(manifest["guestStage"])
     repository = stage / "plugin-repository"
     guest(
         state,
@@ -273,23 +308,6 @@ def install(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] 
         "plugin-install",
     )
     manifest["plugin"] = wait_probe(state, manifest, attempt, "plugin")
-    after = wait_probe(state, manifest, attempt, "native")
-    if any(
-        after[key] != manifest["native"][key]
-        for key in [
-            "mainPid",
-            "executable",
-            "loadedSha256",
-            "installedSha256",
-            "components",
-        ]
-    ):
-        message = (
-            "Native daemon or installed components changed "
-            "during plugin installation"
-        )
-        raise RuntimeError(message)
-    manifest["nativeAfterPlugin"] = after
 
 
 def preparation(
@@ -353,6 +371,27 @@ def _started(owner: Path) -> dict[str, Any]:
     return state
 
 
+def _prepare_owner(manifest: dict[str, Any], attempt: Path) -> tuple:
+    os.environ["DESKTOP_LAB"] = manifest["lab"]
+    owner = lab_lifecycle.directory()
+    manifest["ownerDirectory"] = str(owner)
+    fingerprint = manifest["baseFingerprint"]
+    prepared, manifest["preparedBase"] = preparation(fingerprint)
+    manifest["baseDirectory"] = str(vm_control.CACHE / "bases" / fingerprint)
+    # mkdir without exist_ok is the freshness boundary. Even an empty old
+    # owner is evidence, never an invitation to adopt or delete it.
+    owner.parent.mkdir(parents=True, exist_ok=True)
+    owner.mkdir()
+    manifest["createdOwner"] = True
+    identity = owner.stat()
+    manifest["ownerIdentity"] = {
+        "device": identity.st_dev,
+        "inode": identity.st_ino,
+    }
+    vm_control.save(attempt / "installation.json", manifest)
+    return owner, prepared
+
+
 def run(  # ruff: ignore[too-many-arguments] - Optional job-selected evidence path preserves standalone behavior.
     selected: Path, lab: str, fingerprint: str, *, attempt: Path | None = None
 ) -> None:
@@ -379,24 +418,7 @@ def run(  # ruff: ignore[too-many-arguments] - Optional job-selected evidence pa
         manifest["candidateManifestSha256"] = build_native.digest(
             selected / "candidate.json"
         )
-        os.environ["DESKTOP_LAB"] = lab
-        owner = lab_lifecycle.directory()
-        manifest["ownerDirectory"] = str(owner)
-        prepared, manifest["preparedBase"] = preparation(fingerprint)
-        manifest["baseDirectory"] = str(
-            vm_control.CACHE / "bases" / fingerprint
-        )
-        # mkdir without exist_ok is the freshness boundary. Even an empty old
-        # owner is evidence, never an invitation to adopt or delete it.
-        owner.parent.mkdir(parents=True, exist_ok=True)
-        owner.mkdir()
-        manifest["createdOwner"] = True
-        identity = owner.stat()
-        manifest["ownerIdentity"] = {
-            "device": identity.st_dev,
-            "inode": identity.st_ino,
-        }
-        vm_control.save(attempt / "installation.json", manifest)
+        owner, prepared = _prepare_owner(manifest, attempt)
         with (owner / "operation.lock").open("x", encoding="utf-8") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             vm_control.save(attempt / "installation.json", manifest)

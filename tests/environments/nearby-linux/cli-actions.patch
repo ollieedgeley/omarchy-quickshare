@@ -1,6 +1,6 @@
 --- a/sharing/linux/nearby_sharing_cli.cc
 +++ b/sharing/linux/nearby_sharing_cli.cc
-@@ -21,12 +21,16 @@
+@@ -21,12 +21,17 @@
  #include <cstdint>
  #include <cstdlib>
  #include <filesystem>
@@ -15,9 +15,11 @@
  #include <string>
 +#include <string_view>
  #include <system_error>
++#include <thread>
  #include <utility>
  #include "absl/time/time.h"
-@@ -45,6 +49,7 @@
+@@ -45,6 +50,8 @@
++#include "sharing/constants.h"
  #include "sharing/nearby_sharing_settings.h"
  #include "sharing/share_target.h"
  #include "sharing/share_target_discovered_callback.h"
@@ -25,7 +27,7 @@
  #include "sharing/transfer_metadata.h"
  #include "sharing/transfer_update_callback.h"
  #include "sharing/proto/enums.pb.h"
-@@ -69,15 +74,23 @@
+@@ -69,15 +76,23 @@
 
  void PrintUsage(const char* argv0) {
    std::cerr << "Usage:\n"
@@ -51,7 +53,7 @@
    std::string file_path;
    std::string device_name = GetHostname();
    int timeout_seconds = 120;
-@@ -118,23 +131,166 @@
+@@ -118,23 +133,166 @@
        if (options.timeout_seconds < 0) {
          return std::nullopt;
        }
@@ -221,7 +223,7 @@
  }
 
  template <typename Invoker>
-@@ -160,10 +316,13 @@
+@@ -160,10 +318,13 @@
    std::condition_variable cv;
    bool done = false;
    bool send_requested = false;
@@ -236,7 +238,7 @@
  };
 
  void PrintTransferUpdate(const ShareTarget& share_target,
-@@ -176,28 +335,53 @@
+@@ -176,28 +337,53 @@
              << "% bytes=" << metadata.transferred_bytes() << "/"
              << attachment_container.GetTotalAttachmentsSize() << std::endl;
    if (metadata.token().has_value()) {
@@ -298,7 +300,7 @@
 +      state_.done = !receive_mode_;
        state_.exit_code =
            transfer_metadata.status() == TransferMetadata::Status::kComplete ? 0
-@@ -209,6 +393,7 @@
+@@ -209,6 +395,7 @@
   private:
    CliState& state_;
    bool receive_mode_;
@@ -306,7 +308,7 @@
  };
 
  class CliDiscoveryCallback final : public ShareTargetDiscoveredCallback {
-@@ -285,7 +470,8 @@
+@@ -285,7 +472,8 @@
 
    int RunReceive() {
      CliState state;
@@ -316,7 +318,7 @@
 
      auto status = WaitForStatus([&](auto callback) {
        service_->RegisterReceiveSurface(
-@@ -316,7 +502,8 @@
+@@ -316,7 +504,8 @@
      }
 
      CliState state;
@@ -326,7 +328,7 @@
      CliDiscoveryCallback discovery_callback(state);
 
      auto status = WaitForStatus([&](auto callback) {
-@@ -344,12 +531,16 @@
+@@ -344,12 +533,16 @@
      const auto start = std::chrono::steady_clock::now();
      while (!g_interrupted) {
        std::optional<int64_t> accept_target_id;
@@ -343,7 +345,7 @@
                     state.selected_target.has_value() || g_interrupted.load();
            });
          } else {
-@@ -362,6 +553,8 @@
+@@ -362,6 +555,8 @@
            }
            state.cv.wait_for(lock, std::chrono::seconds(1), [&] {
              return state.done || state.accept_target_id.has_value() ||
@@ -352,7 +354,7 @@
                     state.selected_target.has_value() || g_interrupted.load();
            });
          }
-@@ -371,6 +564,14 @@
+@@ -371,6 +566,14 @@
          if (state.accept_target_id.has_value()) {
            accept_target_id = state.accept_target_id;
            state.accept_target_id.reset();
@@ -367,7 +369,7 @@
          }
          if (state.selected_target.has_value() && !state.send_requested) {
            send_target = state.selected_target;
-@@ -385,6 +586,33 @@
+@@ -385,9 +588,39 @@
            service_->Accept(*accept_target_id, std::move(callback));
          });
          std::cout << "Accept: " << StatusCodeToString(status) << std::endl;
@@ -401,7 +403,13 @@
          if (status != NearbySharingService::StatusCodes::kOk) {
            return 1;
          }
-@@ -394,7 +622,7 @@
++        // Let the service's existing cancellation grace finish before shutdown.
++        std::this_thread::sleep_for(
++            absl::ToChronoNanoseconds(kInitiatorCancelDelay));
+       }
+
+       if (send_target.has_value()) {
+@@ -394,7 +627,7 @@
          std::cout << "sending " << options_.file_path << " to \""
                    << send_target->device_name << "\" id=" << send_target->id
                    << std::endl;

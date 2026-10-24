@@ -8,7 +8,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 
 @contextmanager
@@ -54,56 +54,63 @@ def _identity(value: os.stat_result) -> tuple[int, ...]:
     )
 
 
-def payload(  # ruff: ignore[too-many-branches] - Exact-file verification and unlink share one descriptor lifetime.
+def _verify(source: BinaryIO, expected: dict[str, Any]) -> dict[str, Any]:
+    before = os.fstat(source.fileno())
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        message = "Not a single-link regular file"
+        raise ValueError(message)
+    if "sizeBytes" in expected and before.st_size != expected["sizeBytes"]:
+        message = "File size differs from recorded synthetic bytes"
+        raise ValueError(message)
+    digest = hashlib.file_digest(source, "sha256").hexdigest()
+    if digest != expected["sha256"]:
+        message = "SHA-256 differs from recorded synthetic bytes"
+        raise ValueError(message)
+    return {
+        "logicalBytes": before.st_size,
+        "allocatedFileBytes": before.st_blocks * 512,
+        "identity": list(_identity(before)),
+        "sha256": digest,
+        "status": "eligible",
+        "reason": "Exact recorded payload bytes verified",
+    }
+
+
+@contextmanager
+def _verified_payload(
+    path: Path, expected: dict[str, Any]
+) -> Iterator[tuple[int, dict[str, Any]]]:
+    with directory(path.parent) as parent:
+        descriptor = os.open(
+            path.name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=parent,
+        )
+        with os.fdopen(descriptor, "rb") as source:
+            item = _verify(source, expected)
+            after = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            if item["identity"] != list(_identity(after)):
+                message = "File changed during byte verification"
+                raise ValueError(message)
+            yield parent, item
+
+
+def payload(
     path: Path, expected: dict[str, Any], *, apply: bool = False
 ) -> dict[str, Any]:
     """Inspect or unlink one single-link regular file with recorded bytes.
 
     Returns:
         Exact path, byte accounting and eligibility or removal outcome.
-
-    Raises:
-        ValueError: Invalid metadata is reported as a protected outcome.
     """
     path = Path(path)
     item = {"path": str(path), "status": "protected"}
-    try:  # ruff: ignore[too-many-statements-in-try-clause] - Keep the verification descriptor open through unlink.
-        with directory(path.parent) as parent:
-            descriptor = os.open(
-                path.name,
-                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                dir_fd=parent,
-            )
-            with os.fdopen(descriptor, "rb") as source:
-                before = os.fstat(source.fileno())
-                if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-                    message = "Not a single-link regular file"
-                    raise ValueError(message)  # ruff: ignore[raise-within-try] - The boundary returns a protected outcome.
-                if (
-                    "sizeBytes" in expected
-                    and before.st_size != expected["sizeBytes"]
-                ):
-                    message = "File size differs from recorded synthetic bytes"
-                    raise ValueError(message)  # ruff: ignore[raise-within-try] - The boundary returns a protected outcome.
-                digest = hashlib.file_digest(source, "sha256").hexdigest()
-                if digest != expected["sha256"]:
-                    message = "SHA-256 differs from recorded synthetic bytes"
-                    raise ValueError(message)  # ruff: ignore[raise-within-try] - The boundary returns a protected outcome.
-                after = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
-                if _identity(before) != _identity(after):
-                    message = "File changed during byte verification"
-                    raise ValueError(message)  # ruff: ignore[raise-within-try] - The boundary returns a protected outcome.
-                item.update({
-                    "logicalBytes": before.st_size,
-                    "allocatedFileBytes": before.st_blocks * 512,
-                    "identity": list(_identity(before)),
-                    "sha256": digest,
-                    "status": "eligible",
-                    "reason": "Exact recorded payload bytes verified",
-                })
-                if apply:
-                    os.unlink(path.name, dir_fd=parent)
-                    item["status"] = "removed"
+    try:
+        with _verified_payload(path, expected) as (parent, verified):
+            item.update(verified)
+            if apply:
+                os.unlink(path.name, dir_fd=parent)
+                item["status"] = "removed"
     except FileNotFoundError:
         item.update(
             status="absent", reason="Exact owned path is already absent"

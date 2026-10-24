@@ -169,9 +169,7 @@ def _attached(guest: dict[str, Any]) -> bool:
     return any(item["name"] == DEVICE for item in peripherals)
 
 
-def _attach(guest: dict[str, Any], record: dict[str, Any]) -> None:
-    if _attached(guest):
-        return
+def _require_private_relay(record: dict[str, Any]) -> None:
     relay = next(
         (
             container
@@ -192,6 +190,12 @@ def _attach(guest: dict[str, Any], record: dict[str, Any]) -> None:
     ):
         message = "Relay is not exclusively on its owned private address"
         raise RuntimeError(message)
+
+
+def _attach(guest: dict[str, Any], record: dict[str, Any]) -> None:
+    if _attached(guest):
+        return
+    _require_private_relay(record)
     # Preload CDC so cdc_subset cannot win USB autoload and use a random MAC.
     vm_control.ssh(
         guest,

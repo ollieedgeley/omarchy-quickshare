@@ -2,6 +2,7 @@ name: omarchy-quickshare-nearby-linux
 
 x-peer: &peer
   image: ${NEARBY_LINUX_IMAGE:?set NEARBY_LINUX_IMAGE}
+  init: true
   cpus: 0.5
   mem_limit: 256m
   memswap_limit: 256m

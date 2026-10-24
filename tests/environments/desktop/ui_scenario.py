@@ -177,7 +177,7 @@ def exercise(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
     report["applicationAfter"] = after
 
 
-def _visible(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, too-many-statements, too-many-branches] - Ordered visible input and assertions must not be retried independently.
+def _visible(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - Ordered visible input and assertions must not be retried independently.
     state: dict[str, Any],
     installation: dict[str, Any],
     attempt: Path,
@@ -206,6 +206,16 @@ def _visible(  # ruff: ignore[too-many-arguments, too-many-positional-arguments,
         "observedAt": now(),
         "resultFrame": ui.frame["frame"],
     }
+    baseline = _submit_visible_peer(ui, report)
+    report["action"] = "correlate UI-created share with receiver bytes"
+    scenario._completion(state, attempt, report, baseline, received)  # ruff: ignore[private-member-access] - Reuse receiver consent, metadata, exact bytes and public terminal verification.
+    _dismiss_completed_share(ui, report)
+
+
+def _submit_visible_peer(
+    ui: GuestUI, report: dict[str, Any]
+) -> tuple[str, str]:
+    state, attempt = ui.state, ui.directory.parent
     snapshot = public_snapshot(state, attempt)
     if snapshot.get("discovery") == "timed_out":
         search = ui.require("Search again")
@@ -230,6 +240,13 @@ def _visible(  # ruff: ignore[too-many-arguments, too-many-positional-arguments,
     report["submittedAt"] = now()
     vm_control.save(attempt / "result.json", report)
     ui.click(control)
+    _require_created_share(ui, report)
+    vm_control.save(attempt / "result.json", report)
+    return baseline
+
+
+def _require_created_share(ui: GuestUI, report: dict[str, Any]) -> None:
+    state, attempt = ui.state, ui.directory.parent
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         share = public_snapshot(state, attempt).get("active_share")
@@ -240,9 +257,10 @@ def _visible(  # ruff: ignore[too-many-arguments, too-many-positional-arguments,
     else:
         message = "Visible peer input did not create a new public share"
         raise RuntimeError(message)
-    vm_control.save(attempt / "result.json", report)
-    report["action"] = "correlate UI-created share with receiver bytes"
-    scenario._completion(state, attempt, report, baseline, received)  # ruff: ignore[private-member-access] - Reuse receiver consent, metadata, exact bytes and public terminal verification.
+
+
+def _dismiss_completed_share(ui: GuestUI, report: dict[str, Any]) -> None:
+    state, attempt = ui.state, ui.directory.parent
     sent = ui.require("Sent")
     done = ui.require("Done")
     report["panelTerminal"] = {
@@ -276,6 +294,70 @@ def _visible(  # ruff: ignore[too-many-arguments, too-many-positional-arguments,
         raise RuntimeError(message)
 
 
+def _installation_owner(installation: dict[str, Any]) -> Path:
+    if installation.get("status") != "ready":
+        message = "A successful clean-install installation.json is required"
+        raise RuntimeError(message)
+    os.environ["DESKTOP_LAB"] = installation["lab"]
+    owner = lab_lifecycle.directory()
+    if owner.resolve() != Path(installation["ownerDirectory"]).resolve():
+        message = "Installation owner differs from selected lab"
+        raise RuntimeError(message)
+    return owner
+
+
+def _start_attempt(
+    path: Path, installation: dict[str, Any], owner: Path
+) -> tuple[Path, dict[str, Any]]:
+    attempt = owner / "scenarios" / str(uuid.uuid4())
+    attempt.mkdir(parents=True, mode=0o700)
+    return attempt, {
+        "attemptId": attempt.name,
+        "scenario": "file-to-reference-peer",
+        "driver": "visible-panel",
+        "lab": owner.name,
+        "status": "failed",
+        "startedAt": now(),
+        "guestHome": installation["absence"]["home"],
+        "installationManifest": str(path.resolve()),
+        "installationManifestSha256": hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest(),
+        "sourceSha256": {
+            name: hashlib.sha256(
+                Path(__file__).with_name(name).read_bytes()
+            ).hexdigest()
+            for name in (
+                "ui_scenario.py",
+                "guest_ui.py",
+                "guest_file_selection.py",
+                "scenario.py",
+                "scenario_state.py",
+                "installed_ui_control.py",
+                "installation_attestation.py",
+            )
+        },
+    }
+
+
+def _require_installed_guest(state: dict, installation: dict) -> None:
+    if (
+        state["uuid"] != installation["guest"]["uuid"]
+        or state["pid"] != installation["guest"]["pid"]
+    ):
+        message = (
+            "Installed guest process changed; use "
+            "--reattest-installation for an owned resumed guest"
+        )
+        raise RuntimeError(message)
+
+
+def _finish_report(attempt: Path, report: dict[str, Any]) -> None:
+    report["finishedAt"] = now()
+    vm_control.save(attempt / "result.json", report)
+    print(f"Visible scenario {report['status']}; retained evidence: {attempt}")
+
+
 def run(
     path: Path,
     *,
@@ -285,66 +367,21 @@ def run(
     """Hold the lab lock and OCR worker claim through all assertions.
 
     Raises:
-        RuntimeError: Installation or live guest ownership does not match.
         KeyboardInterrupt: The operator interrupted the retained attempt.
     """
     installation = json.loads(path.read_text(encoding="utf-8"))
-    if installation.get("status") != "ready":
-        message = "A successful clean-install installation.json is required"
-        raise RuntimeError(message)
-    os.environ["DESKTOP_LAB"] = installation["lab"]
-    owner = lab_lifecycle.directory()
-    if owner.resolve() != Path(installation["ownerDirectory"]).resolve():
-        message = "Installation owner differs from selected lab"
-        raise RuntimeError(message)
+    owner = _installation_owner(installation)
     with (owner / "operation.lock").open("a", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        attempt = owner / "scenarios" / str(uuid.uuid4())
-        attempt.mkdir(parents=True, mode=0o700)
-        report: dict[str, Any] = {
-            "attemptId": attempt.name,
-            "scenario": "file-to-reference-peer",
-            "driver": "visible-panel",
-            "lab": owner.name,
-            "status": "failed",
-            "startedAt": now(),
-            "guestHome": installation["absence"]["home"],
-            "installationManifest": str(path.resolve()),
-            "installationManifestSha256": hashlib.sha256(
-                path.read_bytes()
-            ).hexdigest(),
-            "sourceSha256": {
-                name: hashlib.sha256(
-                    Path(__file__).with_name(name).read_bytes()
-                ).hexdigest()
-                for name in (
-                    "ui_scenario.py",
-                    "guest_ui.py",
-                    "guest_file_selection.py",
-                    "scenario.py",
-                    "scenario_state.py",
-                    "installed_ui_control.py",
-                    "installation_attestation.py",
-                )
-            },
-        }
-        state = None
-        ui = None
+        attempt, report = _start_attempt(path, installation, owner)
         try:  # ruff: ignore[too-many-statements-in-try-clause] - Preserve the complete attempt on any ownership, admission or UI failure.
             state = deploy_native._running(owner)  # ruff: ignore[private-member-access] - Reuse the retained VM ownership check.
             if reattest_installation:
                 report["installationAttestation"] = reattest(
                     state, installation, path, attempt
                 )
-            elif (
-                state["uuid"] != installation["guest"]["uuid"]
-                or state["pid"] != installation["guest"]["pid"]
-            ):
-                message = (
-                    "Installed guest process changed; use "
-                    "--reattest-installation for an owned resumed guest"
-                )
-                raise RuntimeError(message)  # ruff: ignore[raise-within-try] - Outer handler retains the failed attempt then re-raises.
+            else:
+                _require_installed_guest(state, installation)
             state = {
                 **state,
                 "cliExecutable": "/usr/bin/omarchy-quickshare",
@@ -369,12 +406,7 @@ def run(
             report["error"] = f"{type(error).__name__}: {error}"
             raise
         finally:
-            report["finishedAt"] = now()
-            vm_control.save(attempt / "result.json", report)
-            print(
-                f"Visible scenario {report['status']}; "
-                f"retained evidence: {attempt}"
-            )
+            _finish_report(attempt, report)
 
 
 def main() -> None:

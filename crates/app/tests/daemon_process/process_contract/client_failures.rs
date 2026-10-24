@@ -13,7 +13,7 @@ use super::{
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "Process contracts propagate setup errors and assert command results"
+    reason = "Propagate setup errors and assert command results"
 )]
 fn protocol_introspection_needs_no_runtime_directory() -> io::Result<()> {
     let root = runtime_fixture_path();
@@ -37,7 +37,7 @@ fn protocol_introspection_needs_no_runtime_directory() -> io::Result<()> {
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "Process contracts propagate setup errors and assert command results"
+    reason = "Propagate setup errors and assert command results"
 )]
 fn status_json_rejects_invalid_responses() -> io::Result<()> {
     let mut wrong_reply = Vec::new();
@@ -82,7 +82,7 @@ fn status_json_rejects_invalid_responses() -> io::Result<()> {
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "Process contracts propagate setup errors and assert command results"
+    reason = "Propagate setup errors and assert command results"
 )]
 fn status_json_fails_when_daemon_is_absent() -> io::Result<()> {
     let root = runtime_fixture_path();

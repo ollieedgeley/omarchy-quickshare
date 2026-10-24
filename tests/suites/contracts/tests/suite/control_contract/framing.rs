@@ -3,7 +3,7 @@
     clippy::panic,
     clippy::panic_in_result_fn,
     clippy::pattern_type_mismatch,
-    reason = "Socket contract tests assert failures and borrowed replies while propagating fixture IO errors"
+    reason = "Assert failures/borrowed replies; propagate fixture IO errors"
 )]
 
 use core::time::Duration;
@@ -49,7 +49,14 @@ fn excess_connections_are_closed_without_accepting_work() -> io::Result<()> {
         excess.set_read_timeout(Some(Duration::from_secs(2)))?;
         // A rejected stream may close before its bytes can be written.
         let _written = excess.write_all(
-            format!("{{\"request\":{{\"type\":\"discover\"}},\"version\":{PROTOCOL_VERSION}}}\n").as_bytes(),
+            format!(
+                concat!(
+                    "{{\"request\":{{\"type\":\"discover\"}},",
+                    "\"version\":{}}}\n",
+                ),
+                PROTOCOL_VERSION,
+            )
+            .as_bytes(),
         );
         let mut byte = [0];
         match excess.read(&mut byte) {
@@ -81,7 +88,18 @@ fn ordinary_connection_ignores_a_coalesced_second_command() -> io::Result<()> {
     with_running_endpoint(|socket| {
         let mut stream = UnixStream::connect(socket)?;
         stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-        stream.write_all(format!("{{\"request\":{{\"type\":\"status\"}},\"version\":{PROTOCOL_VERSION}}}\n{{\"request\":{{\"type\":\"discover\"}},\"version\":{PROTOCOL_VERSION}}}\n").as_bytes())?;
+        stream.write_all(
+            format!(
+                concat!(
+                    "{{\"request\":{{\"type\":\"status\"}},",
+                    "\"version\":{version}}}\n",
+                    "{{\"request\":{{\"type\":\"discover\"}},",
+                    "\"version\":{version}}}\n",
+                ),
+                version = PROTOCOL_VERSION,
+            )
+            .as_bytes(),
+        )?;
         let mut replies = String::new();
         let _read = stream.read_to_string(&mut replies)?;
         assert_eq!(replies, READY);
@@ -133,7 +151,7 @@ fn client_rejects_oversized_truncated_and_wrong_version_replies()
 #[expect(
     clippy::integer_division,
     clippy::integer_division_remainder_used,
-    reason = "Each fixture character occupies two UTF-8 bytes; envelope overhead exceeds the frame limit"
+    reason = "Two-byte UTF-8 characters plus overhead exceed the frame limit"
 )]
 fn oversized_outgoing_response_writes_no_partial_frame() -> io::Result<()> {
     let (mut stream, mut peer) = UnixStream::pair()?;

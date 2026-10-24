@@ -189,29 +189,8 @@ def stage(path: Path, record: dict[str, Any], command: list[str]) -> None:
         read_fd, write_fd = os.pipe()
         process = None
         try:
-            process = subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true] - Reuse the existing descriptor gate; internal argv only.
-                [
-                    sys.executable,
-                    str(clean_job.SOURCE / "clean_job.py"),
-                    "_gate",
-                    str(read_fd),
-                    str(lock.fileno()),
-                    str(item["deadlineSeconds"]),
-                    *command,
-                ],
-                cwd=ROOT,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                pass_fds=(read_fd, lock.fileno()),
-            )
-            item["worker"] = clean_job.process(process.pid)
-            if item["worker"] is None:
-                message = "Stage gate exited before ownership recording"
-                raise RuntimeError(message)
-            item["status"] = "running"
-            save(path, record)
-            os.write(write_fd, b"1")
+            process = _spawn_stage(command, item, (read_fd, lock.fileno()))
+            _release_stage(path, record, (process, item, write_fd))
             shared_evidence.capture_stream(process.stdout, log)
             process.wait()
         finally:
@@ -233,6 +212,43 @@ def stage(path: Path, record: dict[str, Any], command: list[str]) -> None:
     if process.returncode:
         message = f"{name} failed with exit status {process.returncode}"
         raise RuntimeError(message)
+
+
+def _spawn_stage(
+    command: list[str], item: dict[str, Any], descriptors: tuple[int, int]
+) -> subprocess.Popen[bytes]:
+    read_fd, lock_fd = descriptors
+    return subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true] - Reuse the existing descriptor gate; internal argv only.
+        [
+            sys.executable,
+            str(clean_job.SOURCE / "clean_job.py"),
+            "_gate",
+            str(read_fd),
+            str(lock_fd),
+            str(item["deadlineSeconds"]),
+            *command,
+        ],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        pass_fds=descriptors,
+    )
+
+
+def _release_stage(
+    path: Path,
+    record: dict[str, Any],
+    gate: tuple[subprocess.Popen[bytes], dict[str, Any], int],
+) -> None:
+    process, item, write_fd = gate
+    item["worker"] = clean_job.process(process.pid)
+    if item["worker"] is None:
+        message = "Stage gate exited before ownership recording"
+        raise RuntimeError(message)
+    item["status"] = "running"
+    save(path, record)
+    os.write(write_fd, b"1")
 
 
 def single(directory: Path, filename: str) -> Path:
@@ -310,44 +326,7 @@ def run(path: Path) -> None:
         ):
             message = "Successful unused full preflight required"
             raise RuntimeError(message)
-        CACHE.parent.mkdir(parents=True, exist_ok=True)
-        record["cacheOwner"] = {
-            "device": CACHE.parent.stat().st_dev,
-            "inode": CACHE.parent.stat().st_ino,
-        }
-        save(path, record)
-        stage(path, record, ["make", "desktop-prepare"])
-        base = CACHE / "bases" / record["baseFingerprint"] / "prepared.json"
-        if load(base)["fingerprint"] != record["baseFingerprint"]:
-            message = "Prepared environment identity differs from preflight"
-            raise RuntimeError(message)
-        stage(path, record, ["make", "native-build", "NATIVE_COMPONENT=all"])
-        artifact = Path(load(CACHE / "native/latest.json")["artifact"])
-        record["nativeArtifact"] = str(artifact)
-        metadata = load(artifact / "build.json")
-        if (
-            metadata["status"] != "built"
-            or metadata.get("schemaVersion") != NATIVE_SCHEMA_VERSION
-            or set(metadata.get("components", {})) != {"cli", "daemon"}
-            or metadata["source"]["commit"] != record["sourceCommit"]
-        ):
-            message = "Native build differs from the selected source"
-            raise RuntimeError(message)
-        save(path, record)
-        stage(
-            path,
-            record,
-            ["make", "desktop-candidate", f"NATIVE_ARTIFACT={artifact}"],
-        )
-        selected = single(CACHE / "candidates", "candidate.json").parent
-        manifest = candidate.load(selected)
-        if manifest["sourceHead"] != record["sourceCommit"] or manifest[
-            "nativeBuild"
-        ]["artifact"] != str(artifact):
-            message = "Candidate source/native identity differs"
-            raise RuntimeError(message)
-        record["candidateDirectory"] = str(selected)
-        save(path, record)
+        selected = _prepare_inputs(path, record)
         stage(path, record, ["make", "desktop-peer-prepare"])
         stage(
             path,
@@ -361,6 +340,53 @@ def run(path: Path) -> None:
         )
         record["job"] = str(single(clean_job.JOBS, "job.json"))
         save(path, record)
+
+
+def _prepare_inputs(path: Path, record: dict[str, Any]) -> Path:
+    CACHE.parent.mkdir(parents=True, exist_ok=True)
+    record["cacheOwner"] = {
+        "device": CACHE.parent.stat().st_dev,
+        "inode": CACHE.parent.stat().st_ino,
+    }
+    save(path, record)
+    stage(path, record, ["make", "desktop-prepare"])
+    base = CACHE / "bases" / record["baseFingerprint"] / "prepared.json"
+    if load(base)["fingerprint"] != record["baseFingerprint"]:
+        message = "Prepared environment identity differs from preflight"
+        raise RuntimeError(message)
+    artifact = _build_native(path, record)
+    stage(
+        path,
+        record,
+        ["make", "desktop-candidate", f"NATIVE_ARTIFACT={artifact}"],
+    )
+    selected = single(CACHE / "candidates", "candidate.json").parent
+    manifest = candidate.load(selected)
+    if manifest["sourceHead"] != record["sourceCommit"] or manifest[
+        "nativeBuild"
+    ]["artifact"] != str(artifact):
+        message = "Candidate source/native identity differs"
+        raise RuntimeError(message)
+    record["candidateDirectory"] = str(selected)
+    save(path, record)
+    return selected
+
+
+def _build_native(path: Path, record: dict[str, Any]) -> Path:
+    stage(path, record, ["make", "native-build", "NATIVE_COMPONENT=all"])
+    artifact = Path(load(CACHE / "native/latest.json")["artifact"])
+    record["nativeArtifact"] = str(artifact)
+    metadata = load(artifact / "build.json")
+    if (
+        metadata["status"] != "built"
+        or metadata.get("schemaVersion") != NATIVE_SCHEMA_VERSION
+        or set(metadata.get("components", {})) != {"cli", "daemon"}
+        or metadata["source"]["commit"] != record["sourceCommit"]
+    ):
+        message = "Native build differs from the selected source"
+        raise RuntimeError(message)
+    save(path, record)
+    return artifact
 
 
 def recovery_command(command: list[str]) -> int:

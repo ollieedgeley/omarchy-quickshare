@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 SOURCE = Path(__file__).resolve().parent
 ROOT = SOURCE.parents[2]
-CACHE = ROOT / ".cache/test-env/desktop"
+CACHE = resource_budget.CACHE
 MANIFEST = json.loads((SOURCE / "environment.json").read_text(encoding="utf-8"))
 
 
@@ -215,6 +215,88 @@ def ssh(  # ruff: ignore[too-many-arguments] - SSH command and independent trans
     )
 
 
+def _write_ssh_config(state: dict[str, Any]) -> None:
+    directory = Path(state["directory"])
+    (directory / "ssh.config").write_text(
+        f"Host desktop\n HostName 127.0.0.1\n Port {state['sshPort']}\n"
+        f" User {MANIFEST['user']}\n"
+        f' IdentityFile "{state["sshKey"]}"\n IdentitiesOnly yes\n'
+        " BatchMode yes\n ConnectTimeout 5\n"
+        " StrictHostKeyChecking yes\n HostKeyAlias desktop\n"
+        " GlobalKnownHostsFile /dev/null\n UpdateHostKeys no\n"
+        f' UserKnownHostsFile "{directory / "known_hosts"}"\n',
+        encoding="utf-8",
+    )
+
+
+def _qemu_args(
+    state: dict[str, Any], extras: Iterable[str | int | Path]
+) -> list[str | int | Path]:
+    return [
+        "qemu-system-x86_64",
+        "-name",
+        f"quickshare-desktop-{state['uuid']}",
+        "-uuid",
+        state["uuid"],
+        "-machine",
+        "q35,accel=kvm",
+        "-cpu",
+        "host",
+        "-smp",
+        state["resources"]["cpus"],
+        "-m",
+        state["resources"]["memoryMiB"],
+        "-drive",
+        f"if=pflash,format=raw,readonly=on,file={state['firmwareCode']}",
+        "-drive",
+        f"if=pflash,format=raw,file={state['firmware']}",
+        "-drive",
+        f"file={state['disk']},format=qcow2,if=none,id=disk0",
+        "-device",
+        "virtio-blk-pci,drive=disk0,bootindex=1",
+        "-device",
+        "virtio-vga",
+        "-display",
+        "none",
+        "-vnc",
+        "unix:vnc.sock",
+        "-usb",
+        "-device",
+        "usb-tablet",
+        "-netdev",
+        f"user,id=net0,hostfwd=tcp:127.0.0.1:{state['sshPort']}-:22",
+        "-device",
+        "virtio-net-pci,netdev=net0",
+        "-qmp",
+        "unix:qmp.sock,server=on,wait=off",
+        "-chardev",
+        "file,id=serial0,path=serial.log,append=on",
+        "-serial",
+        "chardev:serial0",
+        "-pidfile",
+        "qemu.pid",
+        "-daemonize",
+        *extras,
+    ]
+
+
+def _start_process(
+    state: dict[str, Any], extras: Iterable[str | int | Path]
+) -> None:
+    directory = Path(state["directory"])
+    allocation = state["resources"]
+    args = _qemu_args(state, extras)
+    with (
+        resource_budget.claim(
+            "vm", directory, allocation["cpus"], allocation["memoryMiB"]
+        ),
+        (directory / "qemu.log").open("a", encoding="utf-8") as log,
+    ):
+        run(args, cwd=directory, stdout=log, stderr=log)
+    state["pid"] = int((directory / "qemu.pid").read_text(encoding="utf-8"))
+    save(Path(state["stateFile"]), state)
+
+
 def launch(  # ruff: ignore[too-many-arguments] - Explicit QEMU artifact and resource inputs.
     directory: Path,
     allocation: dict[str, int],
@@ -251,72 +333,9 @@ def launch(  # ruff: ignore[too-many-arguments] - Explicit QEMU artifact and res
         "firmwareCode": str(code),
         "sshKey": str(key),
     }
-    (directory / "ssh.config").write_text(
-        f"Host desktop\n HostName 127.0.0.1\n Port {port}\n"
-        f" User {MANIFEST['user']}\n"
-        f' IdentityFile "{key}"\n IdentitiesOnly yes\n'
-        " BatchMode yes\n ConnectTimeout 5\n"
-        " StrictHostKeyChecking yes\n HostKeyAlias desktop\n"
-        " GlobalKnownHostsFile /dev/null\n UpdateHostKeys no\n"
-        f' UserKnownHostsFile "{directory / "known_hosts"}"\n',
-        encoding="utf-8",
-    )
+    _write_ssh_config(state)
     save(Path(state["stateFile"]), state)
-    args = [
-        "qemu-system-x86_64",
-        "-name",
-        f"quickshare-desktop-{guest_uuid}",
-        "-uuid",
-        guest_uuid,
-        "-machine",
-        "q35,accel=kvm",
-        "-cpu",
-        "host",
-        "-smp",
-        allocation["cpus"],
-        "-m",
-        allocation["memoryMiB"],
-        "-drive",
-        f"if=pflash,format=raw,readonly=on,file={code}",
-        "-drive",
-        f"if=pflash,format=raw,file={variables}",
-        "-drive",
-        f"file={disk},format=qcow2,if=none,id=disk0",
-        "-device",
-        "virtio-blk-pci,drive=disk0,bootindex=1",
-        "-device",
-        "virtio-vga",
-        "-display",
-        "none",
-        "-vnc",
-        "unix:vnc.sock",
-        "-usb",
-        "-device",
-        "usb-tablet",
-        "-netdev",
-        f"user,id=net0,hostfwd=tcp:127.0.0.1:{port}-:22",
-        "-device",
-        "virtio-net-pci,netdev=net0",
-        "-qmp",
-        "unix:qmp.sock,server=on,wait=off",
-        "-chardev",
-        "file,id=serial0,path=serial.log,append=on",
-        "-serial",
-        "chardev:serial0",
-        "-pidfile",
-        "qemu.pid",
-        "-daemonize",
-        *extras,
-    ]
-    with (
-        resource_budget.claim(
-            "vm", directory, allocation["cpus"], allocation["memoryMiB"]
-        ),
-        (directory / "qemu.log").open("a", encoding="utf-8") as log,
-    ):
-        run(args, cwd=directory, stdout=log, stderr=log)
-    state["pid"] = int((directory / "qemu.pid").read_text(encoding="utf-8"))
-    save(Path(state["stateFile"]), state)
+    _start_process(state, extras)
     return state
 
 

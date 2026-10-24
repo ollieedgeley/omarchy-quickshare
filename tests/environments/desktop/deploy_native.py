@@ -34,7 +34,7 @@ journalctl --user -u omarchy-quickshare.service -b -n 150 --no-pager
 )
 
 
-def _artifact(  # ruff: ignore[too-many-branches] - Reject every unsupported artifact identity before deployment.
+def _artifact(
     selected: Path | None, component: str = "all"
 ) -> tuple[Path, dict[str, Any]]:
     roles = build_native.components(component)
@@ -49,6 +49,14 @@ def _artifact(  # ruff: ignore[too-many-branches] - Reject every unsupported art
         )
     selected = selected.resolve(strict=True)
     metadata = json.loads((selected / "build.json").read_text(encoding="utf-8"))
+    _validate_metadata(metadata, component, roles)
+    _validate_bytes(selected, metadata, roles)
+    return selected, metadata
+
+
+def _validate_metadata(
+    metadata: dict[str, Any], component: str, roles: tuple[str, ...]
+) -> None:
     if metadata.get("schemaVersion") != build_native.SCHEMA_VERSION:
         message = "Unsupported native build schema; rebuild separate components"
         raise RuntimeError(message)
@@ -67,6 +75,12 @@ def _artifact(  # ruff: ignore[too-many-branches] - Reject every unsupported art
     ):
         message = f"Native artifact lacks requested components: {component}"
         raise RuntimeError(message)
+
+
+def _validate_bytes(
+    selected: Path, metadata: dict[str, Any], roles: tuple[str, ...]
+) -> None:
+    records = metadata["components"]
     for role in roles:
         record = records[role]
         name = build_native.COMPONENTS[role]["file"]
@@ -82,7 +96,6 @@ def _artifact(  # ruff: ignore[too-many-branches] - Reject every unsupported art
                     "Artifact service differs from shipped service; rebuild"
                 )
                 raise RuntimeError(message)
-    return selected, metadata
 
 
 def _guest(state: dict[str, Any], command: str, log: Path) -> str:

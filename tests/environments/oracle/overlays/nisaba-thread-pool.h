@@ -14,10 +14,10 @@
 #include "absl/time/time.h"
 
 class ThreadPool {
- public:
+public:
   explicit ThreadPool(int thread_count) : thread_count_(thread_count) {}
-  ThreadPool(const ThreadPool&) = delete;
-  ThreadPool& operator=(const ThreadPool&) = delete;
+  ThreadPool(const ThreadPool &) = delete;
+  ThreadPool &operator=(const ThreadPool &) = delete;
 
   ~ThreadPool() {
     {
@@ -25,7 +25,8 @@ class ThreadPool {
       stopping_ = true;
     }
     ready_.notify_all();
-    for (auto& worker : workers_) worker.join();
+    for (auto &worker : workers_)
+      worker.join();
   }
 
   void StartWorkers() {
@@ -50,14 +51,15 @@ class ThreadPool {
     });
   }
 
- private:
+private:
   void Work() {
     while (true) {
       absl::AnyInvocable<void()> task;
       {
         std::unique_lock lock(mutex_);
         ready_.wait(lock, [this] { return stopping_ || !tasks_.empty(); });
-        if (stopping_ && tasks_.empty()) return;
+        if (stopping_ && tasks_.empty())
+          return;
         task = std::move(tasks_.front());
         tasks_.pop_front();
       }
@@ -73,4 +75,4 @@ class ThreadPool {
   std::vector<std::thread> workers_;
 };
 
-#endif  // OMARCHY_QUICKSHARE_NISABA_THREAD_POOL_H_
+#endif // OMARCHY_QUICKSHARE_NISABA_THREAD_POOL_H_

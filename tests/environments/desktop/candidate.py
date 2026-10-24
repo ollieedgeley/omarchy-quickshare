@@ -134,6 +134,29 @@ def _plugin_git(source: Path, files: dict[str, str], log: Path) -> str:
     return command(["git", "rev-parse", "HEAD"], source, log)
 
 
+def _matching_plugin_release(
+    source: Path, report: dict[str, Any]
+) -> dict[str, Any]:
+    metadata = report["nativeBuild"]["metadata"]
+    release = json.loads((source / "release.json").read_text(encoding="utf-8"))
+    native = release["nativeArtifact"]
+    components = {
+        role: {"file": item["file"], "sha256": item["sha256"]}
+        for role, item in metadata["components"].items()
+    }
+    if (
+        release["sourceCommit"] != metadata["sourceCommit"]
+        or native["version"] != report["package"]["version"]
+        or native["components"] != components
+    ):
+        message = "Selected plugin release does not match the native build"
+        raise RuntimeError(message)
+    candidate_contract.matching_protocol(
+        metadata["controlProtocol"], release["controlProtocol"]
+    )
+    return release
+
+
 def _copy_plugin(
     source: Path, report: dict[str, Any], log: Path
 ) -> tuple[dict[str, str], str, bool]:
@@ -157,22 +180,7 @@ def _copy_plugin(
     ):
         message = "Selected plugin differs from the native build provenance"
         raise RuntimeError(message)
-    release = json.loads((source / "release.json").read_text(encoding="utf-8"))
-    native = release["nativeArtifact"]
-    components = {
-        role: {"file": item["file"], "sha256": item["sha256"]}
-        for role, item in metadata["components"].items()
-    }
-    if (
-        release["sourceCommit"] != metadata["sourceCommit"]
-        or native["version"] != report["package"]["version"]
-        or native["components"] != components
-    ):
-        message = "Selected plugin release does not match the native build"
-        raise RuntimeError(message)
-    candidate_contract.matching_protocol(
-        metadata["controlProtocol"], release["controlProtocol"]
-    )
+    release = _matching_plugin_release(source, report)
     command(
         ["git", "clone", "--no-local", "--", source, repository],
         vm_control.ROOT,
@@ -187,16 +195,9 @@ def _copy_plugin(
     return files, release["sourceCommit"], True
 
 
-def _export_plugin(
-    report: dict[str, Any], log: Path
-) -> tuple[dict[str, str], str, bool]:
+def _create_plugin_repository(report: dict[str, Any], log: Path) -> None:
     source = deploy_panel.SOURCE
     repository = Path(report["directory"]) / "plugin"
-    before = {
-        p.name: build_native.digest(p)
-        for p in source.iterdir()
-        if p.is_file() and not p.is_symlink()
-    }
     command(
         [
             "node",
@@ -213,6 +214,19 @@ def _export_plugin(
         vm_control.ROOT,
         log,
     )
+
+
+def _export_plugin(
+    report: dict[str, Any], log: Path
+) -> tuple[dict[str, str], str, bool]:
+    source = deploy_panel.SOURCE
+    repository = Path(report["directory"]) / "plugin"
+    before = {
+        p.name: build_native.digest(p)
+        for p in source.iterdir()
+        if p.is_file() and not p.is_symlink()
+    }
+    _create_plugin_repository(report, log)
     files = inventory(repository)
     source_files = {name: build_native.digest(source / name) for name in files}
     if any(source_files[name] != before.get(name) for name in files):
@@ -242,11 +256,178 @@ def _export_plugin(
     return source_files, report["sourceHead"], exact
 
 
-def build(selected: Path | None, plugin: Path | None = None) -> None:  # ruff: ignore[too-many-branches,too-many-statements,too-many-locals] - One retained report spans source identities, package creation and plugin export.
+def _prepare_native(
+    selected: Path | None, plugin: Path | None, report: dict[str, Any]
+) -> None:
+    log = Path(report["directory"]) / "build.log"
+    artifact, metadata = deploy_native._artifact(selected, component="all")  # ruff: ignore[private-member-access] - Internal artifact identity helper
+    report["nativeBuild"] = {
+        "artifact": str(artifact),
+        "metadata": metadata,
+    }
+    if plugin:
+        for path in [
+            "LICENSE",
+            "packaging/systemd/omarchy-quickshare.toml",
+            "crates/app/Cargo.toml",
+            "crates/cli/Cargo.toml",
+        ]:
+            if (
+                build_native.digest(vm_control.ROOT / path)
+                != metadata["source"]["inputs"][path]
+            ):
+                message = (
+                    f"Packaging input differs from native snapshot: {path}"
+                )
+                raise RuntimeError(message)
+    report["sourceHead"] = (
+        metadata["sourceCommit"]
+        if plugin
+        else command(["git", "rev-parse", "HEAD"], vm_control.ROOT, log)
+    )
+    report["worktreeStatus"] = (
+        ""
+        if plugin
+        else command(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            vm_control.ROOT,
+            log,
+        )
+    )
+
+
+def _copy_native_inputs(report: dict[str, Any]) -> None:
+    attempt = Path(report["directory"])
+    artifact = Path(report["nativeBuild"]["artifact"])
+    metadata = report["nativeBuild"]["metadata"]
+    inputs = attempt / "native-inputs"
+    inputs.mkdir()
+    sources = {
+        **{
+            component["file"]: artifact / component["file"]
+            for component in metadata["components"].values()
+        },
+        build_native.UNIT.name: artifact / build_native.UNIT.name,
+        build_native.NAME + ".toml": vm_control.ROOT
+        / "packaging/systemd/omarchy-quickshare.toml",
+        "LICENSE": vm_control.ROOT / "LICENSE",
+    }
+    report["nativeInputs"] = {}
+    for name, source in sources.items():
+        if source.is_symlink() or not source.is_file():
+            message = f"Candidate input must be a regular file: {source}"
+            raise RuntimeError(message)
+        digest = build_native.digest(source)
+        shutil.copyfile(source, inputs / name)
+        if build_native.digest(inputs / name) != digest:
+            message = f"Candidate input changed during copy: {source}"
+            raise RuntimeError(message)
+        report["nativeInputs"][name] = {
+            "source": str(source),
+            "sha256": digest,
+        }
+    candidate_contract.matching_inputs(report)
+
+
+def _build_package(report: dict[str, Any], log: Path) -> None:
+    attempt = Path(report["directory"])
+    inputs = attempt / "native-inputs"
+    metadata = report["nativeBuild"]["metadata"]
+    package = json.loads(
+        command(
+            [
+                "node",
+                "--input-type=module",
+                "-e",
+                PACKAGE,
+                json.dumps({
+                    "nativeDirectory": str(inputs),
+                    "destination": str(attempt / "arch"),
+                    "root": str(vm_control.ROOT),
+                }),
+            ],
+            vm_control.ROOT,
+            log,
+        )
+    )
+    candidate_contract.matching_version(metadata, package["version"])
+    package_path = Path(package["artifact"])
+    pkginfo = command(
+        ["tar", "--zstd", "-xOf", package_path, ".PKGINFO"],
+        vm_control.ROOT,
+        log,
+    )
+    identity = dict(
+        line.split(" = ", 1) for line in pkginfo.splitlines() if " = " in line
+    )
+    report["package"] = {
+        "path": str(package_path),
+        "sha256": build_native.digest(package_path),
+        "version": package["version"],
+        "pkginfo": pkginfo,
+        "name": identity["pkgname"],
+        "packageVersion": identity["pkgver"],
+        "architecture": identity["arch"],
+        "unitSha256": build_native.digest(
+            attempt / "arch" / build_native.UNIT.name
+        ),
+    }
+
+
+def _bundle_plugin(
+    report: dict[str, Any], plugin: Path | None, log: Path
+) -> None:
+    attempt = Path(report["directory"])
+    metadata = report["nativeBuild"]["metadata"]
+    source = plugin.absolute() if plugin else deploy_panel.SOURCE
+    repository = attempt / "plugin"
+    source_files, source_head, exact = (
+        _copy_plugin(source, report, log)
+        if plugin
+        else _export_plugin(report, log)
+    )
+    files = inventory(repository)
+    manifest = json.loads(
+        (repository / "manifest.json").read_text(encoding="utf-8")
+    )
+    compatibility = json.loads(
+        (repository / "release.json").read_text(encoding="utf-8")
+    )["controlProtocol"]
+    candidate_contract.matching_protocol(
+        metadata["controlProtocol"], compatibility
+    )
+    entry = manifest["entryPoints"]["barWidget"]
+    if deploy_panel.STAMP not in (repository / entry).read_text(
+        encoding="utf-8"
+    ):
+        message = "Fresh candidate requires shipped unstamped identity"
+        raise RuntimeError(message)
+    commit = command(["git", "rev-parse", "HEAD"], repository, log)
+    bundle = attempt / "plugin.bundle"
+    command(["git", "bundle", "create", bundle, "--all"], repository, log)
+    report["plugin"] = {
+        "id": manifest["id"],
+        "entryPoint": entry,
+        "controlProtocol": compatibility,
+        "revision": "unversioned",
+        "source": str(source),
+        "sourceHead": source_head,
+        "sourceFiles": source_files,
+        "sourceCommitIsExact": exact,
+        "repository": str(repository),
+        "commit": commit,
+        "files": files,
+        "bundle": str(bundle),
+        "bundleSha256": build_native.digest(bundle),
+    }
+
+
+def build(selected: Path | None, plugin: Path | None = None) -> None:
     """Build candidate package+plugin bundle; retain evidence on failure.
 
+    Preparation and validation errors propagate after failure recording.
+
     Raises:
-        RuntimeError: Validation failures (recorded then re-raised).
         KeyboardInterrupt: Recorded then re-raised.
     """
     attempt = CANDIDATES / str(uuid.uuid4())
@@ -260,150 +441,11 @@ def build(selected: Path | None, plugin: Path | None = None) -> None:  # ruff: i
         "directory": str(attempt),
     }
     log = attempt / "build.log"
-    try:  # ruff: ignore[too-many-statements-in-try-clause] - Preserve one report across independent preparation/export steps for failure retention
-        artifact, metadata = deploy_native._artifact(selected, component="all")  # ruff: ignore[private-member-access] - Internal artifact identity helper
-        report["nativeBuild"] = {
-            "artifact": str(artifact),
-            "metadata": metadata,
-        }
-        if plugin:
-            for path in [
-                "LICENSE",
-                "packaging/systemd/omarchy-quickshare.toml",
-                "crates/app/Cargo.toml",
-                "crates/cli/Cargo.toml",
-            ]:
-                if (
-                    build_native.digest(vm_control.ROOT / path)
-                    != metadata["source"]["inputs"][path]
-                ):
-                    message = (
-                        f"Packaging input differs from native snapshot: {path}"
-                    )
-                    raise RuntimeError(message)  # ruff: ignore[raise-within-try] - Retain exact failure evidence.
-        report["sourceHead"] = (
-            metadata["sourceCommit"]
-            if plugin
-            else command(["git", "rev-parse", "HEAD"], vm_control.ROOT, log)
-        )
-        report["worktreeStatus"] = (
-            ""
-            if plugin
-            else command(
-                ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-                vm_control.ROOT,
-                log,
-            )
-        )
-        inputs = attempt / "native-inputs"
-        inputs.mkdir()
-        sources = {
-            **{
-                component["file"]: artifact / component["file"]
-                for component in metadata["components"].values()
-            },
-            build_native.UNIT.name: artifact / build_native.UNIT.name,
-            build_native.NAME + ".toml": vm_control.ROOT
-            / "packaging/systemd/omarchy-quickshare.toml",
-            "LICENSE": vm_control.ROOT / "LICENSE",
-        }
-        report["nativeInputs"] = {}
-        for name, source in sources.items():
-            if source.is_symlink() or not source.is_file():
-                message = f"Candidate input must be a regular file: {source}"
-                raise RuntimeError(message)  # ruff: ignore[raise-within-try] - Retain exact failure evidence
-            digest = build_native.digest(source)
-            shutil.copyfile(source, inputs / name)
-            if build_native.digest(inputs / name) != digest:
-                message = f"Candidate input changed during copy: {source}"
-                raise RuntimeError(message)  # ruff: ignore[raise-within-try] - Retain exact failure evidence
-            report["nativeInputs"][name] = {
-                "source": str(source),
-                "sha256": digest,
-            }
-        candidate_contract.matching_inputs(report)
-        package = json.loads(
-            command(
-                [
-                    "node",
-                    "--input-type=module",
-                    "-e",
-                    PACKAGE,
-                    json.dumps({
-                        "nativeDirectory": str(inputs),
-                        "destination": str(attempt / "arch"),
-                        "root": str(vm_control.ROOT),
-                    }),
-                ],
-                vm_control.ROOT,
-                log,
-            )
-        )
-        candidate_contract.matching_version(metadata, package["version"])
-        package_path = Path(package["artifact"])
-        pkginfo = command(
-            ["tar", "--zstd", "-xOf", package_path, ".PKGINFO"],
-            vm_control.ROOT,
-            log,
-        )
-        identity = dict(
-            line.split(" = ", 1)
-            for line in pkginfo.splitlines()
-            if " = " in line
-        )
-        report["package"] = {
-            "path": str(package_path),
-            "sha256": build_native.digest(package_path),
-            "version": package["version"],
-            "pkginfo": pkginfo,
-            "name": identity["pkgname"],
-            "packageVersion": identity["pkgver"],
-            "architecture": identity["arch"],
-            "unitSha256": build_native.digest(
-                attempt / "arch" / build_native.UNIT.name
-            ),
-        }
-        source = plugin.absolute() if plugin else deploy_panel.SOURCE
-        repository = attempt / "plugin"
-        source_files, source_head, exact = (
-            _copy_plugin(source, report, log)
-            if plugin
-            else _export_plugin(report, log)
-        )
-        files = inventory(repository)
-        manifest = json.loads(
-            (repository / "manifest.json").read_text(encoding="utf-8")
-        )
-        compatibility = json.loads(
-            (repository / "release.json").read_text(encoding="utf-8")
-        )["controlProtocol"]
-        candidate_contract.matching_protocol(
-            metadata["controlProtocol"], compatibility
-        )
-        entry = manifest["entryPoints"]["barWidget"]
-        if deploy_panel.STAMP not in (repository / entry).read_text(
-            encoding="utf-8"
-        ):
-            message = "Fresh candidate requires shipped unstamped identity"
-            raise RuntimeError(message)  # ruff: ignore[raise-within-try] - Retain exact failure evidence
-        commit = command(["git", "rev-parse", "HEAD"], repository, log)
-        bundle = attempt / "plugin.bundle"
-        command(["git", "bundle", "create", bundle, "--all"], repository, log)
-        report["plugin"] = {
-            "id": manifest["id"],
-            "entryPoint": entry,
-            "controlProtocol": compatibility,
-            "revision": "unversioned",
-            "source": str(source),
-            "sourceHead": source_head,
-            "sourceFiles": source_files,
-            "sourceCommitIsExact": exact,
-            "repository": str(repository),
-            "commit": commit,
-            "files": files,
-            "bundle": str(bundle),
-            "bundleSha256": build_native.digest(bundle),
-        }
+    try:
+        _prepare_native(selected, plugin, report)
+        _copy_native_inputs(report)
+        _build_package(report, log)
+        _bundle_plugin(report, plugin, log)
         report["status"] = "built"
     except (Exception, KeyboardInterrupt) as error:
         report["error"] = f"{type(error).__name__}: {error}"

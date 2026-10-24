@@ -9,9 +9,10 @@ import subprocess  # ruff: ignore[suspicious-subprocess-import] - Catch fixed-ar
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import resource_budget
 import vm_control
@@ -107,28 +108,8 @@ def _source_identity() -> dict[str, Any]:
     }
 
 
-def _configuration(
-    component: str = "all",
-) -> tuple[list[str], dict[str, str], dict[str, Any]]:
-    profile = os.environ.get("DESKTOP_NATIVE_PROFILE", "release")
-    if profile not in {"release", "dev"}:
-        message = "DESKTOP_NATIVE_PROFILE must be release or dev"
-        raise ValueError(message)
-    compiler = os.environ.get("RUSTC") or shutil.which("rustc")
-    if not compiler:
-        message = "rustc is not available"
-        raise RuntimeError(message)
-    # Pin the measured compiler, including when Cargo config names another one.
-    environment = {**os.environ, "CARGO_BUILD_JOBS": "1", "RUSTC": compiler}
-    rustc = vm_control.output([compiler, "-vV"], cwd=vm_control.ROOT)
-    host = next(
-        line.removeprefix("host: ")
-        for line in rustc.splitlines()
-        if line.startswith("host: ")
-    )
-    target = os.environ.get("DESKTOP_NATIVE_TARGET", host)
-    cargo = vm_control.output(["cargo", "--version"], cwd=vm_control.ROOT)
-    command = [
+def _cargo_command(component: str, profile: str, target: str) -> list[str]:
+    return [
         "cargo",
         "build",
         "--locked",
@@ -152,6 +133,30 @@ def _configuration(
         target,
         "--message-format=json-render-diagnostics",
     ]
+
+
+def _configuration(
+    component: str = "all",
+) -> tuple[list[str], dict[str, str], dict[str, Any]]:
+    profile = os.environ.get("DESKTOP_NATIVE_PROFILE", "release")
+    if profile not in {"release", "dev"}:
+        message = "DESKTOP_NATIVE_PROFILE must be release or dev"
+        raise ValueError(message)
+    compiler = os.environ.get("RUSTC") or shutil.which("rustc")
+    if not compiler:
+        message = "rustc is not available"
+        raise RuntimeError(message)
+    # Pin the measured compiler, including when Cargo config names another one.
+    environment = {**os.environ, "CARGO_BUILD_JOBS": "1", "RUSTC": compiler}
+    rustc = vm_control.output([compiler, "-vV"], cwd=vm_control.ROOT)
+    host = next(
+        line.removeprefix("host: ")
+        for line in rustc.splitlines()
+        if line.startswith("host: ")
+    )
+    target = os.environ.get("DESKTOP_NATIVE_TARGET", host)
+    cargo = vm_control.output(["cargo", "--version"], cwd=vm_control.ROOT)
+    command = _cargo_command(component, profile, target)
     environment_identity = {
         key: hashlib.sha256(environment[key].encode()).hexdigest()
         for key in sorted(environment)
@@ -193,9 +198,19 @@ def _cargo_artifact(messages: Path, role: str) -> dict[str, Any]:
     return artifact
 
 
-def _build(destination: Path, lock_fd: int) -> dict[str, Any]:
-    source = _source_identity()
-    component = os.environ.get("NATIVE_COMPONENT", "all")
+@dataclass
+class _Compilation:
+    destination: Path
+    lock_fd: int
+    metadata: dict[str, Any]
+    environment: dict[str, str]
+
+
+def _build_metadata(
+    destination: Path,
+    component: str,
+    source: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]]:
     command, environment, compatibility = _configuration(component)
     metadata = {
         "schemaVersion": SCHEMA_VERSION,
@@ -219,7 +234,23 @@ def _build(destination: Path, lock_fd: int) -> dict[str, Any]:
             ).hexdigest(),
         },
     }
+    return metadata, environment, compatibility
+
+
+def _build(destination: Path, lock_fd: int) -> dict[str, Any]:
+    source = _source_identity()
+    component = os.environ.get("NATIVE_COMPONENT", "all")
+    metadata, environment, compatibility = _build_metadata(
+        destination, component, source
+    )
     vm_control.save(destination / "build.json", metadata)
+    _compile(_Compilation(destination, lock_fd, metadata, environment))
+    return _publish(destination, metadata, compatibility)
+
+
+def _compile(compilation: _Compilation) -> None:
+    destination = compilation.destination
+    metadata = compilation.metadata
     messages = destination / "cargo.jsonl"
     with (
         messages.open("w", encoding="utf-8") as events,
@@ -231,7 +262,7 @@ def _build(destination: Path, lock_fd: int) -> dict[str, Any]:
             "taskset",
             "--cpu-list",
             str(cpu),
-            *command,
+            *metadata["command"],
         ]
         metadata["resourceBudget"] = {
             "cpus": 1,
@@ -240,52 +271,55 @@ def _build(destination: Path, lock_fd: int) -> dict[str, Any]:
             "memoryEnforcement": "admission budget, not a hard memory limit",
         }
         vm_control.save(destination / "build.json", metadata)
-        started = time.monotonic()
-        with subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true] - Fixed Cargo argv, no shell text.
-            metadata["executionCommand"],
-            cwd=vm_control.ROOT,
-            env={
-                **environment,
-                resource_budget.TOKEN: os.environ[resource_budget.TOKEN],
-            },
-            stdout=events,
-            stderr=log,
-            pass_fds=(lock_fd,),
-        ) as process:
-            try:
-                _, status, usage = os.wait4(process.pid, 0)
-                process.returncode = os.waitstatus_to_exitcode(status)
-            except BaseException:
-                process.kill()
-                raise
-            metadata["resourceUsage"] = {
-                "scope": "affinity-pinned Cargo process and waited descendants",
-                "maxRssKiB": usage.ru_maxrss,
-                "userCpuSeconds": usage.ru_utime,
-                "systemCpuSeconds": usage.ru_stime,
-                "elapsedSeconds": time.monotonic() - started,
-            }
-            metadata["cargoExitCode"] = process.returncode
-            if process.returncode:
-                metadata.update({
-                    "status": "failed",
-                    "finishedAt": datetime.now(UTC).isoformat(),
-                })
-            vm_control.save(destination / "build.json", metadata)
-            if process.returncode:
-                raise subprocess.CalledProcessError(process.returncode, command)
-    return _publish(destination, metadata, compatibility)
+        _run_cargo(compilation, events, log)
 
 
-def _publish(
-    destination: Path, metadata: dict[str, Any], compatibility: dict[str, Any]
-) -> dict[str, Any]:
-    component = metadata["component"]
-    source = metadata["source"]
+def _run_cargo(compilation: _Compilation, events: TextIO, log: TextIO) -> None:
+    destination = compilation.destination
+    metadata = compilation.metadata
+    started = time.monotonic()
+    with subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true] - Fixed Cargo argv, no shell text.
+        metadata["executionCommand"],
+        cwd=vm_control.ROOT,
+        env={
+            **compilation.environment,
+            resource_budget.TOKEN: os.environ[resource_budget.TOKEN],
+        },
+        stdout=events,
+        stderr=log,
+        pass_fds=(compilation.lock_fd,),
+    ) as process:
+        try:
+            _, status, usage = os.wait4(process.pid, 0)
+            process.returncode = os.waitstatus_to_exitcode(status)
+        except BaseException:
+            process.kill()
+            raise
+        metadata["resourceUsage"] = {
+            "scope": "affinity-pinned Cargo process and waited descendants",
+            "maxRssKiB": usage.ru_maxrss,
+            "userCpuSeconds": usage.ru_utime,
+            "systemCpuSeconds": usage.ru_stime,
+            "elapsedSeconds": time.monotonic() - started,
+        }
+        metadata["cargoExitCode"] = process.returncode
+        if process.returncode:
+            metadata.update({
+                "status": "failed",
+                "finishedAt": datetime.now(UTC).isoformat(),
+            })
+        vm_control.save(destination / "build.json", metadata)
+        if process.returncode:
+            raise subprocess.CalledProcessError(
+                process.returncode, metadata["command"]
+            )
+
+
+def _copy_components(destination: Path, metadata: dict[str, Any]) -> None:
     messages = destination / "cargo.jsonl"
     metadata["components"] = {}
     protocols = set()
-    for role in components(component):
+    for role in components(metadata["component"]):
         artifact = _cargo_artifact(messages, role)
         output = Path(artifact["executable"]).resolve()
         binary = destination / COMPONENTS[role]["file"]
@@ -308,6 +342,14 @@ def _publish(
         message = "Selected executables report incompatible control protocols"
         raise RuntimeError(message)
     metadata["controlProtocol"] = protocols.pop()
+
+
+def _publish(
+    destination: Path, metadata: dict[str, Any], compatibility: dict[str, Any]
+) -> dict[str, Any]:
+    component = metadata["component"]
+    source = metadata["source"]
+    _copy_components(destination, metadata)
     if "daemon" in components(component):
         shutil.copyfile(UNIT, destination / UNIT.name)
         (destination / UNIT.name).chmod(0o400)

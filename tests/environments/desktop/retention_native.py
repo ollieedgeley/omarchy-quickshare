@@ -10,12 +10,20 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import build_native
 import deploy_native
 import retention_payload
 import vm_control
+
+
+class _RetentionContext(NamedTuple):
+    report: dict[str, Any]
+    hours: float
+    read: Callable
+    children: Callable
+    save: Callable
 
 
 def _live_identity(state: dict[str, Any]) -> set[str]:
@@ -102,33 +110,11 @@ def sweep(  # ruff: ignore[too-many-arguments] - Explicit existing record and lo
         with lock(root / "build.lock"), lock(root / "artifacts.lock"):
             references = _references(read, children)
             report["nativeProtectedReferences"] = sorted(references)
-            for artifact in children(root):
-                if artifact.name in {
-                    "build.lock",
-                    "artifacts.lock",
-                    "cargo-target",
-                    "latest.json",
-                    "latest-cli.json",
-                    "latest-daemon.json",
-                }:
-                    continue
-                try:
-                    _artifact(
-                        artifact,
-                        references,
-                        hours,
-                        report,
-                        read,
-                        children,
-                        save,
-                    )
-                except (OSError, ValueError, KeyError, TypeError) as error:
-                    report["items"].append({
-                        "path": str(artifact),
-                        "category": "retained-native",
-                        "status": "protected",
-                        "reason": str(error),
-                    })
+            _sweep_artifacts(
+                root,
+                references,
+                _RetentionContext(report, hours, read, children, save),
+            )
     except (
         OSError,
         ValueError,
@@ -146,7 +132,34 @@ def sweep(  # ruff: ignore[too-many-arguments] - Explicit existing record and lo
     save()
 
 
-def _artifact(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, too-many-branches, complex-structure, too-many-statements] - Preserve one artifact's identity across classification and exact unlink.
+def _sweep_artifacts(
+    root: Path,
+    references: set[str],
+    context: _RetentionContext,
+) -> None:
+    report, hours, read, children, save = context
+    for artifact in children(root):
+        if artifact.name in {
+            "build.lock",
+            "artifacts.lock",
+            "cargo-target",
+            "latest.json",
+            "latest-cli.json",
+            "latest-daemon.json",
+        }:
+            continue
+        try:
+            _artifact(artifact, references, hours, report, read, children, save)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            report["items"].append({
+                "path": str(artifact),
+                "category": "retained-native",
+                "status": "protected",
+                "reason": str(error),
+            })
+
+
+def _artifact(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - Preserve one artifact's identity across classification and exact unlink.
     artifact: Path,
     references: set[str],
     hours: float,
@@ -159,53 +172,13 @@ def _artifact(  # ruff: ignore[too-many-arguments, too-many-positional-arguments
         message = "Latest or retained deployment reference; payload kept"
         raise ValueError(message)
     record, checksum = read(artifact / "build.json")
-    if record.get("schemaVersion") != build_native.SCHEMA_VERSION:
-        message = "Unknown historical native schema protects its payloads"
-        raise ValueError(message)
-    records = record.get("components", {})
-    if (
-        not isinstance(records, dict)
-        or not records
-        or not records.keys() <= build_native.COMPONENTS.keys()
-    ):
-        message = "Unknown native component inventory protects its payloads"
-        raise ValueError(message)
-    payloads = {}
-    for role, component in records.items():
-        name = build_native.COMPONENTS[role]["file"]
-        if component.get("file") != name:
-            message = "Unknown native component filename"
-            raise ValueError(message)
-        payloads[name] = component["sha256"]
-    if "daemon" in records:
-        payloads[build_native.UNIT.name] = record["unitSha256"]
+    payloads = _artifact_payloads(record)
     if any("sha256:" + digest in references for digest in payloads.values()):
         message = "Installed or loaded guest native executable retained"
         raise ValueError(message)
-    if (
-        str(uuid.UUID(artifact.name)) != artifact.name
-        or record.get("buildId") != artifact.name
-        or record.get("status") != "built"
-    ):
-        message = "Unknown, unfinished or failed native build retained"
-        raise ValueError(message)
-    names = {path.name for path in children(artifact)}
-    if not names <= {*payloads, "build.json", "build.log", "cargo.jsonl"}:
-        message = (
-            "Unknown inventory or failure evidence protects native attempt"
-        )
-        raise ValueError(message)
-    with retention_payload.directory(artifact) as directory:
-        for name in names:
-            metadata = os.stat(name, dir_fd=directory, follow_symlinks=False)
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-                message = "Native inventory contains a symlink or special file"
-                raise ValueError(message)
-    finished = datetime.fromisoformat(record["finishedAt"])
-    age = (datetime.now(UTC) - finished).total_seconds() / 3600
-    if finished < datetime.fromisoformat(record["startedAt"]) or age < hours:
-        message = "Native build has not reached its retention age"
-        raise ValueError(message)
+    _validate_artifact(artifact, record)
+    _validate_inventory(artifact, payloads, children)
+    _validate_artifact_age(record, hours)
     for name, digest in payloads.items():
         expected = {"sha256": digest}
         item = retention_payload.payload(artifact / name, expected)
@@ -229,6 +202,67 @@ def _artifact(  # ruff: ignore[too-many-arguments, too-many-positional-arguments
             save()
 
 
+def _artifact_payloads(record: dict[str, Any]) -> dict[str, str]:
+    if record.get("schemaVersion") != build_native.SCHEMA_VERSION:
+        message = "Unknown historical native schema protects its payloads"
+        raise ValueError(message)
+    records = record.get("components", {})
+    if (
+        not isinstance(records, dict)
+        or not records
+        or not records.keys() <= build_native.COMPONENTS.keys()
+    ):
+        message = "Unknown native component inventory protects its payloads"
+        raise ValueError(message)
+    payloads = {}
+    for role, component in records.items():
+        name = build_native.COMPONENTS[role]["file"]
+        if component.get("file") != name:
+            message = "Unknown native component filename"
+            raise ValueError(message)
+        payloads[name] = component["sha256"]
+    if "daemon" in records:
+        payloads[build_native.UNIT.name] = record["unitSha256"]
+    return payloads
+
+
+def _validate_artifact(artifact: Path, record: dict[str, Any]) -> None:
+    if (
+        str(uuid.UUID(artifact.name)) != artifact.name
+        or record.get("buildId") != artifact.name
+        or record.get("status") != "built"
+    ):
+        message = "Unknown, unfinished or failed native build retained"
+        raise ValueError(message)
+
+
+def _validate_inventory(
+    artifact: Path,
+    payloads: dict[str, str],
+    children: Callable,
+) -> None:
+    names = {path.name for path in children(artifact)}
+    if not names <= {*payloads, "build.json", "build.log", "cargo.jsonl"}:
+        message = (
+            "Unknown inventory or failure evidence protects native attempt"
+        )
+        raise ValueError(message)
+    with retention_payload.directory(artifact) as directory:
+        for name in names:
+            metadata = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                message = "Native inventory contains a symlink or special file"
+                raise ValueError(message)
+
+
+def _validate_artifact_age(record: dict[str, Any], hours: float) -> None:
+    finished = datetime.fromisoformat(record["finishedAt"])
+    age = (datetime.now(UTC) - finished).total_seconds() / 3600
+    if finished < datetime.fromisoformat(record["startedAt"]) or age < hours:
+        message = "Native build has not reached its retention age"
+        raise ValueError(message)
+
+
 def _cache_files(root: Path) -> dict[str, os.stat_result]:
     files = {}
     pending = [root]
@@ -250,7 +284,7 @@ def _cache_files(root: Path) -> dict[str, os.stat_result]:
     return files
 
 
-def prune_cache(  # ruff: ignore[too-many-arguments, too-many-branches] - Explicit selected cache policy and existing ownership operations.
+def prune_cache(  # ruff: ignore[too-many-arguments] - Explicit selected cache policy and existing ownership operations.
     report: dict[str, Any],
     hours: float,
     *,
@@ -260,11 +294,7 @@ def prune_cache(  # ruff: ignore[too-many-arguments, too-many-branches] - Explic
     lock: Callable,
     save: Callable,
 ) -> None:
-    """Clean an explicitly selected old compiler cache.
-
-    Raises:
-        ValueError: Unsupported or recent caches produce protected outcomes.
-    """
+    """Clean an explicitly selected old compiler cache."""
     root = vm_control.CACHE / "native/cargo-target"
     item = {
         "path": str(root),
@@ -275,82 +305,13 @@ def prune_cache(  # ruff: ignore[too-many-arguments, too-many-branches] - Explic
         "files": 0,
     }
     report["items"].append(item)
-    try:  # ruff: ignore[too-many-statements-in-try-clause] - The compiler lock spans provenance, age check and Cargo's supported cleaner.
+    try:
         with lock(root.parent / "build.lock"):
-            records = []
-            targets = set()
-            for artifact in children(root.parent):
-                if not re.fullmatch(r"[0-9a-f-]{36}", artifact.name):
-                    continue
-                record, checksum = read(artifact / "build.json")
-                if record.get("cache", {}).get("compilerDirectory") == str(
-                    root
-                ):
-                    target = _cache_target(record, root, profile)
-                    if target is None:
-                        continue
-                    targets.add(target)
-                    records.append({
-                        "path": str(artifact / "build.json"),
-                        "sha256": checksum,
-                        "target": target,
-                    })
-            if not records:
-                message = (
-                    "No native build metadata identifies this compiler cache"
-                )
-                raise ValueError(message)  # ruff: ignore[raise-within-try] - Retain unsupported caches.
-            before = _cache_files(root)
-            newest = max(
-                (value.st_mtime for value in before.values()),
-                default=root.stat().st_mtime,
+            _prune_owned_cache(
+                root,
+                item,
+                _RetentionContext(report, hours, read, children, save),
             )
-            age = (datetime.now(UTC).timestamp() - newest) / 3600
-            if age < hours:
-                message = "Compiler cache is newer than its retention age"
-                raise ValueError(message)  # ruff: ignore[raise-within-try] - Preserve warm inputs unless explicit age permits pruning.
-            # Cargo's whole-profile clean ignores --target. Select each
-            # recorded target root directly; constrain build-dir too.
-            roots = [root, *(root / target for target in sorted(targets))]
-            commands = [
-                [
-                    "cargo",
-                    "clean",
-                    "--manifest-path",
-                    str(vm_control.ROOT / "Cargo.toml"),
-                    "--target-dir",
-                    str(selected),
-                    "--profile",
-                    profile,
-                    "--config",
-                    "build.build-dir=" + json.dumps(str(selected)),
-                ]
-                for selected in roots
-            ]
-            item.update(
-                status="eligible",
-                reason="Explicit owned cache profile prune",
-                ageHours=age,
-                ownershipRecords=records,
-                commands=commands,
-                targets=sorted(targets),
-                profileDirectories=[
-                    str(selected / ("debug" if profile == "dev" else "release"))
-                    for selected in roots
-                ],
-                beforeFiles=len(before),
-                beforeLogicalBytes=sum(
-                    value.st_size for value in before.values()
-                ),
-                beforeAllocatedFileBytes=sum(
-                    value.st_blocks * 512 for value in before.values()
-                ),
-            )
-            save()
-            if report["mode"] == "apply":
-                item["status"] = "removal-pending"
-                save()
-                item.update(_clean_cache(commands, root, before))
     except (
         OSError,
         ValueError,
@@ -360,6 +321,97 @@ def prune_cache(  # ruff: ignore[too-many-arguments, too-many-branches] - Explic
     ) as error:
         item.update(status="protected", reason=str(error))
     save()
+
+
+def _cache_ownership(
+    root: Path,
+    profile: str,
+    context: _RetentionContext,
+) -> tuple[list[dict[str, Any]], set[str]]:
+    read, children = context.read, context.children
+    records = []
+    targets = set()
+    for artifact in children(root.parent):
+        if not re.fullmatch(r"[0-9a-f-]{36}", artifact.name):
+            continue
+        record, checksum = read(artifact / "build.json")
+        if record.get("cache", {}).get("compilerDirectory") == str(root):
+            target = _cache_target(record, root, profile)
+            if target is None:
+                continue
+            targets.add(target)
+            records.append({
+                "path": str(artifact / "build.json"),
+                "sha256": checksum,
+                "target": target,
+            })
+    if not records:
+        message = "No native build metadata identifies this compiler cache"
+        raise ValueError(message)
+    return records, targets
+
+
+def _cache_commands(roots: list[Path], profile: str) -> list[list[str]]:
+    return [
+        [
+            "cargo",
+            "clean",
+            "--manifest-path",
+            str(vm_control.ROOT / "Cargo.toml"),
+            "--target-dir",
+            str(selected),
+            "--profile",
+            profile,
+            "--config",
+            "build.build-dir=" + json.dumps(str(selected)),
+        ]
+        for selected in roots
+    ]
+
+
+def _prune_owned_cache(
+    root: Path,
+    item: dict[str, Any],
+    context: _RetentionContext,
+) -> None:
+    report, hours, _read, _children, save = context
+    profile = item["profile"]
+    records, targets = _cache_ownership(root, profile, context)
+    before = _cache_files(root)
+    newest = max(
+        (value.st_mtime for value in before.values()),
+        default=root.stat().st_mtime,
+    )
+    age = (datetime.now(UTC).timestamp() - newest) / 3600
+    if age < hours:
+        message = "Compiler cache is newer than its retention age"
+        raise ValueError(message)
+    # Cargo's whole-profile clean ignores --target. Select each
+    # recorded target root directly; constrain build-dir too.
+    roots = [root, *(root / target for target in sorted(targets))]
+    commands = _cache_commands(roots, profile)
+    item.update(
+        status="eligible",
+        reason="Explicit owned cache profile prune",
+        ageHours=age,
+        ownershipRecords=records,
+        commands=commands,
+        targets=sorted(targets),
+        profileDirectories=[
+            str(selected / ("debug" if profile == "dev" else "release"))
+            for selected in roots
+        ],
+        beforeFiles=len(before),
+        beforeLogicalBytes=sum(value.st_size for value in before.values()),
+        beforeAllocatedFileBytes=sum(
+            value.st_blocks * 512 for value in before.values()
+        ),
+    )
+    save()
+    if report["mode"] == "apply":
+        item["status"] = "removal-pending"
+        save()
+        item.update(_clean_cache(commands, root, before))
 
 
 def _cache_target(  # ruff: ignore[too-many-branches] - Validate each recorded compiler cache boundary.
@@ -394,9 +446,7 @@ def _cache_target(  # ruff: ignore[too-many-branches] - Validate each recorded c
     return target
 
 
-def _clean_cache(
-    commands: list[list[str]], root: Path, before: dict[str, os.stat_result]
-) -> dict[str, Any]:
+def _execute_cache_clean(commands: list[list[str]]) -> dict[str, Any]:
     outcome = {"executions": []}
     for command in commands:
         try:
@@ -412,9 +462,10 @@ def _clean_cache(
         except (OSError, subprocess.SubprocessError) as error:
             outcome["error"] = str(error)
             break
-    after = _cache_files(root) if root.exists() else {}
-    removed_paths = [path for path in before if path not in after]
-    removed = [before[path] for path in removed_paths]
+    return outcome
+
+
+def _remaining_cache_profiles(commands: list[list[str]]) -> list[str]:
     profile_directories = [
         Path(command[command.index("--target-dir") + 1])
         / (
@@ -424,7 +475,17 @@ def _clean_cache(
         )
         for command in commands
     ]
-    remaining = [str(path) for path in profile_directories if path.exists()]
+    return [str(path) for path in profile_directories if path.exists()]
+
+
+def _clean_cache(
+    commands: list[list[str]], root: Path, before: dict[str, os.stat_result]
+) -> dict[str, Any]:
+    outcome = _execute_cache_clean(commands)
+    after = _cache_files(root) if root.exists() else {}
+    removed_paths = [path for path in before if path not in after]
+    removed = [before[path] for path in removed_paths]
+    remaining = _remaining_cache_profiles(commands)
     if remaining and "error" not in outcome:
         outcome["error"] = "Cargo left selected profile directories in place"
     outcome.update(

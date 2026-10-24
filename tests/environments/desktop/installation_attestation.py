@@ -22,7 +22,7 @@ def _identity(path: Path) -> dict[str, int]:
     return {"device": info.st_dev, "inode": info.st_ino}
 
 
-def _storage(state: dict, installation: dict) -> dict:  # ruff: ignore[too-many-branches] - Fail closed at each distinct owner, process and storage boundary.
+def _owner_continuity(state: dict, installation: dict) -> None:
     owner = Path(installation["ownerDirectory"])
     identity = owner.lstat()
     retained = lab_lifecycle.active(owner)
@@ -44,6 +44,9 @@ def _storage(state: dict, installation: dict) -> dict:  # ruff: ignore[too-many-
     ):
         message = "Live guest differs from the retained ownership record"
         raise RuntimeError(message)
+
+
+def _input_continuity(state: dict, installation: dict) -> Path:
     if (
         any(
             state.get(key) != installation["guest"].get(key)
@@ -63,11 +66,16 @@ def _storage(state: dict, installation: dict) -> dict:  # ruff: ignore[too-many-
         message = "Resumed guest does not use the original owned storage inputs"
         raise RuntimeError(message)
     base = Path(installation["baseDirectory"])
+    owner = Path(installation["ownerDirectory"])
     if (owner / "known_hosts").read_bytes() != (
         base / "known_hosts"
     ).read_bytes():
         message = "Retained SSH host pin differs from the installed base"
         raise RuntimeError(message)
+    return base
+
+
+def _opened_images(state: dict) -> dict:
     files = {key: _identity(Path(state[key])) for key in ("disk", "firmware")}
     opened = {}
     for descriptor in Path(f"/proc/{state['pid']}/fd").iterdir():
@@ -89,6 +97,10 @@ def _storage(state: dict, installation: dict) -> dict:  # ruff: ignore[too-many-
     if opened != files:
         message = "Live QEMU is not holding the recorded owned image files"
         raise RuntimeError(message)
+    return files
+
+
+def _backing_file(state: dict, base: Path) -> str:
     blocks = vm_control.qmp(state, "query-block")
     matches = [
         block["inserted"]
@@ -111,6 +123,14 @@ def _storage(state: dict, installation: dict) -> dict:  # ruff: ignore[too-many-
     ):
         message = "Live writable system disk has different backing storage"
         raise RuntimeError(message)
+    return backing
+
+
+def _storage(state: dict, installation: dict) -> dict:
+    _owner_continuity(state, installation)
+    base = _input_continuity(state, installation)
+    files = _opened_images(state)
+    backing = _backing_file(state, base)
     return {
         "uuid": state["uuid"],
         "qemuPid": state["pid"],
@@ -125,21 +145,7 @@ def _storage(state: dict, installation: dict) -> dict:  # ruff: ignore[too-many-
     }
 
 
-def reattest(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - The original record and new retained attempt must remain distinct.
-    state: dict[str, Any],
-    installation: dict[str, Any],
-    path: Path,
-    attempt: Path,
-) -> dict[str, Any]:
-    """Write fresh runtime evidence linked to the immutable installation.
-
-    Returns:
-        Successful owner, storage and installed-candidate attestation.
-
-    Raises:
-        RuntimeError: Original record, storage or installed bytes differ.
-        KeyboardInterrupt: The operator interrupts the retained probe.
-    """
+def _evidence(state: dict, installation: dict, path: Path) -> tuple:
     original = path.read_bytes()
     if (
         json.loads(original) != installation
@@ -147,7 +153,7 @@ def reattest(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
     ):
         message = "Installation manifest changed before re-attestation"
         raise RuntimeError(message)
-    evidence: dict[str, Any] = {
+    return original, {
         "status": "failed",
         "startedAt": now(),
         "installationManifest": str(path.resolve()),
@@ -167,27 +173,50 @@ def reattest(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
         "storageContinuity": "original owner inode, UUID, paths and backing",
         "originalWritableImageInodeRecorded": False,
     }
+
+
+def _probe_inputs(state: dict, installation: dict, retained: tuple) -> None:
+    attempt, evidence = retained
+    stage = Path(installation["guestStage"])
+    evidence["probeInputs"] = {}
+    for name, expected in (
+        ("candidate.json", installation["candidateManifestSha256"]),
+        (
+            clean_install.PROBE.name,
+            hashlib.sha256(clean_install.PROBE.read_bytes()).hexdigest(),
+        ),
+    ):
+        actual = clean_install.guest(
+            state,
+            shlex.join(["sha256sum", str(stage / name)]),
+            attempt,
+            "reattest-inputs",
+        ).split()[0]
+        if actual != expected:
+            message = f"Retained installed-probe input differs: {name}"
+            raise RuntimeError(message)
+        evidence["probeInputs"][name] = actual
+
+
+def reattest(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - The original record and new retained attempt must remain distinct.
+    state: dict[str, Any],
+    installation: dict[str, Any],
+    path: Path,
+    attempt: Path,
+) -> dict[str, Any]:
+    """Write fresh runtime evidence linked to the immutable installation.
+
+    Returns:
+        Successful owner, storage and installed-candidate attestation.
+
+    Raises:
+        RuntimeError: Original record, storage or installed bytes differ.
+        KeyboardInterrupt: The operator interrupts the retained probe.
+    """
+    original, evidence = _evidence(state, installation, path)
     try:  # ruff: ignore[too-many-statements-in-try-clause] - Retain all partial re-attestation evidence on any probe failure.
         evidence["storage"] = _storage(state, installation)
-        stage = Path(installation["guestStage"])
-        evidence["probeInputs"] = {}
-        for name, expected in (
-            ("candidate.json", installation["candidateManifestSha256"]),
-            (
-                clean_install.PROBE.name,
-                hashlib.sha256(clean_install.PROBE.read_bytes()).hexdigest(),
-            ),
-        ):
-            actual = clean_install.guest(
-                state,
-                shlex.join(["sha256sum", str(stage / name)]),
-                attempt,
-                "reattest-inputs",
-            ).split()[0]
-            if actual != expected:
-                message = f"Retained installed-probe input differs: {name}"
-                raise RuntimeError(message)  # ruff: ignore[raise-within-try] - Outer handler records the failed attestation.
-            evidence["probeInputs"][name] = actual
+        _probe_inputs(state, installation, (attempt, evidence))
         evidence["native"] = clean_install.probe(
             state, installation, attempt, "reattest-native", "native"
         )

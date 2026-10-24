@@ -136,21 +136,9 @@ def _restore(
     evidence["restored"] = True
 
 
-@contextmanager
-def scoped(  # ruff: ignore[too-many-branches] - Fault installation and cleanup preserve the original transfer outcome.
+def _prepare_fault(
     state: dict[str, Any], attempt: Path, report: dict[str, Any]
-) -> Iterator[None]:
-    """Apply the selected fault around actual send/observation, then remove it.
-
-    Yields:
-        Control while the optional peer-only route fault is active.
-
-    Raises:
-        RuntimeError: Route ownership, installation or restoration is unproved.
-    """
-    if not report["faultMode"]:
-        yield
-        return
+) -> dict[str, Any]:
     destination = str(IPv4Network(report["peer"]["peerAddress"]))
     evidence: dict[str, Any] = {
         "kind": report["faultMode"],
@@ -175,6 +163,26 @@ def scoped(  # ruff: ignore[too-many-branches] - Fault installation and cleanup 
         raise RuntimeError(message)
     evidence["installCommand"] = _command("add", destination)
     vm_control.save(attempt / "fault.json", evidence)
+    return evidence
+
+
+@contextmanager
+def scoped(
+    state: dict[str, Any], attempt: Path, report: dict[str, Any]
+) -> Iterator[None]:
+    """Apply the selected fault around actual send/observation, then remove it.
+
+    Yields:
+        Control while the optional peer-only route fault is active.
+
+    Raises:
+        RuntimeError: Route ownership, installation or restoration is unproved.
+    """
+    if not report["faultMode"]:
+        yield
+        return
+    evidence = _prepare_fault(state, attempt, report)
+    destination = evidence["destination"]
     try:
         _privileged(state, evidence["installCommand"], attempt)
         evidence["installed"] = _routes(state, attempt, destination)

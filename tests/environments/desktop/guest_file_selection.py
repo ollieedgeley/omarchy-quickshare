@@ -47,9 +47,7 @@ def _focused(ui: GuestUI, session: str, expected: dict[str, Any]) -> None:
         raise RuntimeError(message)
 
 
-def _ready(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, too-many-branches] - Keep observed geometry and input target in one readiness loop.
-    ui: GuestUI, session: str, payload: Path, report: dict[str, Any]
-) -> tuple[dict[str, Any], dict[str, Any]]:
+def _monitor(ui: GuestUI, session: str) -> dict[str, Any]:
     attempt = ui.directory.parent
     monitors = json.loads(
         guest_command(ui.state, session + "hyprctl monitors -j", attempt)
@@ -63,13 +61,41 @@ def _ready(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, t
     ):
         message = "File readiness requires one unscaled guest monitor"
         raise RuntimeError(message)
+    return monitors[0]
+
+
+def _maximize(ui: GuestUI, session: str, focused: dict[str, Any]) -> None:
+    ui.record({
+        "setup": "maximize-private-file-manager",
+        "route": "owned-guest-hyprland",
+        "window": focused["address"],
+        "frame": ui.frame["frame"],
+    })
+    guest_command(
+        ui.state,
+        session
+        + shlex.join([
+            "hyprctl",
+            "dispatch",
+            'hl.dsp.window.fullscreen({ mode = "maximized" })',
+        ]),
+        ui.directory.parent,
+    )
+
+
+def _ready(
+    ui: GuestUI, session: str, report: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    attempt = ui.directory.parent
+    payload = Path(report["submitted"]["sourcePath"])
+    monitor = _monitor(ui, session)
     deadline = time.monotonic() + 30
     maximized = False
     while True:
         frame = ui.observe()
         if (
-            frame["width"] != monitors[0]["width"]
-            or frame["height"] != monitors[0]["height"]
+            frame["width"] != monitor["width"]
+            or frame["height"] != monitor["height"]
         ):
             message = "Guest monitor and observed framebuffer bounds disagree"
             raise RuntimeError(message)
@@ -77,22 +103,7 @@ def _ready(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, t
         if _private(focused, attempt):
             if not maximized and not focused.get("fullscreen"):
                 report["fileManagerBeforeMaximize"] = focused
-                ui.record({
-                    "setup": "maximize-private-file-manager",
-                    "route": "owned-guest-hyprland",
-                    "window": focused["address"],
-                    "frame": frame["frame"],
-                })
-                guest_command(
-                    ui.state,
-                    session
-                    + shlex.join([
-                        "hyprctl",
-                        "dispatch",
-                        'hl.dsp.window.fullscreen({ mode = "maximized" })',
-                    ]),
-                    attempt,
-                )
+                _maximize(ui, session, focused)
                 maximized = True
                 continue
             entry = visible_file(frame, focused, payload.name.partition("-")[0])
@@ -106,47 +117,30 @@ def _ready(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, t
         time.sleep(0.5)
 
 
-def copy_payload(  # ruff: ignore[too-many-locals] - Retain the observed popup, window, control and independent exact URI together.
-    ui: GuestUI, installation: dict[str, Any], report: dict[str, Any]
+def _close_popup(
+    ui: GuestUI,
+    session: str,
+    report: dict[str, Any],
 ) -> None:
-    """Close only this plugin's popup and visibly select/copy the owned file.
-
-    Raises:
-        RuntimeError: Popup identity, focus, visible selection or URI differs.
-    """
-    state, attempt = ui.state, ui.directory.parent
-    session = desktop_session(state, attempt)
-    payload = Path(report["submitted"]["sourcePath"])
-    guest_path = Path(report["submitted"]["guestPath"])
-    expected_uri = (Path(installation["absence"]["home"]) / guest_path).as_uri()
-    plugin_id = installation["candidate"]["plugin"]["id"]
     identity = report["application"]["plugin"]["loadedIdentity"]
-    if identity["id"] != plugin_id:
-        message = "Cannot identify this installation's popup for preparation"
-        raise RuntimeError(message)
+    plugin_id = identity["id"]
     report["popupPreparation"] = {
         "identity": identity,
         "before": ui.capture(),
         "command": "close",
     }
     guest_command(
-        state,
+        ui.state,
         session + shlex.join(["omarchy-shell", plugin_id, "close"]),
-        attempt,
+        ui.directory.parent,
     )
     report["popupPreparation"]["after"] = ui.capture()
-    report["action"] = "select synthetic file in visible file manager"
-    guest_command(
-        state,
-        session
-        + "xdg-open "
-        + shlex.quote(
-            str(Path(installation["absence"]["home"]) / guest_path.parent)
-        )
-        + " >/dev/null 2>&1 &",
-        attempt,
-    )
-    focused, entry = _ready(ui, session, payload, report)
+
+
+def _select_payload(
+    ui: GuestUI, session: str, report: dict[str, Any]
+) -> dict[str, Any]:
+    focused, entry = _ready(ui, session, report)
     report["fileManagerFocus"] = focused
     report["fileManagerEntry"] = entry
     _focused(ui, session, focused)
@@ -164,6 +158,39 @@ def copy_payload(  # ruff: ignore[too-many-locals] - Retain the observed popup, 
         message = "Selection feedback is outside the private file manager"
         raise RuntimeError(message)
     report["fileManagerSelection"] = selected
+    return focused
+
+
+def copy_payload(
+    ui: GuestUI, installation: dict[str, Any], report: dict[str, Any]
+) -> None:
+    """Close only this plugin's popup and visibly select/copy the owned file.
+
+    Raises:
+        RuntimeError: Popup identity, focus, visible selection or URI differs.
+    """
+    state, attempt = ui.state, ui.directory.parent
+    session = desktop_session(state, attempt)
+    payload = Path(report["submitted"]["sourcePath"])
+    guest_path = Path(report["submitted"]["guestPath"])
+    expected_uri = (Path(installation["absence"]["home"]) / guest_path).as_uri()
+    plugin_id = installation["candidate"]["plugin"]["id"]
+    if report["application"]["plugin"]["loadedIdentity"]["id"] != plugin_id:
+        message = "Cannot identify this installation's popup for preparation"
+        raise RuntimeError(message)
+    _close_popup(ui, session, report)
+    report["action"] = "select synthetic file in visible file manager"
+    guest_command(
+        state,
+        session
+        + "xdg-open "
+        + shlex.quote(
+            str(Path(installation["absence"]["home"]) / guest_path.parent)
+        )
+        + " >/dev/null 2>&1 &",
+        attempt,
+    )
+    focused = _select_payload(ui, session, report)
     _focused(ui, session, focused)
     ui.keys("ctrl", "c")
     _focused(ui, session, focused)

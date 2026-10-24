@@ -25,7 +25,8 @@ if TYPE_CHECKING:
     from typing import Any
 
 
-ROOT = Path(__file__).resolve().parents[3]
+SOURCE_ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(os.environ.get("QUICKSHARE_RESOURCE_ROOT", SOURCE_ROOT)).resolve()
 CACHE = ROOT / ".cache/test-env/desktop"
 CLAIMS = CACHE / "capacity"
 MIN_HEADROOM_MIB = 512
@@ -150,7 +151,39 @@ def _container_memory(pid: int, container_id: str) -> dict[str, int | None]:
         return {"residentMiB": 0, "cgroupCurrentBytes": None}
 
 
-def _containers() -> list[dict[str, Any]]:  # ruff: ignore[too-many-branches] - Three explicit owned container classes.
+def _canonical_owner(owner: str | Path) -> Path:
+    path = Path(owner).resolve()
+    nearby = Path("tests/environments/nearby-linux")
+    if path in {
+        SOURCE_ROOT / nearby,
+        ROOT / ".cache/gates/pre-commit-tree" / nearby,
+    }:
+        return ROOT / nearby
+    return path
+
+
+def _container_owner(item: dict[str, Any]) -> tuple[str, str] | None:
+    labels = item["Config"].get("Labels", {})
+    owner = labels.get("org.omarchy-quickshare.desktop-owner")
+    kind = "peer"
+    if owner:
+        if not Path(owner).resolve().is_relative_to(CACHE / "labs"):
+            return None
+    elif item["Name"] == f"/buildx_buildkit_{builder_name()}0":
+        kind, owner = "reference", str(ROOT / "tests/environments/nearby-linux")
+    else:
+        working = labels.get("com.docker.compose.project.working_dir", "")
+        if (
+            not working
+            or _canonical_owner(working)
+            != ROOT / "tests/environments/nearby-linux"
+        ):
+            return None
+        owner = str(ROOT / "tests/environments/nearby-linux")
+    return kind, owner
+
+
+def _containers() -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     # Inspect only this project's labelled peers and its dedicated builder.
     ids = set(
@@ -172,25 +205,10 @@ def _containers() -> list[dict[str, Any]]:  # ruff: ignore[too-many-branches] - 
         ).split()
     )
     for item in json.loads(_docker("inspect", *sorted(ids))) if ids else []:
-        labels = item["Config"].get("Labels", {})
-        owner = labels.get("org.omarchy-quickshare.desktop-owner")
-        kind = "peer"
-        if owner:
-            if not Path(owner).resolve().is_relative_to(CACHE / "labs"):
-                continue
-        elif item["Name"] == f"/buildx_buildkit_{builder_name()}0":
-            kind, owner = (
-                "reference",
-                str(ROOT / "tests/environments/nearby-linux"),
-            )
-        else:
-            working = labels.get("com.docker.compose.project.working_dir", "")
-            if (
-                Path(working).resolve()
-                != ROOT / "tests/environments/nearby-linux"
-            ):
-                continue
-            owner = str(ROOT / "tests/environments/nearby-linux")
+        ownership = _container_owner(item)
+        if ownership is None:
+            continue
+        kind, owner = ownership
         config = item["HostConfig"]
         cpu = config.get("NanoCpus", 0) / 1_000_000_000
         if not cpu and config.get("CpuPeriod", 0):
@@ -282,15 +300,7 @@ def _guests() -> list[dict[str, Any]]:
     return records
 
 
-def _snapshot() -> dict[str, Any]:  # ruff: ignore[too-many-branches] - Reconcile live and pending ownership under one short lock.
-    memory = dict(
-        line.split(":", 1)
-        for line in Path("/proc/meminfo")
-        .read_text(encoding="utf-8")
-        .splitlines()
-    )
-    live = _guests() + _containers()
-    tokens = _tokens()
+def _live_claims(tokens: set[str]) -> list[dict[str, Any]]:
     claims: list[dict[str, Any]] = []
     for path in CLAIMS.glob("*.json"):
         record = json.loads(path.read_text(encoding="utf-8"))
@@ -302,9 +312,16 @@ def _snapshot() -> dict[str, Any]:  # ruff: ignore[too-many-branches] - Reconcil
             or record["token"] in tokens
         )
         if alive:
+            record["owner"] = str(_canonical_owner(record["owner"]))
             claims.append(record)
         else:
             path.unlink()
+    return claims
+
+
+def _allocations(
+    live: list[dict[str, Any]], claims: list[dict[str, Any]]
+) -> tuple[dict[tuple[str, str], tuple[float, int]], int]:
     # During a launch, count the reservation or observed resource, not both.
     totals: dict[tuple[str, str], tuple[float, int]] = {}
     for record in live:
@@ -328,6 +345,19 @@ def _snapshot() -> dict[str, Any]:  # ruff: ignore[too-many-branches] - Reconcil
         else:
             pending_memory += record["memoryMiB"]
             totals[key] = cpu + record["cpus"], ram + record["memoryMiB"]
+    return totals, pending_memory
+
+
+def _snapshot() -> dict[str, Any]:
+    memory = dict(
+        line.split(":", 1)
+        for line in Path("/proc/meminfo")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    live = _guests() + _containers()
+    claims = _live_claims(_tokens())
+    totals, pending_memory = _allocations(live, claims)
     headroom = float(os.environ.get("DESKTOP_HOST_HEADROOM_MIB", "1024"))
     cpu_headroom = float(os.environ.get("DESKTOP_HOST_HEADROOM_CPUS", "1"))
     if (
@@ -371,18 +401,60 @@ def report() -> dict[str, Any]:
         return _snapshot()
 
 
+def _admit(record: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    kind, cpus, memory_mib = record["kind"], record["cpus"], record["memoryMiB"]
+    owned = [
+        item
+        for item in snapshot["resources"]
+        if item["owner"] == record["owner"] and item["kind"] == kind
+    ]
+    if kind in {"vm", "peer"}:
+        cpus = max(0, cpus - sum(item["cpus"] for item in owned))
+        memory_mib = max(
+            0, memory_mib - sum(item["memoryMiB"] for item in owned)
+        )
+    conflict = _conflicting_claim(record, snapshot["claims"])
+    conflict = conflict or (kind == "reference" and bool(owned))
+    if (
+        conflict
+        or snapshot["allocatedCpus"] + cpus + snapshot["headroomCpus"]
+        > snapshot["hostCpus"]
+        or snapshot["allocatedMiB"] + memory_mib + snapshot["headroomMiB"]
+        > snapshot["hostMemoryMiB"]
+        or snapshot["pendingMiB"] + memory_mib + snapshot["headroomMiB"]
+        > snapshot["availableMiB"]
+    ):
+        msg = (
+            "Capacity admission rejected; swap is not headroom: "
+            + json.dumps(
+                {"request": record, "capacity": snapshot}, sort_keys=True
+            )
+        )
+        raise RuntimeError(msg)
+
+
+def _conflicting_claim(
+    record: dict[str, Any], claims: list[dict[str, Any]]
+) -> bool:
+    return record["kind"] in {"vm", "peer", "reference"} and any(
+        item["owner"] == record["owner"] and item["kind"] == record["kind"]
+        for item in claims
+    )
+
+
 @contextlib.contextmanager
-def claim(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, too-many-branches] - Owner and two independent allocation dimensions.
+def claim(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - Owner and two independent allocation dimensions.
     kind: str, owner: str | Path, cpus: float, memory_mib: int
 ) -> Iterator[dict[str, Any]]:
     """Reserve bounded work; inherited tokens keep orphaned children charged.
+
+    Admission rejects requests that exceed host capacity.
 
     Yields:
         The reservation record dict yielded to caller.
 
     Raises:
         ValueError: if cpus or memory_mib not positive.
-        RuntimeError: if admission capacity exceeded.
     """
     if not math.isfinite(cpus) or cpus <= 0 or memory_mib <= 0:
         msg = "CPU and memory reservations must be positive"
@@ -390,7 +462,7 @@ def claim(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, to
     token = uuid.uuid4().hex
     record: dict[str, Any] = {
         "kind": kind,
-        "owner": str(Path(owner).resolve()),
+        "owner": str(_canonical_owner(owner)),
         "cpus": cpus,
         "memoryMiB": memory_mib,
         "token": token,
@@ -401,37 +473,7 @@ def claim(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, to
     path = CLAIMS / f"{token}.json"
     with _lock():
         snapshot = _snapshot()
-        owned = [
-            item
-            for item in snapshot["resources"]
-            if item["owner"] == record["owner"] and item["kind"] == kind
-        ]
-        if kind in {"vm", "peer"}:
-            cpus = max(0, cpus - sum(item["cpus"] for item in owned))
-            memory_mib = max(
-                0, memory_mib - sum(item["memoryMiB"] for item in owned)
-            )
-        conflict = kind in {"vm", "peer", "reference"} and any(
-            item["owner"] == record["owner"] and item["kind"] == kind
-            for item in snapshot["claims"]
-        )
-        conflict = conflict or (kind == "reference" and bool(owned))
-        if (
-            conflict
-            or snapshot["allocatedCpus"] + cpus + snapshot["headroomCpus"]
-            > snapshot["hostCpus"]
-            or snapshot["allocatedMiB"] + memory_mib + snapshot["headroomMiB"]
-            > snapshot["hostMemoryMiB"]
-            or snapshot["pendingMiB"] + memory_mib + snapshot["headroomMiB"]
-            > snapshot["availableMiB"]
-        ):
-            msg = (
-                "Capacity admission rejected; swap is not headroom: "
-                + json.dumps(
-                    {"request": record, "capacity": snapshot}, sort_keys=True
-                )
-            )
-            raise RuntimeError(msg)
+        _admit(record, snapshot)
         path.write_text(json.dumps(record) + "\n", encoding="utf-8")
     previous = os.environ.get(TOKEN)
     os.environ[TOKEN] = ",".join(filter(None, (previous, token)))

@@ -96,75 +96,86 @@ def _seed_directory(path: Path) -> None:
                     raise ValueError(message)
 
 
-def _references(read: Callable, children: Callable) -> set[str]:  # ruff: ignore[complex-structure, too-many-branches] - Census every supported managed writable-disk namespace.
+def _disk_references(path: Path, owner: Path, cache: Path) -> set[str]:
+    references = set()
+    with retention_payload.directory(owner):
+        if not stat.S_ISREG(path.lstat().st_mode):
+            message = f"Unknown managed disk type: {path}"
+            raise ValueError(message)
+    chain = json.loads(
+        vm_control.output(
+            [
+                "qemu-img",
+                "info",
+                "--force-share",
+                "--backing-chain",
+                "--output=json",
+                path,
+            ],
+            timeout=15,
+        )
+    )
+    if not isinstance(chain, list) or not chain:
+        message = f"Unknown managed backing chain: {path}"
+        raise ValueError(message)
+    for layer in chain:
+        backing = layer.get("full-backing-filename")
+        if backing:
+            target = Path(backing)
+            if (
+                target.parent.parent != cache / "bases"
+                or target.name != "base.qcow2"
+            ):
+                message = f"Unmanaged backing chain: {target}"
+                raise ValueError(message)
+            references.add(target.parent.name)
+    return references
+
+
+def _managed_entry(path: Path, group: str) -> bool:
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode):
+        message = f"Symlink in managed storage inventory: {path}"
+        raise ValueError(message)
+    if (
+        stat.S_ISDIR(metadata.st_mode)
+        and path.name == "cidata"
+        and group in {"preparations", "guests"}
+    ):
+        _seed_directory(path)
+        return False
+    allowed = {
+        "scenarios",
+        "deployments",
+        "panel-deployments",
+        "peer-cases",
+    }
+    if stat.S_ISDIR(metadata.st_mode) and path.name not in allowed:
+        message = f"Unknown nested managed storage: {path}"
+        raise ValueError(message)
+    return True
+
+
+def _references(read: Callable, children: Callable) -> set[str]:  # ruff: ignore[too-many-branches] - Census every supported managed writable-disk namespace.
     cache = vm_control.CACHE
     references = set()
     for path in (cache / "active.json", cache / "preparation.json"):
         if path.exists() or path.is_symlink():
             record, _ = read(path)
             references.add(record["fingerprint"])
-    for group in ("labs", "guests", "preparations"):  # ruff: ignore[too-many-nested-blocks] - Explicit owner/disk/backing-chain nesting.
+    for group in ("labs", "guests", "preparations"):
         for owner in children(cache / group):
             for path in children(owner):
-                metadata = path.lstat()
-                if stat.S_ISLNK(metadata.st_mode):
-                    message = f"Symlink in managed storage inventory: {path}"
-                    raise ValueError(message)
-                if (
-                    stat.S_ISDIR(metadata.st_mode)
-                    and path.name == "cidata"
-                    and group in {"preparations", "guests"}
-                ):
-                    _seed_directory(path)
+                if not _managed_entry(path, group):
                     continue
-                allowed = {
-                    "scenarios",
-                    "deployments",
-                    "panel-deployments",
-                    "peer-cases",
-                }
-                if stat.S_ISDIR(metadata.st_mode) and path.name not in allowed:
-                    message = f"Unknown nested managed storage: {path}"
-                    raise ValueError(message)
                 if path.name == "state.json":
                     record, _ = read(path)
                     if record.get("directory") != str(owner):
                         message = f"Managed state owner differs: {path}"
                         raise ValueError(message)
                     references.add(record["fingerprint"])
-                if path.suffix != ".qcow2":
-                    continue
-                with retention_payload.directory(owner):
-                    if not stat.S_ISREG(path.lstat().st_mode):
-                        message = f"Unknown managed disk type: {path}"
-                        raise ValueError(message)
-                chain = json.loads(
-                    vm_control.output(
-                        [
-                            "qemu-img",
-                            "info",
-                            "--force-share",
-                            "--backing-chain",
-                            "--output=json",
-                            path,
-                        ],
-                        timeout=15,
-                    )
-                )
-                if not isinstance(chain, list) or not chain:
-                    message = f"Unknown managed backing chain: {path}"
-                    raise ValueError(message)
-                for layer in chain:
-                    backing = layer.get("full-backing-filename")
-                    if backing:
-                        target = Path(backing)
-                        if (
-                            target.parent.parent != cache / "bases"
-                            or target.name != "base.qcow2"
-                        ):
-                            message = f"Unmanaged backing chain: {target}"
-                            raise ValueError(message)
-                        references.add(target.parent.name)
+                if path.suffix == ".qcow2":
+                    references.update(_disk_references(path, owner, cache))
     return references
 
 
@@ -211,15 +222,9 @@ def sweep(  # ruff: ignore[too-many-arguments] - Reuse existing evidence and lif
         save()
 
 
-def _retire(  # ruff: ignore[complex-structure, too-many-arguments, too-many-positional-arguments, too-many-branches, too-many-statements] - Large-file verification precedes the short locked retirement phase.
-    base: Path,
-    hours: float,
-    report: dict[str, Any],
-    read: Callable,
-    children: Callable,
-    lock: Callable,
-    save: Callable,
-) -> None:
+def _prepared_for_retirement(
+    base: Path, hours: float, read: Callable
+) -> dict[str, Any]:
     prepared, _ = read(base / "prepared.json")
     identity = hashlib.sha256(
         json.dumps(prepared["inputs"], sort_keys=True).encode()
@@ -233,6 +238,12 @@ def _retire(  # ruff: ignore[complex-structure, too-many-arguments, too-many-pos
     if age < hours:
         message = "Base has not reached its retention age"
         raise ValueError(message)
+    return prepared
+
+
+def _retirement_outputs(
+    base: Path, read: Callable, children: Callable
+) -> tuple:
     try:
         manifest, checksum = read(base / "integrity.json")
     except FileNotFoundError as error:
@@ -264,6 +275,12 @@ def _retire(  # ruff: ignore[complex-structure, too-many-arguments, too-many-pos
             raise ValueError(message)
         item.update(location="host", category="expired-base-output")
         candidates.append(item)
+    return manifest, candidates
+
+
+def _retirement_locks(
+    children: Callable, lock: Callable, locks: ExitStack
+) -> list:
     cache = vm_control.CACHE
     with retention_payload.directory(cache) as directory:
         descriptor = os.open(
@@ -273,17 +290,59 @@ def _retire(  # ruff: ignore[complex-structure, too-many-arguments, too-many-pos
             dir_fd=directory,
         )
         os.close(descriptor)
+    locks.enter_context(lock(cache / "prepare.lock"))
+    locks.enter_context(lock(cache / "operation.lock"))
+    locks.enter_context(lock(cache / "bases.lock"))
+    owners = children(cache / "labs")
+    for owner in owners:
+        if not children(owner):
+            # Never-started owner has no disk/reference. bases.lock prevents
+            # its first acquisition until this retirement phase completes.
+            continue
+        locks.enter_context(lock(owner / "operation.lock"))
+    return owners
+
+
+def _revalidate_outputs(directory: int, candidates: list) -> None:
+    for item in candidates:
+        current = os.stat(
+            Path(item["path"]).name,
+            dir_fd=directory,
+            follow_symlinks=False,
+        )
+        if (
+            list(retention_payload._identity(current))  # ruff: ignore[private-member-access] - Revalidate the same shared helper's descriptor identity.
+            != item["identity"]
+        ):
+            message = "Base output changed after hash verification"
+            raise ValueError(message)
+
+
+def _remove_outputs(directory: int, candidates: list, save: Callable) -> None:
+    # Withdraw readiness first, before removing any prepared output.
+    candidates.sort(key=lambda item: Path(item["path"]).name != "prepared.json")
+    for item in candidates:
+        item["status"] = "removal-pending"
+        save()
+        os.unlink(Path(item["path"]).name, dir_fd=directory)
+        item["status"] = "removed"
+        save()
+
+
+def _retire(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - Large-file verification precedes the short locked retirement phase.
+    base: Path,
+    hours: float,
+    report: dict[str, Any],
+    read: Callable,
+    children: Callable,
+    lock: Callable,
+    save: Callable,
+) -> None:
+    prepared = _prepared_for_retirement(base, hours, read)
+    manifest, candidates = _retirement_outputs(base, read, children)
+    cache = vm_control.CACHE
     with ExitStack() as locks:
-        locks.enter_context(lock(cache / "prepare.lock"))
-        locks.enter_context(lock(cache / "operation.lock"))
-        locks.enter_context(lock(cache / "bases.lock"))
-        owners = children(cache / "labs")
-        for owner in owners:
-            if not children(owner):
-                # Never-started owner has no disk/reference. bases.lock prevents
-                # its first acquisition until this retirement phase completes.
-                continue
-            locks.enter_context(lock(owner / "operation.lock"))
+        owners = _retirement_locks(children, lock, locks)
         references = _references(read, children)
         if base.name in references or base.name == _latest(read, children):
             message = (
@@ -297,18 +356,7 @@ def _retire(  # ruff: ignore[complex-structure, too-many-arguments, too-many-pos
             raise ValueError(message)
         # Hashing finished before the short lifecycle-lock phase.
         with retention_payload.directory(base) as directory:
-            for item in candidates:
-                current = os.stat(
-                    Path(item["path"]).name,
-                    dir_fd=directory,
-                    follow_symlinks=False,
-                )
-                if (
-                    list(retention_payload._identity(current))  # ruff: ignore[private-member-access] - Revalidate the same shared helper's descriptor identity.
-                    != item["identity"]
-                ):
-                    message = "Base output changed after hash verification"
-                    raise ValueError(message)
+            _revalidate_outputs(directory, candidates)
             report["items"].extend(candidates)
             report.setdefault("retiredBaseEvidence", {})[base.name] = {
                 "prepared": prepared,
@@ -317,14 +365,5 @@ def _retire(  # ruff: ignore[complex-structure, too-many-arguments, too-many-pos
             }
             save()
             if report["mode"] == "apply":
-                # Withdraw readiness first, before removing any prepared output.
-                candidates.sort(
-                    key=lambda item: Path(item["path"]).name != "prepared.json"
-                )
-                for item in candidates:
-                    item["status"] = "removal-pending"
-                    save()
-                    os.unlink(Path(item["path"]).name, dir_fd=directory)
-                    item["status"] = "removed"
-                    save()
+                _remove_outputs(directory, candidates, save)
                 base.rmdir()

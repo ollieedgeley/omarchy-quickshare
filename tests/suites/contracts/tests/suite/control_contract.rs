@@ -6,7 +6,7 @@
     clippy::panic_in_result_fn,
     clippy::pattern_type_mismatch,
     clippy::pub_with_shorthand,
-    reason = "Contract tests assert borrowed replies and fixtures; helpers remain parent-visible"
+    reason = "Assert borrowed replies/fixtures; keep helpers parent-visible"
 )]
 mod tests {
     extern crate alloc;
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     #[expect(
         clippy::too_many_lines,
-        reason = "One endpoint lifecycle proves rejection preserves work and does not consume an ID"
+        reason = "One lifecycle proves rejection preserves work and IDs"
     )]
     fn active_submission_rejects_replacement_without_consuming_an_id()
     -> io::Result<()> {
@@ -533,7 +533,8 @@ mod tests {
         let (rejection, ready) = observed?;
         assert!(
             rejection.contains("\"code\":\"unsupported_version\""),
-            "expected structured unsupported_version rejection, got {rejection:?}"
+            "expected structured unsupported_version rejection, \
+             got {rejection:?}"
         );
         assert_eq!(ready, STATUS_RESPONSE_FIXTURE);
         outcome
@@ -605,14 +606,23 @@ mod tests {
     }
 
     #[test]
-    fn socket_codec_preserves_fragmented_and_coalesced_frames() -> io::Result<()>
-    {
+    fn codec_preserves_fragmented_and_coalesced_frames() -> io::Result<()> {
         let (stream, mut peer) = UnixStream::pair()?;
         stream.set_read_timeout(Some(Duration::from_secs(2)))?;
         let worker = thread::spawn(move || -> io::Result<()> {
             peer.write_all(b"{\"request\":{\"type\":\"sta")?;
             thread::sleep(Duration::from_millis(10));
-            peer.write_all(format!("tus\"}},\"version\":{PROTOCOL_VERSION}}}\n{{\"request\":{{\"type\":\"snapshot\"}},\"version\":{PROTOCOL_VERSION}}}\n").as_bytes())
+            peer.write_all(
+                format!(
+                    concat!(
+                        "tus\"}},\"version\":{version}}}\n",
+                        "{{\"request\":{{\"type\":\"snapshot\"}},",
+                        "\"version\":{version}}}\n",
+                    ),
+                    version = PROTOCOL_VERSION,
+                )
+                .as_bytes(),
+            )
         });
         let mut reader = BufReader::new(stream);
         let first = codec::read_request(&mut reader)?;
@@ -655,13 +665,32 @@ mod tests {
             assert_error_code(
                 &raw_reply(
                     socket,
-                    format!("{{\"version\":{PROTOCOL_VERSION},\"request\":{{\"type\":\"unknown\"}}}}\n").as_bytes(),
+                    format!(
+                        concat!(
+                            "{{\"version\":{},",
+                            "\"request\":{{\"type\":\"unknown\"}}}}\n",
+                        ),
+                        PROTOCOL_VERSION,
+                    )
+                    .as_bytes(),
                 )?,
                 "invalid_request",
             )?;
-            assert_error_code(&raw_reply(socket,
-                format!("{{\"version\":{PROTOCOL_VERSION},\"request\":{{\"type\":\"status\"}},\"extra\":true}}\n").as_bytes())?,
-                "invalid_request")?;
+            assert_error_code(
+                &raw_reply(
+                    socket,
+                    format!(
+                        concat!(
+                            "{{\"version\":{},",
+                            "\"request\":{{\"type\":\"status\"}},",
+                            "\"extra\":true}}\n",
+                        ),
+                        PROTOCOL_VERSION,
+                    )
+                    .as_bytes(),
+                )?,
+                "invalid_request",
+            )?;
             let mut truncated = UnixStream::connect(socket)?;
             truncated.set_read_timeout(Some(Duration::from_secs(2)))?;
             truncated

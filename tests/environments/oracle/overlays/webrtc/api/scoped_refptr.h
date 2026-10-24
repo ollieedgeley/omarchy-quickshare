@@ -3,9 +3,8 @@
 
 namespace webrtc {
 
-template <typename T>
-class scoped_refptr {};
+template <typename T> class scoped_refptr {};
 
-}  // namespace webrtc
+} // namespace webrtc
 
-#endif  // OMARCHY_QUICKSHARE_WEBRTC_SCOPED_REFPTR_H_
+#endif // OMARCHY_QUICKSHARE_WEBRTC_SCOPED_REFPTR_H_

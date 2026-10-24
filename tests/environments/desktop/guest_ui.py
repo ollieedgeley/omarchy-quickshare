@@ -71,6 +71,49 @@ def normalized(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
+def _phrase_control(words: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "text": " ".join(word["text"] for word in words),
+        "words": words,
+        "bounds": [
+            min(word["bounds"][0] for word in words),
+            min(word["bounds"][1] for word in words),
+            max(word["bounds"][2] for word in words),
+            max(word["bounds"][3] for word in words),
+        ],
+    }
+
+
+def _ocr_word(word: dict[str, Any]) -> dict[str, Any]:
+    left, top = int(word["left"]), int(word["top"])
+    return {
+        "text": word["text"],
+        "confidence": float(word["conf"]),
+        "bounds": [
+            left // OCR_SCALE,
+            top // OCR_SCALE,
+            (left + int(word["width"]) + OCR_SCALE - 1) // OCR_SCALE,
+            (top + int(word["height"]) + OCR_SCALE - 1) // OCR_SCALE,
+        ],
+    }
+
+
+def _ocr_controls(tsv: str) -> list[dict[str, Any]]:
+    lines: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for row in csv.DictReader(io.StringIO(tsv), delimiter="\t"):
+        if not row["text"].strip() or float(row["conf"]) < 0:
+            continue
+        key = tuple(
+            row[field]
+            for field in ("page_num", "block_num", "par_num", "line_num")
+        )
+        lines.setdefault(key, []).append(row)
+    return [
+        _phrase_control([_ocr_word(word) for word in words])
+        for words in lines.values()
+    ]
+
+
 def phrase_matches(
     line: dict[str, Any], text: str, *, prefix: bool = False
 ) -> list[dict[str, Any]]:
@@ -95,16 +138,7 @@ def phrase_matches(
             else actual[-1] != expected[-1]
         ):
             continue
-        matches.append({
-            "text": " ".join(word["text"] for word in selected),
-            "words": selected,
-            "bounds": [
-                min(word["bounds"][0] for word in selected),
-                min(word["bounds"][1] for word in selected),
-                max(word["bounds"][2] for word in selected),
-                max(word["bounds"][3] for word in selected),
-            ],
-        })
+        matches.append(_phrase_control(selected))
     return matches
 
 
@@ -202,14 +236,7 @@ class GuestUI:
         self.record({"observation": self.frame})
         return self.frame
 
-    def observe(self) -> dict[str, Any]:
-        """Capture and OCR a fresh framebuffer with bounded host resources.
-
-        Returns:
-            Frame path, dimensions and observed text bounds.
-        """
-        captured = self.capture()
-        png = Path(captured["frame"])
+    def _recognize(self, png: Path) -> tuple[Path, str]:
         base = png.with_suffix("")
         # Native small labels lose glyph detail at screenshot resolution.
         # A fixed 2x raster passed the retained peer-label OCR experiment;
@@ -239,64 +266,21 @@ class GuestUI:
         )
         base.with_suffix(".tsv").write_text(result.stdout, encoding="utf-8")
         base.with_suffix(".log").write_text(result.stderr, encoding="utf-8")
-        lines: dict[tuple[str, ...], list[dict[str, Any]]] = {}
-        for row in csv.DictReader(io.StringIO(result.stdout), delimiter="\t"):
-            if not row["text"].strip() or float(row["conf"]) < 0:
-                continue
-            key = tuple(
-                row[field]
-                for field in ("page_num", "block_num", "par_num", "line_num")
-            )
-            lines.setdefault(key, []).append(row)
-        controls = []
-        for words in lines.values():
-            left = min(int(word["left"]) for word in words)
-            top = min(int(word["top"]) for word in words)
-            right = max(
-                int(word["left"]) + int(word["width"]) for word in words
-            )
-            bottom = max(
-                int(word["top"]) + int(word["height"]) for word in words
-            )
-            controls.append({
-                "text": " ".join(word["text"] for word in words),
-                "words": [
-                    {
-                        "text": word["text"],
-                        "confidence": float(word["conf"]),
-                        "bounds": [
-                            int(word["left"]) // OCR_SCALE,
-                            int(word["top"]) // OCR_SCALE,
-                            (
-                                int(word["left"])
-                                + int(word["width"])
-                                + OCR_SCALE
-                                - 1
-                            )
-                            // OCR_SCALE,
-                            (
-                                int(word["top"])
-                                + int(word["height"])
-                                + OCR_SCALE
-                                - 1
-                            )
-                            // OCR_SCALE,
-                        ],
-                    }
-                    for word in words
-                ],
-                "bounds": [
-                    left // OCR_SCALE,
-                    top // OCR_SCALE,
-                    (right + OCR_SCALE - 1) // OCR_SCALE,
-                    (bottom + OCR_SCALE - 1) // OCR_SCALE,
-                ],
-            })
+        return ocr_image, result.stdout
+
+    def observe(self) -> dict[str, Any]:
+        """Capture and OCR a fresh framebuffer with bounded host resources.
+
+        Returns:
+            Frame path, dimensions and observed text bounds.
+        """
+        captured = self.capture()
+        ocr_image, tsv = self._recognize(Path(captured["frame"]))
         self.frame = {
             **captured,
             "ocrImage": str(ocr_image),
             "ocrScale": OCR_SCALE,
-            "controls": controls,
+            "controls": _ocr_controls(tsv),
             "recognizedAt": now(),
         }
         self.record({"observation": self.frame})
@@ -334,6 +318,37 @@ class GuestUI:
                 raise RuntimeError(message)
             time.sleep(0.5)
 
+    def _pointer_press(self, x: int, y: int) -> None:
+        events = [
+            {
+                "type": "abs",
+                "data": {
+                    "axis": axis,
+                    "value": round(position * 32767 / (extent - 1)),
+                },
+            }
+            for axis, position, extent in (
+                ("x", x, self.frame["width"]),
+                ("y", y, self.frame["height"]),
+            )
+        ]
+        events.append({"type": "btn", "data": {"button": "left", "down": True}})
+        vm_control.qmp(self.state, "input-send-event", {"events": events})
+
+    def _pointer_release(self) -> None:
+        vm_control.qmp(
+            self.state,
+            "input-send-event",
+            {
+                "events": [
+                    {
+                        "type": "btn",
+                        "data": {"button": "left", "down": False},
+                    },
+                ]
+            },
+        )
+
     def click(self, control: dict[str, Any]) -> None:
         """Click bounds from the latest observed guest frame only.
 
@@ -354,50 +369,13 @@ class GuestUI:
             "control": control,
             "coordinates": [x, y],
         })
-        vm_control.qmp(
-            self.state,
-            "input-send-event",
-            {
-                "events": [
-                    {
-                        "type": "abs",
-                        "data": {
-                            "axis": "x",
-                            "value": round(
-                                x * 32767 / (self.frame["width"] - 1)
-                            ),
-                        },
-                    },
-                    {
-                        "type": "abs",
-                        "data": {
-                            "axis": "y",
-                            "value": round(
-                                y * 32767 / (self.frame["height"] - 1)
-                            ),
-                        },
-                    },
-                    {"type": "btn", "data": {"button": "left", "down": True}},
-                ]
-            },
-        )
+        self._pointer_press(x, y)
         # USB input is synchronized per QMP request; do not coalesce press
         # and release into a final unpressed tablet state.
         try:
             time.sleep(0.1)
         finally:
-            vm_control.qmp(
-                self.state,
-                "input-send-event",
-                {
-                    "events": [
-                        {
-                            "type": "btn",
-                            "data": {"button": "left", "down": False},
-                        },
-                    ]
-                },
-            )
+            self._pointer_release()
         time.sleep(0.3)
         self.capture()
 

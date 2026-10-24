@@ -185,7 +185,36 @@ def _live(state: dict[str, Any]) -> dict[str, Any]:
     return {"activeShare": active, "peer": peer, "connections": connections}
 
 
-def _candidate(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, too-many-branches] - Identity, age and live ownership are separate mandatory checks.
+def _validate_payload(
+    owner: Path, attempt: Path, record: dict[str, Any]
+) -> str:
+    submitted, received = record["submitted"], record["received"]
+    name = f"quickshare-{attempt.name}.bin"
+    synthetic = (
+        f"Synthetic retained-lab transfer {attempt.name}\n".encode()
+        + bytes(range(256)) * 256
+    )
+    expected = {
+        "name": name,
+        "sizeBytes": len(synthetic),
+        "sha256": hashlib.sha256(synthetic).hexdigest(),
+    }
+    for metadata in (submitted, received):
+        if any(metadata.get(key) != value for key, value in expected.items()):
+            message = "Payload differs from the attempt's synthetic bytes"
+            raise ValueError(message)
+    if (
+        submitted["sourcePath"] != str(attempt / name)
+        or received["path"] != str(owner / "peer-cases/received" / name)
+        or submitted["guestPath"]
+        != f".cache/omarchy-quickshare-scenarios/{attempt.name}/{name}"
+    ):
+        message = "Recorded payload paths differ from exact owned locations"
+        raise ValueError(message)
+    return name
+
+
+def _candidate(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - Identity, age and live ownership are separate mandatory checks.
     owner: Path,
     attempt: Path,
     state: dict[str, Any],
@@ -215,29 +244,7 @@ def _candidate(  # ruff: ignore[too-many-arguments, too-many-positional-argument
             "Completion age is invalid or below the configured retention age"
         )
         raise ValueError(message)
-    submitted, received = record["submitted"], record["received"]
-    name = f"quickshare-{attempt.name}.bin"
-    synthetic = (
-        f"Synthetic retained-lab transfer {attempt.name}\n".encode()
-        + bytes(range(256)) * 256
-    )
-    expected = {
-        "name": name,
-        "sizeBytes": len(synthetic),
-        "sha256": hashlib.sha256(synthetic).hexdigest(),
-    }
-    for metadata in (submitted, received):
-        if any(metadata.get(key) != value for key, value in expected.items()):
-            message = "Payload differs from the attempt's synthetic bytes"
-            raise ValueError(message)
-    if (
-        submitted["sourcePath"] != str(attempt / name)
-        or received["path"] != str(owner / "peer-cases/received" / name)
-        or submitted["guestPath"]
-        != f".cache/omarchy-quickshare-scenarios/{attempt.name}/{name}"
-    ):
-        message = "Recorded payload paths differ from exact owned locations"
-        raise ValueError(message)
+    name = _validate_payload(owner, attempt, record)
     active = live["activeShare"]
     if active and (
         active["id_string"] == record.get("shareId")
@@ -271,7 +278,55 @@ def _guest(
     return item
 
 
-def _scenarios(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, too-many-branches] - One selected-owner lock spans eligibility and removal.
+def _inspect_payloads(
+    evidence: tuple[Path, dict[str, Any], str],
+    state: dict[str, Any],
+    report: dict[str, Any],
+) -> list[dict[str, Any]]:
+    attempt, record, checksum = evidence
+    report["items"].append(
+        _kept(
+            attempt / "result.json",
+            "retained-result",
+            "Original result and reset bytes are never rewritten",
+            recordSha256=checksum,
+        )
+    )
+    expected = record["submitted"]
+    candidates = [
+        retention_payload.payload(Path(path), expected)
+        for path in (expected["sourcePath"], record["received"]["path"])
+    ]
+    candidates.append(_guest(state, record, apply=False))
+    for item in candidates:
+        item.setdefault("location", "host")
+        item.update(
+            category="completed-synthetic-payload",
+            resultPath=str(attempt / "result.json"),
+            resultSha256=checksum,
+        )
+        report["items"].append(item)
+    return candidates
+
+
+def _remove_payload(
+    item: dict[str, Any], state: dict[str, Any], record: dict[str, Any]
+) -> dict[str, Any]:
+    return (
+        _guest(state, record, apply=True)
+        if item["location"] == "guest"
+        else retention_payload.payload(
+            Path(item["path"]), record["submitted"], apply=True
+        )
+    )
+
+
+def _unchanged_result(attempt: Path, checksum: str, message: str) -> None:
+    if _read(attempt / "result.json")[1] != checksum:
+        raise RuntimeError(message)
+
+
+def _scenarios(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - One selected-owner lock spans eligibility and removal.
     owner: Path, report: dict[str, Any], hours: float, save: Callable[[], None]
 ) -> None:
     with _lock(owner / "operation.lock"):
@@ -293,28 +348,9 @@ def _scenarios(  # ruff: ignore[too-many-arguments, too-many-positional-argument
                     _kept(attempt, "retained-scenario-evidence", str(error))
                 )
                 continue
-            report["items"].append(
-                _kept(
-                    attempt / "result.json",
-                    "retained-result",
-                    "Original result and reset bytes are never rewritten",
-                    recordSha256=checksum,
-                )
+            candidates = _inspect_payloads(
+                (attempt, record, checksum), state, report
             )
-            expected = record["submitted"]
-            candidates = [
-                retention_payload.payload(Path(path), expected)
-                for path in (expected["sourcePath"], record["received"]["path"])
-            ]
-            candidates.append(_guest(state, record, apply=False))
-            for item in candidates:
-                item.setdefault("location", "host")
-                item.update(
-                    category="completed-synthetic-payload",
-                    resultPath=str(attempt / "result.json"),
-                    resultSha256=checksum,
-                )
-                report["items"].append(item)
             save()
             if report["mode"] != "apply" or any(
                 item["status"] not in {"eligible", "absent"}
@@ -323,26 +359,21 @@ def _scenarios(  # ruff: ignore[too-many-arguments, too-many-positional-argument
                 continue
             # Recheck live work and immutable result before unlinking.
             _candidate(owner, attempt, state, hours, _live(state))
-            if _read(attempt / "result.json")[1] != checksum:
-                message = "Result changed during cleanup; refusing removal"
-                raise RuntimeError(message)
+            _unchanged_result(
+                attempt,
+                checksum,
+                "Result changed during cleanup; refusing removal",
+            )
             for item in candidates:
                 if item["status"] == "absent":
                     continue
                 item["status"] = "removal-pending"
                 save()
-                outcome = (
-                    _guest(state, record, apply=True)
-                    if item["location"] == "guest"
-                    else retention_payload.payload(
-                        Path(item["path"]), expected, apply=True
-                    )
-                )
-                item.update(outcome)
+                item.update(_remove_payload(item, state, record))
                 save()
-            if _read(attempt / "result.json")[1] != checksum:
-                message = "Immutable result changed outside cleanup"
-                raise RuntimeError(message)
+            _unchanged_result(
+                attempt, checksum, "Immutable result changed outside cleanup"
+            )
 
 
 def _totals(items: list[dict[str, Any]]) -> dict[str, Any]:
@@ -367,12 +398,7 @@ def _totals(items: list[dict[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def main() -> None:  # ruff: ignore[too-many-statements] - One CLI boundary records all requested independent cleanup classes.
-    """Run retention and retain evidence, including interrupted runs.
-
-    Raises:
-        KeyboardInterrupt: Cleanup was interrupted after retaining its report.
-    """
+def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "mode",
@@ -388,18 +414,23 @@ def main() -> None:  # ruff: ignore[too-many-statements] - One CLI boundary reco
         "--native-cache-profile", choices=("dev", "release"), default="dev"
     )
     parser.add_argument("--native-cache-age-hours", type=_age, default=720.0)
-    args = parser.parse_args()
-    os.umask(0o077)
-    owner = lab_lifecycle.directory()
+    return parser.parse_args()
+
+
+def _cleanup_destination() -> Path:
     root = vm_control.CACHE / "cleanups"
     with retention_payload.directory(root.parent):
         root.mkdir(mode=0o700, exist_ok=True)
     with retention_payload.directory(root):
         run = root / str(uuid.uuid4())
         run.mkdir(mode=0o700)
-    destination = run / "cleanup.json"
-    started = time.monotonic()
-    report = {
+    return run / "cleanup.json"
+
+
+def _new_report(
+    run: Path, owner: Path, args: argparse.Namespace
+) -> dict[str, Any]:
+    return {
         "cleanupId": run.name,
         "mode": args.mode,
         "lab": owner.name,
@@ -420,48 +451,76 @@ def main() -> None:  # ruff: ignore[too-many-statements] - One CLI boundary reco
         },
     }
 
+
+def _sweep(
+    report: dict[str, Any],
+    args: argparse.Namespace,
+    save: Callable[[], None],
+) -> None:
+    _inventory(report)
+    retention_native.sweep(
+        report,
+        args.native_age_hours,
+        read=_read,
+        children=_children,
+        lock=_lock,
+        save=save,
+    )
+    retention_bases.sweep(
+        report,
+        args.base_age_hours,
+        read=_read,
+        children=_children,
+        lock=_lock,
+        save=save,
+    )
+    if args.prune_native_cache:
+        retention_native.prune_cache(
+            report,
+            args.native_cache_age_hours,
+            profile=args.native_cache_profile,
+            read=_read,
+            children=_children,
+            lock=_lock,
+            save=save,
+        )
+
+
+@contextmanager
+def _scenario_report(owner: Path, report: dict[str, Any]) -> Iterator[None]:
+    try:
+        yield
+        report["scenarioStatus"] = "complete"
+    except Exception as error:  # ruff: ignore[blind-except] - A protected scenario scope must not fail independent completed cleanup classes.
+        report["scenarioStatus"] = "protected"
+        report["items"].append(
+            _kept(owner, "active-or-unknown-scenario-scope", str(error))
+        )
+
+
+def main() -> None:
+    """Run retention and retain evidence, including interrupted runs.
+
+    Raises:
+        KeyboardInterrupt: Cleanup was interrupted after retaining its report.
+    """
+    args = _arguments()
+    os.umask(0o077)
+    owner = lab_lifecycle.directory()
+    destination = _cleanup_destination()
+    started = time.monotonic()
+    report = _new_report(destination.parent, owner, args)
+
     def save() -> None:
         report["totals"] = _totals(report["items"])
         report["durationSeconds"] = time.monotonic() - started
         vm_control.save(destination, report)
 
     save()
-    try:  # ruff: ignore[too-many-statements-in-try-clause] - Preserve one report across independent cleanup classes.
-        _inventory(report)
-        retention_native.sweep(
-            report,
-            args.native_age_hours,
-            read=_read,
-            children=_children,
-            lock=_lock,
-            save=save,
-        )
-        retention_bases.sweep(
-            report,
-            args.base_age_hours,
-            read=_read,
-            children=_children,
-            lock=_lock,
-            save=save,
-        )
-        if args.prune_native_cache:
-            retention_native.prune_cache(
-                report,
-                args.native_cache_age_hours,
-                profile=args.native_cache_profile,
-                read=_read,
-                children=_children,
-                lock=_lock,
-                save=save,
-            )
-        try:
+    try:
+        _sweep(report, args, save)
+        with _scenario_report(owner, report):
             _scenarios(owner, report, args.scenario_age_hours, save)
-            report["scenarioStatus"] = "complete"
-        except Exception as error:  # ruff: ignore[blind-except] - A protected scenario scope must not fail independent completed cleanup classes.
-            report["scenarioStatus"] = "protected"
-            report["items"].append(
-                _kept(owner, "active-or-unknown-scenario-scope", str(error))
-            )
         report["status"] = "complete"
     except (Exception, KeyboardInterrupt) as error:
         report.update(

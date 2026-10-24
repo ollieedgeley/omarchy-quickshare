@@ -26,6 +26,8 @@ import {
 import {
   capacityCommand,
   downloadVerified,
+  preparedImage,
+  publishPreparedState,
   withProvisionLock,
 } from "./provision-cache.mjs";
 import { runSharingActionsSelfTest } from "./sharing/actions.mjs";
@@ -296,7 +298,12 @@ function prepareToolInputs(manifest) {
 
 function provision() {
   return withProvisionLock(ENVIRONMENT_ROOT, (descriptor) => {
-    const { fingerprint, manifest } = inputs();
+    const configuration = inputs();
+    const { fingerprint, manifest } = configuration;
+    if (preparedImage(STATE_PATH, CACHE_ROOT, configuration)) {
+      assertPrepared(manifest, fingerprint);
+      return;
+    }
     const records = sourceRecords(manifest);
     validateSourceTrees(records);
     prepareToolInputs(manifest);
@@ -313,25 +320,12 @@ function provision() {
     });
     const environment = buildEnvironment(manifest, fingerprint, context);
     // Both peers use one tag; only one service may publish it.
-    capacityCommand(
-      COMPOSE_PATH,
-      ["build", "--pull", "--provenance=false", "peer-a"],
-      { environment, descriptor },
-    );
+    capacityCommand(COMPOSE_PATH, ["build", "--provenance=false", "peer-a"], {
+      environment,
+      descriptor,
+    });
     assertPrepared(manifest, fingerprint);
-    mkdirSync(ENVIRONMENT_ROOT, { recursive: true });
-    const imageId = output(process.env.DOCKER ?? "docker", [
-      "image",
-      "inspect",
-      "--format",
-      "{{.Id}}",
-      manifest.image,
-    ]);
-    writeFileSync(
-      STATE_PATH,
-      `${JSON.stringify({ context, fingerprint, imageId }, null, 2)}\n`,
-    );
-    process.stdout.write(`Prepared Nearby Linux image ${imageId}.\n`);
+    publishPreparedState(STATE_PATH, configuration, context);
   });
 }
 

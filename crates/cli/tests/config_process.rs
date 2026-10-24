@@ -4,7 +4,7 @@
 #![expect(
     clippy::panic_in_result_fn,
     clippy::let_underscore_untyped,
-    reason = "Process contracts propagate setup errors and assert command results"
+    reason = "Propagate setup errors and assert command results"
 )]
 
 use core::sync::atomic::{AtomicUsize, Ordering};

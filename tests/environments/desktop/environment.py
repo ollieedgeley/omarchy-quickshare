@@ -163,6 +163,87 @@ def _installation_iso() -> Path:
     return iso
 
 
+def _installation_storage(directory: Path, template: Path) -> Path:
+    directory.mkdir(parents=True)
+    key = directory / "id_ed25519"
+    vm_control.run([
+        "ssh-keygen",
+        "-q",
+        "-t",
+        "ed25519",
+        "-N",
+        "",
+        "-C",
+        "private-desktop",
+        "-f",
+        key,
+    ])
+    seed = build(
+        directory,
+        vm_control.MANIFEST,
+        key.with_suffix(".pub").read_text(encoding="utf-8").strip(),
+    )
+    vm_control.run([
+        "qemu-img",
+        "create",
+        "-f",
+        "qcow2",
+        directory / "base.qcow2",
+        f"{vm_control.MANIFEST['diskGiB']}G",
+    ])
+    shutil.copyfile(template, directory / "vars.fd")
+    return seed
+
+
+def _installation_runtime(state: dict[str, Any]) -> str:
+    vm_control.wait_ssh(
+        state,
+        vm_control.number("DESKTOP_INSTALL_TIMEOUT", 3600, 1),
+        installing=True,
+    )
+    setup = (
+        "set -e; mkdir -p /etc/sddm.conf.d; "
+        "printf '[Autologin]\\nUser=omarchy\\nSession=omarchy\\n' "
+        "> /etc/sddm.conf.d/50-test-desktop.conf; systemctl restart sddm"
+    )
+    vm_control.ssh(
+        state, "printf '%s\\n' omarchy | sudo -S bash -c " + shlex.quote(setup)
+    )
+    diagnostics.desktop_ready(
+        state, vm_control.number("DESKTOP_BOOT_TIMEOUT", 600, 1)
+    )
+    return vm_control.ssh(
+        state,
+        "bash -lc "
+        + shlex.quote(
+            "set -e; cat /etc/os-release; uname -r; "
+            "pacman -Q omarchy omarchy-settings hyprland; "
+            "command -v omarchy-shell; "
+            "command -v omarchy-plugin-validate; pacman -Q"
+        ),
+    ).stdout
+
+
+def _publish_installation(
+    directory: Path, base: Path, manifest: dict[str, Any]
+) -> None:
+    base.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "base.qcow2",
+        "vars.fd",
+        "id_ed25519",
+        "id_ed25519.pub",
+        "known_hosts",
+        "runtime.txt",
+    ):
+        shutil.move(directory / name, base / name)
+    (base / "base.qcow2").chmod(0o400)
+    manifest["preparedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    vm_control.save(base / "prepared.pending.json", manifest)
+    retention_bases.publish(base)
+    print(f"Prepared and cleanly shut down: {base}")
+
+
 def prepare() -> None:
     """Install and publish a reusable desktop base after host preflight.
 
@@ -183,42 +264,13 @@ def prepare() -> None:
     vm_control.resources()
     iso = _installation_iso()
     directory = vm_control.CACHE / "preparations" / str(uuid.uuid4())
-    directory.mkdir(parents=True)
-    key = directory / "id_ed25519"
-    vm_control.run([
-        "ssh-keygen",
-        "-q",
-        "-t",
-        "ed25519",
-        "-N",
-        "",
-        "-C",
-        "private-desktop",
-        "-f",
-        key,
-    ])
-    seed = build(
-        directory,
-        vm_control.MANIFEST,
-        key.with_suffix(".pub").read_text(encoding="utf-8").strip(),
-    )
-    disk = directory / "base.qcow2"
-    vm_control.run([
-        "qemu-img",
-        "create",
-        "-f",
-        "qcow2",
-        disk,
-        f"{vm_control.MANIFEST['diskGiB']}G",
-    ])
-    variables = directory / "vars.fd"
-    shutil.copyfile(template, variables)
+    seed = _installation_storage(directory, template)
     state = vm_control.launch(
         directory,
         vm_control.resources(),
-        disk=disk,
-        variables=variables,
-        key=key,
+        disk=directory / "base.qcow2",
+        variables=directory / "vars.fd",
+        key=directory / "id_ed25519",
         fingerprint=fingerprint,
         code=code,
         state_file=vm_control.CACHE / "preparation.json",
@@ -233,56 +285,14 @@ def prepare() -> None:
             "usb-storage,drive=seed",
         ],
     )
-    vm_control.wait_ssh(
-        state,
-        vm_control.number("DESKTOP_INSTALL_TIMEOUT", 3600, 1),
-        installing=True,
-    )
-    setup = (
-        "set -e; mkdir -p /etc/sddm.conf.d; "
-        "printf '[Autologin]\\nUser=omarchy\\nSession=omarchy\\n' "
-        "> /etc/sddm.conf.d/50-test-desktop.conf; systemctl restart sddm"
-    )
-    vm_control.ssh(
-        state, "printf '%s\\n' omarchy | sudo -S bash -c " + shlex.quote(setup)
-    )
-    diagnostics.desktop_ready(
-        state, vm_control.number("DESKTOP_BOOT_TIMEOUT", 600, 1)
-    )
-    runtime = vm_control.ssh(
-        state,
-        "bash -lc "
-        + shlex.quote(
-            "set -e; cat /etc/os-release; uname -r; "
-            "pacman -Q omarchy omarchy-settings hyprland; "
-            "command -v omarchy-shell; "
-            "command -v omarchy-plugin-validate; pacman -Q"
-        ),
-    ).stdout
+    runtime = _installation_runtime(state)
     (directory / "runtime.txt").write_text(runtime, encoding="utf-8")
     vm_control.stop(state, force=False)
-    base.mkdir(parents=True, exist_ok=True)
-    for name in (
-        "base.qcow2",
-        "vars.fd",
-        "id_ed25519",
-        "id_ed25519.pub",
-        "known_hosts",
-        "runtime.txt",
-    ):
-        shutil.move(directory / name, base / name)
-    (base / "base.qcow2").chmod(0o400)
-    vm_control.save(
-        base / "prepared.pending.json",
-        {
-            "fingerprint": fingerprint,
-            "inputs": inputs,
-            "runtime": runtime,
-            "preparedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        },
+    _publish_installation(
+        directory,
+        base,
+        {"fingerprint": fingerprint, "inputs": inputs, "runtime": runtime},
     )
-    retention_bases.publish(base)
-    print(f"Prepared and cleanly shut down: {base}")
 
 
 def main() -> None:

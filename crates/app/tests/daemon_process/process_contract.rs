@@ -1,6 +1,5 @@
 #[path = "process_contract/client_failures.rs"]
 mod client_failures;
-
 #[path = "process_contract/operation_recovery.rs"]
 mod operation_recovery;
 

@@ -136,6 +136,22 @@ def _snapshot(selected: Path, attempt: Path) -> dict[str, Any]:
     digest = hashlib.sha256(
         json.dumps(source_hashes, sort_keys=True).encode()
     ).hexdigest()
+    manifest, revision = _stamp_snapshot(snapshot, digest, attempt.name)
+    return {
+        "source": str(selected.resolve()),
+        "sourceCommit": commit,
+        "sourceFiles": source_hashes,
+        "sourceSha256": digest,
+        "revision": revision,
+        "pluginId": manifest["id"],
+        "entryPoint": manifest["entryPoints"]["barWidget"],
+        "deployedFiles": _hashes(snapshot),
+    }
+
+
+def _stamp_snapshot(
+    snapshot: Path, digest: str, attempt_name: str
+) -> tuple[dict[str, Any], str]:
     manifest = json.loads((snapshot / "manifest.json").read_text())
     shipped = json.loads((SOURCE / "manifest.json").read_text())
     if (
@@ -149,7 +165,7 @@ def _snapshot(selected: Path, attempt: Path) -> dict[str, Any]:
     if text.count(STAMP) != 1:
         message = "Panel source needs one unstamped deploymentRevision"
         raise RuntimeError(message)
-    revision = f"{digest}:{attempt.name}"
+    revision = f"{digest}:{attempt_name}"
     entry.write_text(
         text.replace(
             STAMP,
@@ -158,16 +174,7 @@ def _snapshot(selected: Path, attempt: Path) -> dict[str, Any]:
         ),
         encoding="utf-8",
     )
-    return {
-        "source": str(selected.resolve()),
-        "sourceCommit": commit,
-        "sourceFiles": source_hashes,
-        "sourceSha256": digest,
-        "revision": revision,
-        "pluginId": manifest["id"],
-        "entryPoint": manifest["entryPoints"]["barWidget"],
-        "deployedFiles": _hashes(snapshot),
-    }
+    return manifest, revision
 
 
 def _install(

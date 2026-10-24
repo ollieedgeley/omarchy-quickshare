@@ -178,7 +178,7 @@ def _payload(state: dict[str, Any], attempt: Path) -> tuple[Path, str]:
     return payload, guest_path
 
 
-def _completion(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, too-many-branches] - One bounded observation loop shares immutable attempt context.
+def _completion(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - One bounded observation loop shares immutable attempt context.
     state: dict[str, Any],
     attempt: Path,
     report: dict[str, Any],
@@ -186,28 +186,11 @@ def _completion(  # ruff: ignore[too-many-arguments, too-many-positional-argumen
     received: Path,
 ) -> None:
     deadline = time.monotonic() + 60
-    share_id = report["shareId"]
-    expected = report["submitted"]
     container = report["peer"]["containers"]["peer"]
     while time.monotonic() < deadline:
         share = public_snapshot(state, attempt).get("active_share")
         report["publicOutcome"] = share
-        if not share or share["id_string"] != share_id:
-            message = f"Public share {share_id} disappeared or was replaced"
-            raise RuntimeError(message)
-        if (
-            share["attachment"]
-            != {
-                "type": "file",
-                "name": expected["name"],
-                "size_bytes": expected["sizeBytes"],
-            }
-            or share["direction"] != "outbound"
-            or share.get("peer", {}).get("id") != report["selectedPeer"]["id"]
-            or share["total_bytes"] != expected["sizeBytes"]
-        ):
-            message = "Public share identity or offered metadata changed"
-            raise RuntimeError(message)
+        _check_share(share, report)
         events = _receiver(container, attempt, baseline)
         report["receiverEvents"] = events
         if share["phase"] in TERMINAL - {"completed"}:
@@ -216,15 +199,7 @@ def _completion(  # ruff: ignore[too-many-arguments, too-many-positional-argumen
                 f"{share.get('terminal_reason')}"
             )
             raise RuntimeError(message)
-        targets = {
-            event["target_id"] for event in events if "target_id" in event
-        }
-        if len(targets) > 1:
-            message = (
-                "Multiple receiver targets appeared; "
-                "attempt evidence is ambiguous"
-            )
-            raise RuntimeError(message)
+        _check_targets(events)
         completed = [
             event
             for event in events
@@ -233,52 +208,8 @@ def _completion(  # ruff: ignore[too-many-arguments, too-many-positional-argumen
         ]
         if share["phase"] == "completed" and completed and received.exists():
             final = completed[-1]
-            if not (
-                any(event.get("event") == "incoming-offer" for event in events)
-                and any(
-                    event.get("event") == "action-requested"
-                    and event.get("action") == "accept"
-                    for event in events
-                )
-                and any(
-                    event.get("event") == "action-result"
-                    and event.get("action") == "accept"
-                    and event.get("status") == "kOk"
-                    for event in events
-                )
-                and Decimal(final["progress"]) == COMPLETE_PERCENT
-                and int(final["total_bytes"]) == expected["sizeBytes"]
-                and share["transferred_bytes"] == expected["sizeBytes"]
-                and share.get("medium") == "wifi_lan"
-            ):
-                message = (
-                    "Receiver consent/completion or public "
-                    "byte/medium evidence disagrees"
-                )
-                raise RuntimeError(message)
-            if not stat.S_ISREG(received.lstat().st_mode):
-                message = "Received path is not a regular file"
-                raise RuntimeError(message)
-            actual = received.read_bytes()
-            report["received"] = {
-                "path": str(received),
-                "name": received.name,
-                "sizeBytes": len(actual),
-                "sha256": hashlib.sha256(actual).hexdigest(),
-                "targetId": final["target_id"],
-                "observedAt": now(),
-            }
-            if (
-                actual != (attempt / expected["name"]).read_bytes()
-                or report["received"]["sha256"] != expected["sha256"]
-                or len(actual) != expected["sizeBytes"]
-                or received.name != expected["name"]
-            ):
-                message = (
-                    "Independent receiver filename, bytes, "
-                    "size or SHA-256 differs"
-                )
-                raise RuntimeError(message)
+            _check_completion(report, final)
+            _record_received(attempt, report, (received, final))
             return
         time.sleep(0.5)
     message = (
@@ -286,6 +217,96 @@ def _completion(  # ruff: ignore[too-many-arguments, too-many-positional-argumen
         "independent receiver completion/file"
     )
     raise RuntimeError(message)
+
+
+def _check_share(share: dict[str, Any] | None, report: dict[str, Any]) -> None:
+    share_id = report["shareId"]
+    if not share or share["id_string"] != share_id:
+        message = f"Public share {share_id} disappeared or was replaced"
+        raise RuntimeError(message)
+    expected = report["submitted"]
+    if (
+        share["attachment"]
+        != {
+            "type": "file",
+            "name": expected["name"],
+            "size_bytes": expected["sizeBytes"],
+        }
+        or share["direction"] != "outbound"
+        or share.get("peer", {}).get("id") != report["selectedPeer"]["id"]
+        or share["total_bytes"] != expected["sizeBytes"]
+    ):
+        message = "Public share identity or offered metadata changed"
+        raise RuntimeError(message)
+
+
+def _check_targets(events: list[dict[str, str]]) -> None:
+    targets = {event["target_id"] for event in events if "target_id" in event}
+    if len(targets) > 1:
+        message = (
+            "Multiple receiver targets appeared; attempt evidence is ambiguous"
+        )
+        raise RuntimeError(message)
+
+
+def _check_completion(report: dict[str, Any], final: dict[str, str]) -> None:
+    share = report["publicOutcome"]
+    events = report["receiverEvents"]
+    expected = report["submitted"]
+    if not (
+        any(event.get("event") == "incoming-offer" for event in events)
+        and any(
+            event.get("event") == "action-requested"
+            and event.get("action") == "accept"
+            for event in events
+        )
+        and any(
+            event.get("event") == "action-result"
+            and event.get("action") == "accept"
+            and event.get("status") == "kOk"
+            for event in events
+        )
+        and Decimal(final["progress"]) == COMPLETE_PERCENT
+        and int(final["total_bytes"]) == expected["sizeBytes"]
+        and share["transferred_bytes"] == expected["sizeBytes"]
+        and share.get("medium") == "wifi_lan"
+    ):
+        message = (
+            "Receiver consent/completion or public "
+            "byte/medium evidence disagrees"
+        )
+        raise RuntimeError(message)
+
+
+def _record_received(
+    attempt: Path,
+    report: dict[str, Any],
+    receipt: tuple[Path, dict[str, str]],
+) -> None:
+    received, final = receipt
+    expected = report["submitted"]
+    if not stat.S_ISREG(received.lstat().st_mode):
+        message = "Received path is not a regular file"
+        raise RuntimeError(message)
+    actual = received.read_bytes()
+    report["received"] = {
+        "path": str(received),
+        "name": received.name,
+        "sizeBytes": len(actual),
+        "sha256": hashlib.sha256(actual).hexdigest(),
+        "targetId": final["target_id"],
+        "observedAt": now(),
+    }
+    if (
+        actual != (attempt / expected["name"]).read_bytes()
+        or report["received"]["sha256"] != expected["sha256"]
+        or len(actual) != expected["sizeBytes"]
+        or received.name != expected["name"]
+    ):
+        message = (
+            "Independent receiver filename, bytes, size or SHA-256 differs"
+        )
+        raise RuntimeError(message)
 
 
 def _prepare(
@@ -326,27 +347,7 @@ def _exercise(
     baseline = receiver_logs(peer["containers"]["peer"], attempt, "before")
     report["action"] = "apply optional controlled peer fault"
     with scenario_fault.scoped(state, attempt, report):
-        report["action"] = "submit public send to selected peer"
-        report["submittedAt"] = now()
-        # Persist send intent before the CLI call, then its assigned ID.
-        vm_control.save(attempt / "result.json", report)
-        output = public_cli(
-            state,
-            attempt,
-            "send",
-            "--peer",
-            report["selectedPeer"]["id"],
-            guest_path,
-        )
-        match = re.fullmatch(
-            r"Share ([0-9]+) queued\.\nrequest_id=([^\r\n]+)\s*", output
-        )
-        if not match:
-            message = "Public send did not report its queued share identifier"
-            raise RuntimeError(message)
-        report["shareId"] = match[1]
-        report["requestId"] = match[2]
-        vm_control.save(attempt / "result.json", report)
+        _submit(state, attempt, report)
         report["action"] = "observe public and independent receiver completion"
         _completion(state, attempt, report, baseline, received)
     report["action"] = "verify retained services remain unchanged"
@@ -361,6 +362,34 @@ def _exercise(
             "Application or reference receiver restarted during the attempt"
         )
         raise RuntimeError(message)
+
+
+def _submit(
+    state: dict[str, Any],
+    attempt: Path,
+    report: dict[str, Any],
+) -> None:
+    report["action"] = "submit public send to selected peer"
+    report["submittedAt"] = now()
+    # Persist send intent before the CLI call, then its assigned ID.
+    vm_control.save(attempt / "result.json", report)
+    output = public_cli(
+        state,
+        attempt,
+        "send",
+        "--peer",
+        report["selectedPeer"]["id"],
+        report["submitted"]["guestPath"],
+    )
+    match = re.fullmatch(
+        r"Share ([0-9]+) queued\.\nrequest_id=([^\r\n]+)\s*", output
+    )
+    if not match:
+        message = "Public send did not report its queued share identifier"
+        raise RuntimeError(message)
+    report["shareId"] = match[1]
+    report["requestId"] = match[2]
+    vm_control.save(attempt / "result.json", report)
 
 
 def _attempt(owner: Path) -> None:

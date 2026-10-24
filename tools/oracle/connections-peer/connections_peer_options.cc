@@ -97,6 +97,16 @@ bool ParseMediumOption(std::string_view argument, int *index, int argc,
     return SetMedium(&options->upgrade_mediums, value);
   return false;
 }
+
+bool ValidOptions(const Options &options) {
+  const bool proposes_upgrade =
+      options.auto_upgrade || options.initiate_upgrade_on_connect;
+  return (options.advertise || options.discover) &&
+         options.initial_mediums.Any(true) &&
+         (!proposes_upgrade || options.upgrade_mediums.Any(true)) &&
+         !options.endpoint_name.empty() &&
+         !(options.send_file.has_value() && options.send_text.has_value());
+}
 } // namespace
 
 void Usage(const char *program) {
@@ -129,13 +139,7 @@ bool Parse(int argc, char **argv, Options *options) {
     else
       return false;
   }
-  const bool proposes_upgrade =
-      options->auto_upgrade || options->initiate_upgrade_on_connect;
-  return (options->advertise || options->discover) &&
-         options->initial_mediums.Any(true) &&
-         (!proposes_upgrade || options->upgrade_mediums.Any(true)) &&
-         !options->endpoint_name.empty() &&
-         !(options->send_file.has_value() && options->send_text.has_value());
+  return ValidOptions(*options);
 }
 
 } // namespace quickshare::connections_peer

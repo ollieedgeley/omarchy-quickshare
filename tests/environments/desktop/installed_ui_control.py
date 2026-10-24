@@ -157,28 +157,9 @@ class _CLIProof:
         vm_control.save(self.attempt / "cli-unavailable.json", self.evidence)
 
 
-@contextmanager
-def installed_cli_unavailable(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, too-many-branches] - One restoration boundary spans the owned guest and visible journey.
-    state: dict, attempt: Path, report: dict, ui: GuestUI, *, enabled: bool
-) -> Iterator[dict[str, Any]]:
-    """Restore the exact original mode even when visible work fails.
-
-    Yields:
-        Recorded file identity, modes and checks, or an empty disabled proof.
-
-    Raises:
-        TypeError: The UI lacks proof checks at input and frame boundaries.
-        RuntimeError: Installed identity, mode or preserved state disagrees.
-    """
-    if not enabled:
-        yield {}
-        return
-    if not isinstance(ui, InstalledUI):
-        message = "CLI-unavailable proof requires InstalledUI input guards"
-        raise TypeError(message)
-    proof = _CLIProof(state, attempt, report)
+def _prepare_proof(proof: _CLIProof) -> None:
     proof.original = proof.command("inspect")
-    expected = report["application"]["components"]["cli"]
+    expected = proof.report["application"]["components"]["cli"]
     if (
         proof.original["identity"]["path"] != expected["executable"]
         or proof.original["identity"]["sha256"] != expected["installedSha256"]
@@ -192,7 +173,48 @@ def installed_cli_unavailable(  # ruff: ignore[too-many-arguments, too-many-posi
         "preservedBefore": proof.preserved(),
         "startedAt": now(),
     })
-    vm_control.save(attempt / "cli-unavailable.json", proof.evidence)
+    vm_control.save(proof.attempt / "cli-unavailable.json", proof.evidence)
+
+
+def _restore_proof(proof: _CLIProof) -> None:
+    try:
+        _restore_preserved_state(proof)
+    finally:
+        vm_control.save(proof.attempt / "cli-unavailable.json", proof.evidence)
+
+
+def _restore_preserved_state(proof: _CLIProof) -> None:
+    restored = proof.command("restore")
+    proof.evidence["restored"] = {"at": now(), **restored}
+    if restored != proof.original:
+        message = "Installed CLI did not regain its exact original mode"
+        raise RuntimeError(message)
+    proof.evidence["preservedAfter"] = proof.preserved()
+    if proof.evidence["preservedAfter"] != proof.evidence["preservedBefore"]:
+        message = "Daemon or configuration changed during CLI proof"
+        raise RuntimeError(message)
+
+
+@contextmanager
+def installed_cli_unavailable(  # ruff: ignore[too-many-arguments, too-many-positional-arguments] - One restoration boundary spans the owned guest and visible journey.
+    state: dict, attempt: Path, report: dict, ui: GuestUI, *, enabled: bool
+) -> Iterator[dict[str, Any]]:
+    """Restore the exact original mode even when visible work fails.
+
+    Yields:
+        Recorded file identity, modes and checks, or an empty disabled proof.
+
+    Raises:
+        TypeError: The UI lacks proof checks at input and frame boundaries.
+    """
+    if not enabled:
+        yield {}
+        return
+    if not isinstance(ui, InstalledUI):
+        message = "CLI-unavailable proof requires InstalledUI input guards"
+        raise TypeError(message)
+    proof = _CLIProof(state, attempt, report)
+    _prepare_proof(proof)
     try:
         proof.evidence["disabled"] = proof.command("disable")
         ui.proof = proof
@@ -201,18 +223,4 @@ def installed_cli_unavailable(  # ruff: ignore[too-many-arguments, too-many-posi
         proof.check("after-visible-work")
     finally:
         ui.proof = None
-        try:
-            restored = proof.command("restore")
-            proof.evidence["restored"] = {"at": now(), **restored}
-            if restored != proof.original:
-                message = "Installed CLI did not regain its exact original mode"
-                raise RuntimeError(message)
-            proof.evidence["preservedAfter"] = proof.preserved()
-            if (
-                proof.evidence["preservedAfter"]
-                != proof.evidence["preservedBefore"]
-            ):
-                message = "Daemon or configuration changed during CLI proof"
-                raise RuntimeError(message)
-        finally:
-            vm_control.save(attempt / "cli-unavailable.json", proof.evidence)
+        _restore_proof(proof)

@@ -74,24 +74,8 @@ def public_cli(state: dict[str, Any], attempt: Path, *args: str) -> str:
     )
 
 
-def public_snapshot(state: dict[str, Any], attempt: Path) -> dict[str, Any]:
-    """Read the versioned public snapshot directly from the owned daemon.
-
-    Returns:
-        The endpoint snapshot.
-
-    Raises:
-        RuntimeError: Public status did not return a snapshot.
-    """
-    if not vm_control.running(state):
-        message = "Owned guest is not running"
-        raise RuntimeError(message)
-    daemon = state.get("daemonExecutable") or str(
-        Path(
-            state.get("cliExecutable", "~/.local/bin/omarchy-quickshare")
-        ).with_name("omarchy-quickshare-daemon")
-    )
-    script = """import json, os, socket, struct, subprocess, sys
+def _snapshot_script() -> str:
+    return """import json, os, socket, struct, subprocess, sys
 from pathlib import Path
 def output(*args):
     return subprocess.check_output(args, text=True, timeout=5).strip()
@@ -126,6 +110,26 @@ if result.get('version') != version or pid() != before:
     raise RuntimeError('Daemon identity changed during public snapshot')
 print(json.dumps(result))
 """
+
+
+def public_snapshot(state: dict[str, Any], attempt: Path) -> dict[str, Any]:
+    """Read the versioned public snapshot directly from the owned daemon.
+
+    Returns:
+        The endpoint snapshot.
+
+    Raises:
+        RuntimeError: Public status did not return a snapshot.
+    """
+    if not vm_control.running(state):
+        message = "Owned guest is not running"
+        raise RuntimeError(message)
+    daemon = state.get("daemonExecutable") or str(
+        Path(
+            state.get("cliExecutable", "~/.local/bin/omarchy-quickshare")
+        ).with_name("omarchy-quickshare-daemon")
+    )
+    script = _snapshot_script()
     envelope = json.loads(
         guest_command(
             state,
@@ -217,55 +221,14 @@ def parse_events(log: str) -> list[dict[str, str]]:
     ]
 
 
-def _prior_owner(  # ruff: ignore[too-many-branches] - Fail closed across distinct process, share, file and retained-record identities.
+def _prior_owner(
     state: dict[str, Any], active: dict[str, Any], application: dict[str, Any]
 ) -> tuple[Path, dict[str, Any]]:
     owner = Path(state["directory"])
     matches = []
     for path in (owner / "scenarios").glob("*/result.json"):
         record = json.loads(path.read_text(encoding="utf-8"))
-        submitted = record.get("submitted", {})
-        source = path.parent / f"quickshare-{path.parent.name}.bin"
-        previous = record.get("application", {})
-        identity = {
-            "attemptId": path.parent.name,
-            "scenario": "file-to-reference-peer",
-            "guestUuid": state["uuid"],
-            "qemuPid": state["pid"],
-        }
-        if any(record.get(key) != value for key, value in identity.items()):
-            continue
-        if any(
-            previous.get(key) != application[key]
-            for key in ("mainPid", "loadedSha256")
-        ):
-            continue
-        intended = (
-            "shareId" not in record
-            and record.get("submittedAt")
-            and record.get("action") == "submit public send to selected peer"
-        )
-        if record.get("shareId") != active["id_string"] and not intended:
-            continue
-        attachment = {
-            "type": "file",
-            "name": source.name,
-            "size_bytes": submitted.get("sizeBytes"),
-        }
-        if (
-            active["direction"] != "outbound"
-            or active["attachment"] != attachment
-            or active.get("peer", {}).get("id")
-            != record.get("selectedPeer", {}).get("id")
-            or submitted.get("sourcePath") != str(source)
-        ):
-            continue
-        if (
-            source.is_file()
-            and not source.is_symlink()
-            and hashlib.sha256(source.read_bytes()).hexdigest()
-            == submitted.get("sha256")
-        ):
+        if _matches_prior_owner((state, active, application), path, record):
             matches.append((path, record))
     if len(matches) != 1:
         message = (
@@ -275,6 +238,60 @@ def _prior_owner(  # ruff: ignore[too-many-branches] - Fail closed across distin
         )
         raise RuntimeError(message)
     return matches[0]
+
+
+def _matches_prior_owner(
+    identity: tuple[dict[str, Any], dict[str, Any], dict[str, Any]],
+    path: Path,
+    record: dict[str, Any],
+) -> bool:
+    state, active, application = identity
+    previous = record.get("application", {})
+    expected = {
+        "attemptId": path.parent.name,
+        "scenario": "file-to-reference-peer",
+        "guestUuid": state["uuid"],
+        "qemuPid": state["pid"],
+    }
+    if any(record.get(key) != value for key, value in expected.items()) or any(
+        previous.get(key) != application[key]
+        for key in ("mainPid", "loadedSha256")
+    ):
+        return False
+    intended = (
+        "shareId" not in record
+        and record.get("submittedAt")
+        and record.get("action") == "submit public send to selected peer"
+    )
+    if record.get("shareId") != active["id_string"] and not intended:
+        return False
+    return _matches_prior_payload(active, path, record)
+
+
+def _matches_prior_payload(
+    active: dict[str, Any], path: Path, record: dict[str, Any]
+) -> bool:
+    submitted = record.get("submitted", {})
+    source = path.parent / f"quickshare-{path.parent.name}.bin"
+    attachment = {
+        "type": "file",
+        "name": source.name,
+        "size_bytes": submitted.get("sizeBytes"),
+    }
+    if (
+        active["direction"] != "outbound"
+        or active["attachment"] != attachment
+        or active.get("peer", {}).get("id")
+        != record.get("selectedPeer", {}).get("id")
+        or submitted.get("sourcePath") != str(source)
+    ):
+        return False
+    return (
+        source.is_file()
+        and not source.is_symlink()
+        and hashlib.sha256(source.read_bytes()).hexdigest()
+        == submitted.get("sha256")
+    )
 
 
 def _settled_share(
@@ -399,22 +416,7 @@ def _restart_peer(
             stderr=subprocess.STDOUT,
             timeout=45,
         )
-    deadline = time.monotonic() + 45
-    last = "Receiver did not become healthy after its reset"
-    while time.monotonic() < deadline:
-        try:
-            _, container = peer_state(Path(record["owner"]))
-            if (
-                container["State"]["StartedAt"]
-                != evidence["peerBefore"]["startedAt"]
-            ):
-                break
-            last = "Receiver reset did not change its process generation"
-        except RuntimeError as error:
-            last = str(error)
-        time.sleep(0.5)
-    else:
-        raise RuntimeError(last)
+    container = _wait_peer_generation(record, evidence)
     evidence["receiverStartedAt"] = container["State"]["StartedAt"]
     source = (
         Path(__file__)
@@ -431,6 +433,28 @@ def _restart_peer(
     evidence["readiness"] = json.loads(guest_command(state, command, attempt))
     evidence["peerAfter"] = _peer_idle(record, attempt, "reset-after")
     report["receiverStartedAt"] = evidence["peerAfter"]["startedAt"]
+
+
+def _wait_peer_generation(
+    record: dict[str, Any], evidence: dict[str, Any]
+) -> dict[str, Any]:
+    deadline = time.monotonic() + 45
+    last = "Receiver did not become healthy after its reset"
+    while time.monotonic() < deadline:
+        try:
+            _, container = peer_state(Path(record["owner"]))
+            if (
+                container["State"]["StartedAt"]
+                != evidence["peerBefore"]["startedAt"]
+            ):
+                break
+            last = "Receiver reset did not change its process generation"
+        except RuntimeError as error:
+            last = str(error)
+        time.sleep(0.5)
+    else:
+        raise RuntimeError(last)
+    return container
 
 
 def reset(state: dict[str, Any], attempt: Path, report: dict[str, Any]) -> None:

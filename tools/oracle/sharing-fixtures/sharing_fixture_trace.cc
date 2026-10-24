@@ -138,8 +138,7 @@ bool TraceCollector::Write(const std::filesystem::path &path) const {
     trace += record.decoded.kind;
     trace += "\"";
     if (!record.decoded.attachment.empty())
-      trace += ",\n      \"attachment\": \"" + record.decoded.attachment +
-               "\"";
+      trace += ",\n      \"attachment\": \"" + record.decoded.attachment + "\"";
     if (!record.decoded.status.empty())
       trace += ",\n      \"status\": \"" + record.decoded.status + "\"";
     trace += ",\n      \"outcome\": \"";

@@ -1,7 +1,7 @@
 #![expect(
     clippy::panic,
     clippy::panic_in_result_fn,
-    reason = "Recovery contracts propagate fixture errors and assert operation outcomes"
+    reason = "Propagate fixture errors and assert operation outcomes"
 )]
 
 use core::time::Duration;
@@ -62,7 +62,7 @@ fn restart_reports_interrupted_accepted_work_without_replaying_payload()
 
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "Every response other than an operation or retryable outcome must fail this contract"
+    reason = "Only operation and retryable responses satisfy this contract"
 )]
 fn operation(root: &Path, request_id: &str) -> io::Result<OperationRecord> {
     let started = Instant::now();
@@ -87,7 +87,7 @@ fn operation(root: &Path, request_id: &str) -> io::Result<OperationRecord> {
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "The recovery scenario keeps lost reply, dismissal, and restart assertions in execution order"
+    reason = "Keep lost reply, dismissal, and restart assertions in order"
 )]
 fn lost_reply_reconciles_and_completed_dismissal_survives_restart()
 -> io::Result<()> {

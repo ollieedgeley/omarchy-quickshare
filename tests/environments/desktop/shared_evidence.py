@@ -183,21 +183,7 @@ def worker() -> dict[str, Any]:
             timeout=30,
         )
     )
-    docker_root = Path(docker["DockerRootDir"])
-    workspace_gib = int(os.environ["DESKTOP_WORKSPACE_BUDGET_GIB"])
-    docker_gib = int(os.environ["DESKTOP_DOCKER_BUDGET_GIB"])
-    if min(workspace_gib, docker_gib) < 1:
-        message = "Positive reviewed physical storage budgets are required"
-        raise RuntimeError(message)
-    same_disk = ROOT.stat().st_dev == docker_root.stat().st_dev
-    if not same_disk:
-        workspace_uuid = filesystem_uuid(ROOT)
-        docker_uuid = filesystem_uuid(docker_root)
-        same_disk = (
-            not workspace_uuid
-            or not docker_uuid
-            or workspace_uuid == docker_uuid
-        )
+    docker_root, workspace_gib, docker_gib, same_disk = _worker_storage(docker)
     return {
         "kernel": platform.release(),
         "os": platform.freedesktop_os_release(),
@@ -216,6 +202,25 @@ def worker() -> dict[str, Any]:
         "requiredDockerBytes": docker_gib * GIB,
         "storagePolicy": "Reviewed physical budgets, not virtual capacity",
     }
+
+
+def _worker_storage(docker: dict[str, Any]) -> tuple[Path, int, int, bool]:
+    docker_root = Path(docker["DockerRootDir"])
+    workspace_gib = int(os.environ["DESKTOP_WORKSPACE_BUDGET_GIB"])
+    docker_gib = int(os.environ["DESKTOP_DOCKER_BUDGET_GIB"])
+    if min(workspace_gib, docker_gib) < 1:
+        message = "Positive reviewed physical storage budgets are required"
+        raise RuntimeError(message)
+    same_disk = ROOT.stat().st_dev == docker_root.stat().st_dev
+    if not same_disk:
+        workspace_uuid = filesystem_uuid(ROOT)
+        docker_uuid = filesystem_uuid(docker_root)
+        same_disk = (
+            not workspace_uuid
+            or not docker_uuid
+            or workspace_uuid == docker_uuid
+        )
+    return docker_root, workspace_gib, docker_gib, same_disk
 
 
 def storage(record: dict[str, Any]) -> dict[str, Any]:

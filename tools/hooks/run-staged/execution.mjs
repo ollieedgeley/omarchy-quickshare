@@ -98,6 +98,7 @@ export function executionEnvironment(staged, tools) {
     MARKDOWNLINT: join(tools.NODE_BIN, "markdownlint-cli2"),
     PATH: `${tools.NODE_BIN}:${process.env.PATH}`,
     PRETTIER: join(tools.NODE_BIN, "prettier"),
+    QUICKSHARE_RESOURCE_ROOT: realpathSync(staged.root),
     TEST_ENV_CACHE: realpathSync(cache),
     VULTURE: join(staged.root, ".cache/tools/vulture-2.16/bin/vulture"),
   };
